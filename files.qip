@@ -15,12 +15,15 @@ set_global_assignment -name VERILOG_FILE rtl/nvram.v
 set_global_assignment -name VHDL_FILE rtl/ram_rom/dpram_dc.vhd
 set_global_assignment -name VHDL_FILE rtl/ram_rom/spram.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/rom_loader.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/ddram.sv
 
 set_global_assignment -name VERILOG_FILE rtl/pll.v
 set_global_assignment -name VERILOG_FILE rtl/pll/pll_0002.v
 
 # --- In-fabric MJPEG video: ultraembedded/core_jpeg (Apache-2.0) + wrapper ---
 set_global_assignment -name VERILOG_FILE rtl/video/jpeg_frame_decoder.v
+set_global_assignment -name VERILOG_FILE rtl/video/dlv_streamer.v
+set_global_assignment -name VERILOG_FILE rtl/video/fb_writer.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_core.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_input.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_bitbuffer.v
