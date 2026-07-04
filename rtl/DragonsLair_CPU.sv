@@ -68,12 +68,6 @@ module DragonsLair_CPU
 
     input         pause,
 
-    // Hiscore interface (work-RAM port B)
-    input  [15:0] hs_address,
-    input   [7:0] hs_data_in,
-    output  [7:0] hs_data_out,
-    input         hs_write,
-
     // Bring-up "core alive" heartbeat LED
     output        dbg_led
 );
@@ -219,7 +213,7 @@ dpram_dc #(.widthad_a(16)) prog_rom
 
 //---------------------------------------------------------- Work RAM ----------------------------------------------------------//
 
-// 2KB work RAM at 0xA000-0xA7FF.  Port B = hiscore read/write.
+// 2KB work RAM at 0xA000-0xA7FF.  Port B unused (hiscore removed 2026-07-04).
 dpram_dc #(.widthad_a(11)) work_ram
 (
     .clock_a(clk_sys),
@@ -229,10 +223,10 @@ dpram_dc #(.widthad_a(11)) work_ram
     .q_a(workram_D),
 
     .clock_b(clk_sys),
-    .wren_b(hs_write),
-    .address_b(hs_address[10:0]),
-    .data_b(hs_data_in),
-    .q_b(hs_data_out)
+    .wren_b(1'b0),
+    .address_b(11'b0),
+    .data_b(8'b0),
+    .q_b()
 );
 
 //-------------------------------------------------------- AY-3-8910 -----------------------------------------------------------//
@@ -297,37 +291,53 @@ assign sound = ay_signed;
 // TODO(dlair): process ld_cmd_captured (search/play/stop) + drive real status
 // codes (SEARCH_FINISH, PLAY, ...) once LD-on-FPGA video is added.
 //
-localparam LD_STATUS_PARK  = 8'h7C;
-localparam LD_STATUS_READY = 8'h80;
+// LDV1000-UPGRADE-2026-07-04: the constant "parked/ready" stub below is REPLACED
+// by the real DragonsLair_LDV1000 command/status controller (instanced further
+// down).  Kept commented (not deleted) as a fallback — it was the POST-proven
+// stub.  To revert: uncomment this block and delete the u_ldv1000 instance.
+// localparam LD_STATUS_PARK  = 8'h7C;
+// localparam LD_STATUS_READY = 8'h80;
+//
+// localparam [19:0] PARK_PERIOD = 20'd840000;  // 21 ms  @ 40 MHz
+// localparam [19:0] STAT_LOW    = 20'd1040;    // 26 us  status-strobe low window
+// localparam [19:0] CMD_START   = 20'd2160;    // 54 us  command-strobe start
+// localparam [19:0] CMD_END     = 20'd3160;    // 79 us  command-strobe end (25 us wide)
+//
+// reg  [19:0] park_cnt          = 20'd0;
+// reg         ld_status_strobe  = 1'b1;   // MAME m_status_strobe  (idle high)
+// reg         ld_command_strobe = 1'b1;   // MAME m_command_strobe (idle high)
+//
+// always_ff @(posedge clk_sys) begin
+//     if (!reset) begin
+//         park_cnt          <= 18'd0;
+//         ld_status_strobe  <= 1'b1;
+//         ld_command_strobe <= 1'b1;
+//     end
+//     else begin
+//         if (park_cnt >= PARK_PERIOD - 20'd1) park_cnt <= 20'd0;
+//         else                                 park_cnt <= park_cnt + 20'd1;
+//         ld_status_strobe  <= ~(park_cnt < STAT_LOW);
+//         ld_command_strobe <= ~((park_cnt >= CMD_START) & (park_cnt < CMD_END));
+//     end
+// end
+// wire [7:0] ld_status = LD_STATUS_PARK | LD_STATUS_READY;   // 0xFC
 
-localparam [19:0] PARK_PERIOD = 20'd840000;  // 21 ms  @ 40 MHz
-localparam [19:0] STAT_LOW    = 20'd1040;    // 26 us  status-strobe low window
-localparam [19:0] CMD_START   = 20'd2160;    // 54 us  command-strobe start
-localparam [19:0] CMD_END     = 20'd3160;    // 79 us  command-strobe end (25 us wide)
+// Real LD-V1000 controller: processes the Z80's SEARCH/PLAY/STOP stream, tracks
+// the disc frame, and reports real status + per-frame strobe (see DragonsLair_LDV1000.sv).
+wire  [7:0] ld_status;
+wire        ld_status_strobe, ld_command_strobe;
+wire [16:0] ld_curr_frame;   // TODO(dlair): route to the video path (disc->film map)
 
-reg  [19:0] park_cnt          = 20'd0;
-reg         ld_status_strobe  = 1'b1;   // MAME m_status_strobe  (idle high)
-reg         ld_command_strobe = 1'b1;   // MAME m_command_strobe (idle high)
-
-always_ff @(posedge clk_sys) begin
-    if (!reset) begin
-        park_cnt          <= 18'd0;
-        ld_status_strobe  <= 1'b1;
-        ld_command_strobe <= 1'b1;
-    end
-    else begin
-        if (park_cnt >= PARK_PERIOD - 20'd1) park_cnt <= 20'd0;
-        else                                 park_cnt <= park_cnt + 20'd1;
-
-        // status strobe: low (asserted) for the first 26 us of each 21 ms tick
-        ld_status_strobe  <= ~(park_cnt < STAT_LOW);
-        // command strobe: low (asserted) for 25 us, 54 us after the tick
-        ld_command_strobe <= ~((park_cnt >= CMD_START) & (park_cnt < CMD_END));
-    end
-end
-
-// C020 laserdisc_r status byte — constant "parked + ready" (initialized/idle).
-wire [7:0] ld_status = LD_STATUS_PARK | LD_STATUS_READY;   // 0xFC
+DragonsLair_LDV1000 u_ldv1000 (
+    .clk            (clk_sys),
+    .reset_n        (reset),          // core reset is active-low
+    .cmd_stb        (ld_cmd_stb),
+    .cmd_byte       (ld_data_latch),
+    .status         (ld_status),
+    .status_strobe  (ld_status_strobe),
+    .command_strobe (ld_command_strobe),
+    .curr_frame     (ld_curr_frame)
+);
 
 //------------------------------------------------- misc_w / LD data latch -----------------------------------------------------//
 //
@@ -339,18 +349,23 @@ wire [7:0] ld_status = LD_STATUS_PARK | LD_STATUS_READY;   // 0xFC
 reg [7:0] misc_reg       = 8'd0;
 reg [7:0] ld_data_latch  = 8'd0;
 reg [7:0] ld_cmd_captured= 8'd0;   // last byte strobed to the LD (misc b5 1->0)
+reg       ld_cmd_stb     = 1'b0;   // 1-cyc pulse -> LDV1000 controller (byte = ld_data_latch)
 
 always_ff @(posedge clk_sys) begin
     if (!reset) begin
         misc_reg        <= 8'd0;
         ld_data_latch   <= 8'd0;
         ld_cmd_captured <= 8'd0;
+        ld_cmd_stb      <= 1'b0;
     end
     else begin
+        ld_cmd_stb <= 1'b0;                            // default: no strobe this cycle
         if (cs_ld_w) ld_data_latch <= cpu_Dout;        // 0xE020 laserdisc_w
         if (cs_misc_w) begin
-            if (misc_reg[5] & ~cpu_Dout[5])            // b5 1->0 = OUT DISC DATA
+            if (misc_reg[5] & ~cpu_Dout[5]) begin      // b5 1->0 = OUT DISC DATA
                 ld_cmd_captured <= ld_data_latch;
+                ld_cmd_stb      <= 1'b1;               // hand the byte to the LDV1000
+            end
             misc_reg <= cpu_Dout;
         end
     end

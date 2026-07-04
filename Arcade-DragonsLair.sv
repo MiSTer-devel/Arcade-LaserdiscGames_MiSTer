@@ -233,9 +233,6 @@ localparam CONF_STR = {
 	"P1OP,Pause when OSD is open,On,Off;",
 	"P1OQ,Dim video after 10s,On,Off;",
 	"-;",
-	"P2,High Score Options;",
-	"P2OR,Autosave Hiscores,Off,On;",
-	"-;",
 	"DIP;",
 	"-;",
 	"R0,Reset;",
@@ -376,7 +373,7 @@ pause #(8,8,8,10) pause
 	.*,
 	.clk_sys(CLK_10M),
 	.user_button(m_pause),
-	.pause_request(hs_pause),
+	.pause_request(1'b0),   // hiscore removed 2026-07-04
 	.options(~status[26:25])
 );
 
@@ -468,45 +465,13 @@ DragonsLair dl_inst
 
 	.pause(pause_cpu),
 
-	// Hiscore (work-RAM port B)
-	.hs_address(hs_address),
-	.hs_data_in(hs_data_in),
-	.hs_data_out(hs_data_out),
-	.hs_write(hs_write_enable),
 	.dbg_led(dbg_led)
 );
 
-// HISCORE SYSTEM (HISCORE-2026-06-21) — mirrors Tutankham (Kangaroo's structural base), same hiscore.v v0014.
-// ioctl_din / ioctl_upload_req are now DRIVEN by the hiscore module (the old "disabled" assigns are removed).
-// Score access uses the work-RAM port B in DragonsLair_CPU.sv (clk_sys/CLK_40M). Config = MRA index 3, dump = index 4.
-wire [15:0] hs_address;
-wire [7:0]  hs_data_in;
-wire [7:0]  hs_data_out;
-wire        hs_write_enable;
-wire        hs_access_read;
-wire        hs_access_write;
-wire        hs_pause;
-wire        hs_configured;
-
-hiscore #(
-	.HS_ADDRESSWIDTH(16),
-	.CFG_ADDRESSWIDTH(3),
-	.CFG_LENGTHWIDTH(2)
-) hi (
-	.*,
-	.clk(CLK_10M),
-	.paused(pause_cpu),
-	.autosave(status[27]),
-	.ram_address(hs_address),
-	.data_from_ram(hs_data_out),
-	.data_to_ram(hs_data_in),
-	.data_from_hps(ioctl_dout),
-	.data_to_hps(ioctl_din),
-	.ram_write(hs_write_enable),
-	.ram_intent_read(hs_access_read),
-	.ram_intent_write(hs_access_write),
-	.pause_cpu(hs_pause),
-	.configured(hs_configured)
-);
+// HISCORE REMOVED 2026-07-04 — Dragon's Lair / Space Ace / Thayer's Quest do not
+// persist high scores.  The hiscore module was the SOLE driver of ioctl_din and
+// ioctl_upload_req, so tie them off to keep hps_io happy.
+assign ioctl_din        = 8'd0;
+assign ioctl_upload_req = 1'b0;
 
 endmodule

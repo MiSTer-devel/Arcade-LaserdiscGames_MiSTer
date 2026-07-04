@@ -41,11 +41,6 @@ module DragonsLair
 
     input                pause,
 
-    // Hiscore
-    input         [15:0] hs_address,
-    input          [7:0] hs_data_in,
-    output         [7:0] hs_data_out,
-    input                hs_write,
     output               dbg_led
 );
 
@@ -85,10 +80,6 @@ DragonsLair_CPU cpu_board
 
     .pause(pause),
 
-    .hs_address(hs_address),
-    .hs_data_in(hs_data_in),
-    .hs_data_out(hs_data_out),
-    .hs_write(hs_write),
     .dbg_led(dbg_led)
 );
 

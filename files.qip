@@ -3,6 +3,7 @@ set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 set_global_assignment -name SYSTEMVERILOG_FILE Arcade-DragonsLair.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_CPU.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_LDV1000.sv
 
 set_global_assignment -name QIP_FILE rtl/cpu/T80/T80.qip
 
@@ -10,7 +11,6 @@ set_global_assignment -name QIP_FILE rtl/sound/v_sound.qip
 
 set_global_assignment -name VERILOG_FILE rtl/pause.v
 set_global_assignment -name VERILOG_FILE rtl/nvram.v
-set_global_assignment -name VERILOG_FILE rtl/hiscore.v
 
 set_global_assignment -name VHDL_FILE rtl/ram_rom/dpram_dc.vhd
 set_global_assignment -name VHDL_FILE rtl/ram_rom/spram.vhd
