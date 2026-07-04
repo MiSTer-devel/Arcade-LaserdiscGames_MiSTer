@@ -21,10 +21,11 @@ module fb_raster_reader #(
     parameter [15:0] H_ACT  = 16'd320,
     parameter [15:0] V_ACT  = 16'd240,
     parameter [15:0] STRIDE = 16'd320,     // halfwords per row (= H_ACT, tight)
-    parameter [15:0] V_BAND = 16'd0,       // LAYOUT-2026-07-04: reserved top strip for the LED band.
-                                           //   Display rows 0..V_BAND-1 are forced black (band lives there);
-                                           //   video is shifted DOWN — display row R shows framebuffer row R-V_BAND
-                                           //   (bottom V_BAND rows of the frame are cropped). V_BAND=0 => old behaviour.
+    parameter [15:0] V_BAND = 16'd0,       // LAYOUT-2026-07-04 (Option B, grow canvas): reserved top strip for the LED band.
+                                           //   Total active height becomes V_ACT + V_BAND.  Display rows 0..V_BAND-1 are
+                                           //   forced black (band lives there); rows V_BAND..V_BAND+V_ACT-1 show the FULL
+                                           //   video (row R -> framebuffer row R-V_BAND).  Video is NEVER cropped/scaled.
+                                           //   V_BAND=0 => old behaviour (no band).
     parameter [15:0] H_FP = 16'd8, H_SYNC = 16'd32, H_BP = 16'd24,
     parameter [15:0] V_FP = 16'd8, V_SYNC = 16'd4,  V_BP = 16'd16
 )(
@@ -50,8 +51,11 @@ module fb_raster_reader #(
     output     [7:0]  vid_g,
     output     [7:0]  vid_b
 );
+    // Option B (grow canvas): total active rows = full video rows + the reserved band.  The video
+    // keeps ALL V_ACT rows (never cropped/scaled); the band just adds V_BAND rows of active height.
+    localparam [15:0] V_DISP  = V_ACT + V_BAND;
     localparam [15:0] H_TOTAL = H_ACT + H_FP + H_SYNC + H_BP;
-    localparam [15:0] V_TOTAL = V_ACT + V_FP + V_SYNC + V_BP;
+    localparam [15:0] V_TOTAL = V_DISP + V_FP + V_SYNC + V_BP;
 
     // pixel clock enable = clk/8 (~5 MHz)
     reg [2:0] cediv = 3'd0;
@@ -63,7 +67,7 @@ module fb_raster_reader #(
     wire h_last = (hcnt == H_TOTAL - 16'd1);
     wire v_last = (vcnt == V_TOTAL - 16'd1);
     wire h_active = (hcnt < H_ACT);
-    wire v_active = (vcnt < V_ACT);
+    wire v_active = (vcnt < V_DISP);   // active rows 0..V_DISP-1 = band strip + full video (Option B)
 
     // ping-pong line buffer: 2 lines, 512-halfword stride (matches the
     // {buf, hcnt[8:0]} / {buf, fidx[8:0]} index — H_ACT<=512).
@@ -87,7 +91,7 @@ module fb_raster_reader #(
             hblank   <= ~h_active;
             vblank   <= ~v_active;
             hsync    <= (hcnt >= H_ACT + H_FP) && (hcnt < H_ACT + H_FP + H_SYNC);
-            vsync    <= (vcnt >= V_ACT + V_FP) && (vcnt < V_ACT + V_FP + V_SYNC);
+            vsync    <= (vcnt >= V_DISP + V_FP) && (vcnt < V_DISP + V_FP + V_SYNC);
             // advance counters (+ swap the displayed buffer at end of line)
             if (h_last) begin
                 hcnt <= 16'd0;

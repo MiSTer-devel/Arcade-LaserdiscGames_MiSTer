@@ -218,8 +218,12 @@ wire [1:0] ar = status[14:13];
 // Orientation toggle from the OSD.  (Was: status[12] selected Vert/Horz.)
 wire horz = 1'b1;
 
-assign VIDEO_ARX = horz ? ((!ar) ? 12'd4 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
-assign VIDEO_ARY = horz ? ((!ar) ? 12'd3 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
+// LAYOUT-2026-07-04 (Option B): active frame is 320 x (240 video + 12 band) = 320x252.  "Original"
+// AR is set to 320:252 (NOT 4:3) so pixels stay SQUARE and the 320x240 video sub-region renders
+// exact 4:3 — the LED band is proportional overscan above it, video undistorted / uncropped.
+// (This AR is HDMI/scaler-only; a real CRT ignores it.  If BAND_H changes, make this 240+BAND_H.)
+assign VIDEO_ARX = horz ? ((!ar) ? 12'd320 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
+assign VIDEO_ARY = horz ? ((!ar) ? 12'd252 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -391,11 +395,13 @@ wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
-// LAYOUT-2026-07-04 (user req): the LED band and the video must be SEPARATE — the band gets a
-// reserved top strip on black, and the video is moved DOWN below it (not overlaid).  The reader
-// (fb_raster_reader V_BAND=BAND_H) blanks display rows 0..BAND_H-1 to black and shifts the video
-// down to start at row BAND_H.  led_band lights rows 2..8 (inside the strip), so the composite is
-// unchanged: red text where lit in the strip, black elsewhere in the strip, video below.
+// LAYOUT-2026-07-04 (Option B — grow canvas): the LED band and the video are SEPARATE, never
+// overlaid.  The reader (fb_raster_reader #(.V_BAND(BAND_H))) grows the active frame to
+// 240+BAND_H rows: rows 0..BAND_H-1 = black band strip ON TOP, rows BAND_H.. = the FULL, pixel-
+// exact 320x240 video (NO crop, NO scale).  led_band lights rows 2..8 (inside the strip), so the
+// composite mux is unchanged: red text where lit in the strip, black elsewhere in it, video below.
+// NB: VIDEO_ARX/ARY "Original" is 320:(240+BAND_H) so the video stays exact 4:3 — if BAND_H
+// changes, update that ratio too (see the VIDEO_ARX/ARY assigns above).
 localparam [15:0] BAND_H = 16'd12;             // reserved top strip height in rows (glyphs at rows 2..8)
 wire  [7:0] comp_r = led_lit ? 8'hFF : rr_r;   // red band text in the strip, video below
 wire  [7:0] comp_g = led_lit ? 8'h00 : rr_g;
