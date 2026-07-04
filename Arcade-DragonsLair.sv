@@ -260,6 +260,7 @@ wire [15:0] joy = joystick_0 | joystick_1;
 
 wire [21:0] gamma_bus;
 wire        direct_video;
+wire        video_rotated = 1'b0;   // screen_rotate removed (ROT0) — video is never rotated
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
@@ -384,6 +385,19 @@ wire hs, vs;
 wire [7:0] r, g, b;
 wire ce_pix;
 
+// ---- Raster video path (DDR framebuffer -> arcade_video) : FB-PIVOT-2026-07-04 ----
+wire [63:0] led_digits_flat;
+wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
+wire [15:0] rr_hpos, rr_vpos;
+wire  [7:0] rr_r, rr_g, rr_b;
+wire        led_lit;
+wire  [7:0] comp_r = led_lit ? 8'hFF : rr_r;   // LED band = red over the video
+wire  [7:0] comp_g = led_lit ? 8'h00 : rr_g;
+wire  [7:0] comp_b = led_lit ? 8'h00 : rr_b;
+wire [26:0] rr_rdaddr2;
+wire [15:0] rr_dout2;
+wire        rr_rd_req2, rr_rd_ack2;
+
 // DIAG-2026-06-18: 2x pixel clock for "double the size then reduce". arcade_video now renders 512 px/line
 // (each of the 256 source columns doubled -> MAME-style dimmed-copy interleave); screen_rotate + the
 // scaler then shrink the 512-wide framebuffer back to the display ("reduce the resolution/size").
@@ -403,20 +417,29 @@ wire rotate_ccw = 0;
 // ROT0-FIX-2026-07-03: was `status[12] | direct_video` (rotated when Vert). DL/SA horizontal-only → never rotate.
 wire no_rotate = horz | direct_video;   // = 1
 wire flip = status[11] | ~no_rotate;
-screen_rotate screen_rotate(.*);
+// SCREEN_ROTATE-REMOVED-2026-07-04: DL/SA are ROT0 (no_rotate=1), so screen_rotate only
+// rotated a BLANK raster — and it drives FB_*/DDRAM_*, which our LD-video framebuffer now
+// owns (see the STAGE-2 VIDEO block near endmodule).  Removed to resolve the multiple-driver
+// conflict on FB_*/DDRAM_*.  video_rotated (its only other output) is tied off at its decl.
+// To restore rotation: uncomment this and delete the FB_* assigns + STAGE-2 VIDEO block.
+// screen_rotate screen_rotate(.*);
 
-arcade_video #(512,24) arcade_video   // DIAG-2026-06-18: was #(256,24) — 512 px/line (256 cols doubled), scaler reduces
+// RASTER PATH (FB-PIVOT-2026-07-04): arcade_video is now driven by fb_raster_reader
+// (DDR framebuffer) with the LED band composited over it — replaces the old core LED
+// raster + 512-wide doubling.  Everything is on the standard core-video path, so the
+// LED band shows AND the MiSTer screenshot captures it.
+arcade_video #(320,24) arcade_video
 (
 	.*,
 
 	.clk_video(CLK_40M),
-	.ce_pix(ce_pix_2x),   // DIAG-2026-06-18: 10 MHz (overrides the core's 5 MHz ce_pix that .* would pick)
+	.ce_pix(rr_ce_pix),
 
-	.RGB_in(rgb_out),
-	.HBlank(hblank),
-	.VBlank(vblank),
-	.HSync(hs),
-	.VSync(vs),
+	.RGB_in({comp_r, comp_g, comp_b}),
+	.HBlank(rr_hblank),
+	.VBlank(rr_vblank),
+	.HSync(rr_hs),
+	.VSync(rr_vs),
 
 	.fx(status[17:15])
 );
@@ -465,6 +488,7 @@ DragonsLair dl_inst
 
 	.pause(pause_cpu),
 
+	.led_digits_o(led_digits_flat),
 	.dbg_led(dbg_led)
 );
 
@@ -473,5 +497,91 @@ DragonsLair dl_inst
 // ioctl_upload_req, so tie them off to keep hps_io happy.
 assign ioctl_din        = 8'd0;
 assign ioctl_upload_req = 1'b0;
+
+//============================================================================
+// STAGE-2 VIDEO CHECKPOINT (FB-TESTPATTERN-2026-07-04)
+//----------------------------------------------------------------------------
+// Enable the MISTER_FB framebuffer in HPS DDR3 (via rtl/ram_rom/ddram.sv @
+// 0x30000000) and drive it with a test pattern to prove the ddram -> DDR3 FB ->
+// ascal scaler path BEFORE the real streamer/decoder are hung on it.
+// NOTE: while FB_EN=1 the scaler shows the framebuffer, so the LED-band /
+// arcade_video output is NOT displayed during this checkpoint.
+// TO REVERT to the LED-band display: set FB_EN back to 1'b0 (the DDR block below
+// is then harmless/idle).  All of this runs in the CLK_40M domain (= DDRAM_CLK),
+// so there is no hps_io/CDC involved yet.
+//============================================================================
+// FB-PIVOT-2026-07-04: MISTER_FB DISPLAY DISABLED.  It bypasses the core-video/
+// arcade_video path where the LED band AND the screenshot both live, so it dropped
+// the score and wasn't captured.  Switching to the RASTER path: the decoder writes
+// frames to DDR (ddram/fb_writer below, kept), a raster reader reads them back in
+// scan order into arcade_video, LED band composited in.  FB_EN stays 0.
+assign FB_EN     = 1'b0;
+assign FB_FORMAT = 5'b00100;      // (ignored while FB_EN=0) [2:0]=100 16bpp, [3]=0 565, [4]=0 RGB
+assign FB_WIDTH  = 12'd320;
+assign FB_HEIGHT = 12'd240;
+assign FB_BASE   = 32'h30000000;  // must match ddram.sv region base
+assign FB_STRIDE = 14'd640;       // 320 px * 2 B (tight 16bpp)
+
+assign DDRAM_CLK = CLK_40M;
+
+wire [27:1] fb_wraddr;
+wire [15:0] fb_din;
+wire        fb_we_req, fb_we_ack;
+wire        tp_we, tp_ready;
+wire [15:0] tp_x, tp_y;
+wire  [7:0] tp_r, tp_g, tp_b;
+
+fb_testpattern tp_gen (
+    .clk(CLK_40M), .reset(reset),
+    .ready(tp_ready), .we(tp_we),
+    .x(tp_x), .y(tp_y), .r(tp_r), .g(tp_g), .b(tp_b)
+);
+
+fb_writer #(.FB_BASE_HW(27'd0), .STRIDE_HW(16'd320)) fb_wr (
+    .clk(CLK_40M), .reset(reset),
+    .px_we(tp_we), .px_x(tp_x), .px_y(tp_y),
+    .px_r(tp_r), .px_g(tp_g), .px_b(tp_b),
+    .px_ready(tp_ready),
+    .wraddr(fb_wraddr), .din(fb_din),
+    .we_req(fb_we_req), .we_ack(fb_we_ack)
+);
+
+ddram ddram_fb (
+    .DDRAM_CLK(CLK_40M),
+    .DDRAM_BUSY(DDRAM_BUSY),
+    .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
+    .DDRAM_ADDR(DDRAM_ADDR),
+    .DDRAM_DOUT(DDRAM_DOUT),
+    .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
+    .DDRAM_RD(DDRAM_RD),
+    .DDRAM_DIN(DDRAM_DIN),
+    .DDRAM_BE(DDRAM_BE),
+    .DDRAM_WE(DDRAM_WE),
+    // write port (fb_writer)
+    .wraddr(fb_wraddr), .din(fb_din), .we_req(fb_we_req), .we_ack(fb_we_ack),
+    // rom read/write port — unused
+    .rdaddr(27'd0), .dout(), .rom_din(16'd0), .rom_be(2'd0),
+    .rom_we(1'b0), .rom_req(1'b0), .rom_ack(),
+    // second read port — raster reader (DDR framebuffer -> video)
+    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
+);
+
+// Read the framebuffer back in scan order, then composite the LED band over it.
+fb_raster_reader rr (
+    .clk(CLK_40M), .reset(reset),
+    .frame_base_hw(27'd0),                  // test frame at DDR halfword base 0
+    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2),
+    .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
+    .ce_pix(rr_ce_pix),
+    .hsync(rr_hs), .vsync(rr_vs), .hblank(rr_hblank), .vblank(rr_vblank),
+    .hpos(rr_hpos), .vpos(rr_vpos),
+    .vid_r(rr_r), .vid_g(rr_g), .vid_b(rr_b)
+);
+
+led_band led_band_i (
+    .hc(rr_hpos), .vc(rr_vpos),
+    .led_digits(led_digits_flat),
+    .seg_lit(led_lit)
+);
 
 endmodule

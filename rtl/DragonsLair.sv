@@ -41,6 +41,7 @@ module DragonsLair
 
     input                pause,
 
+    output        [63:0] led_digits_o,
     output               dbg_led
 );
 
@@ -80,6 +81,7 @@ DragonsLair_CPU cpu_board
 
     .pause(pause),
 
+    .led_digits_o(led_digits_o),
     .dbg_led(dbg_led)
 );
 

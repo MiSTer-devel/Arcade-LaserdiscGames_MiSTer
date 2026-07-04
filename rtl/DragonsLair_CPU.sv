@@ -68,6 +68,9 @@ module DragonsLair_CPU
 
     input         pause,
 
+    // LED score/status digits (16 x 4-bit, flattened) for the top-level FB compositor
+    output [63:0] led_digits_o,
+
     // Bring-up "core alive" heartbeat LED
     output        dbg_led
 );
@@ -387,6 +390,13 @@ always_ff @(posedge clk_sys) begin
     if (cs_led1_w) led_digits[{1'b0, cpu_A[2:0]}] <= cpu_Dout[3:0];  // den1 (E038) -> digits 0..7  (MAME dlair.cpp:332)
     if (cs_led2_w) led_digits[{1'b1, cpu_A[2:0]}] <= cpu_Dout[3:0];  // den2 (E030) -> digits 8..15 (MAME dlair.cpp:338)
 end
+
+// Expose the 16 digits (flattened) to the top-level FB compositor (led_band).
+// led_digits_o[i*4 +: 4] = led_digits[i]  (digit 0 in the low nibble).
+assign led_digits_o = {led_digits[15], led_digits[14], led_digits[13], led_digits[12],
+                       led_digits[11], led_digits[10], led_digits[ 9], led_digits[ 8],
+                       led_digits[ 7], led_digits[ 6], led_digits[ 5], led_digits[ 4],
+                       led_digits[ 3], led_digits[ 2], led_digits[ 1], led_digits[ 0]};
 
 //------------------------------------------------------ Periodic IRQ0 ---------------------------------------------------------//
 //
