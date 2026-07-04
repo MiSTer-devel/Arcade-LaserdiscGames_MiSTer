@@ -1,0 +1,64 @@
+<misterromdescription>
+    <name>Space Ace</name>
+    <region>US</region>
+    <homebrew>no</homebrew>
+    <bootleg>no</bootleg>
+    <version>Rev A3</version>
+    <alternative></alternative>
+    <platform></platform>
+    <series>Space Ace</series>
+    <year>1983</year>
+    <manufacturer>Cinematronics</manufacturer>
+    <category>LaserDisc</category>
+
+    <setname>spaceace</setname>
+    <parent>spaceace</parent>
+    <mameversion>0270</mameversion>
+    <rbf>DragonsLair</rbf>
+    <about></about>
+
+    <resolution>15kHz</resolution>
+    <rotation>horizontal</rotation>
+    <flip>no</flip>
+
+    <players>1</players>
+    <joystick>4-way</joystick>
+    <special_controls></special_controls>
+    <num_buttons>1</num_buttons>
+    <buttons names="Fire/Energize,Cadet,Captain,Space Ace,Coin,Start 1P,Start 2P,Pause" default="A,B,X,Y,Select,Start,R,L"/>
+
+    <!-- Space Ace DIPs from the Operation & Maintenance Manual, Appendix C. Two 8-bit banks via the AY-3-8910:
+           A-points A0-A7 = AY port A = DSW1 = MRA bits 0-7
+           B-points B0-B7 = AY port B = DSW2 = MRA bits 8-15
+         Default 00,01 = normal play + LD-V1000 selected (B0=on). ids order = [bit 0, bit 1]; electrical
+         polarity to confirm against the core's dsw read. Diagnostics for Space Ace = B7 on (bit 15). -->
+    <switches default="00,01">
+        <!-- DSW1 / bank A (bits 0-7) -->
+        <dip bits="0" name="Coinage" ids="2 Coins/1 Credit,3 Coins/1 Credit"/>
+        <dip bits="1" name="Lives per Credit" ids="3,5"/>
+        <dip bits="2" name="Difficulty (episodes to ramp)" ids="5 - normal,3 - hard"/>
+        <dip bits="3" name="Difficulty Increase Rate" ids="Slow,Fast - hard"/>
+        <dip bits="4" name="Attract Mode Audio" ids="On,Off"/>
+        <dip bits="5" name="Attract Audio Frequency" ids="Continuous,1 of 8"/>
+        <!-- A6, A7 not used -->
+        <!-- DSW2 / bank B (bits 8-15) -->
+        <dip bits="8"  name="LaserDisc Player" ids="Pioneer 7820,Pioneer LD-V1000"/>
+        <!-- B1, B2, B3 not used -->
+        <dip bits="12" name="Free Play (2 credits)" ids="Off,On"/>
+        <dip bits="13" name="Unlimited Lives" ids="Off,On"/>
+        <dip bits="14" name="Frame Display" ids="Off,On"/>
+        <dip bits="15" name="Diagnostics Mode" ids="Off,On"/>
+    </switches>
+
+    <!-- Index 0: Main Z80 program ROMs. Rev A3 = 5x 8KB @ 0x0000-0x9FFF (fills the full 0xA000 region). -->
+    <rom index="0" md5="none" zip="spaceace.zip|spaceace.zip">
+        <part crc="427522d0" name="sa_a3_u1.bin"/>
+        <part crc="18d0262d" name="sa_a3_u2.bin"/>
+        <part crc="4646832d" name="sa_a3_u3.bin"/>
+        <part crc="57db2a79" name="sa_a3_u4.bin"/>
+        <part crc="85cbcdc4" name="sa_a3_u5.bin"/>
+    </rom>
+
+    <remark>Space Ace (Cinematronics), Dragon's Lair boardset. Index 0 = Z80 game logic only; LaserDisc video handled inside the core (WIP). DIPs need transcription from MAME.</remark>
+    <mratimestamp>20260703000000</mratimestamp>
+</misterromdescription>

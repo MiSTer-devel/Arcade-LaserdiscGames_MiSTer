@@ -1,0 +1,144 @@
+<!-- dlair.lay -->
+
+<mamelayout version="2">
+	<element name="score">
+		<image file="dlair_score.png" />
+	</element>
+	<element name="grill">
+		<image file="dlair_speaker_grill.png" />
+	</element>
+	<element name="digit" defstate="10">
+		<led7seg>
+			<color red="1.0" green="0.3" blue="0.0" />
+		</led7seg>
+	</element>	
+	<view name="Upright_Artwork">
+		<screen index="0">
+			<bounds x="0" y="1877" width="4000" height="3000" />
+		</screen>
+		<bezel element="score">
+			<bounds x="0" y="0" width="4000" height="1877" />
+		</bezel>
+		<bezel element="grill">
+			<bounds x="311" y="289" width="1023" height="1005" />
+		</bezel>
+		<bezel element="grill">
+			<bounds x="2663" y="289" width="1023" height="1005" />
+		</bezel>
+		<bezel name="digit0" element="digit">
+			<bounds x="1636" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit1" element="digit">
+			<bounds x="1770" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit2" element="digit">
+			<bounds x="1904" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit3" element="digit">
+			<bounds x="2038" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit4" element="digit">
+			<bounds x="2172" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit5" element="digit">
+			<bounds x="2306" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit6" element="digit">
+			<bounds x="1969" y="599" width="118" height="165" />
+		</bezel>
+		<bezel name="digit8" element="digit">
+			<bounds x="1636" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit9" element="digit">
+			<bounds x="1770" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit10" element="digit">
+			<bounds x="1904" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit11" element="digit">
+			<bounds x="2038" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit12" element="digit">
+			<bounds x="2172" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit13" element="digit">
+			<bounds x="2306" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit7" element="digit">
+			<bounds x="1969" y="1104" width="118" height="165" />
+		</bezel>
+		<bezel name="digit14" element="digit">
+			<bounds x="1835" y="1383" width="118" height="165" />
+		</bezel>
+		<bezel name="digit15" element="digit">
+			<bounds x="1969" y="1383" width="118" height="165" />
+		</bezel>
+	</view>
+	<view name="Cropped_Scoreboard">
+		<bounds x="0" y="0" width="4950" height="3000" />
+		<screen index="0">
+			<bounds x="0" y="0" width="4000" height="3000" />
+		</screen>
+		<backdrop element="score">
+			<bounds x="2450" y="0" width="4000" height="1877" />
+		</backdrop>
+		<bezel name="digit0" element="digit">
+			<bounds x="4086" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit1" element="digit">
+			<bounds x="4220" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit2" element="digit">
+			<bounds x="4354" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit3" element="digit">
+			<bounds x="4488" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit4" element="digit">
+			<bounds x="4622" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit5" element="digit">
+			<bounds x="4756" y="380" width="118" height="165" />
+		</bezel>
+		<bezel name="digit6" element="digit">
+			<bounds x="4419" y="599" width="118" height="165" />
+		</bezel>
+		<bezel name="digit8" element="digit">
+			<bounds x="4086" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit9" element="digit">
+			<bounds x="4220" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit10" element="digit">
+			<bounds x="4354" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit11" element="digit">
+			<bounds x="4488" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit12" element="digit">
+			<bounds x="4622" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit13" element="digit">
+			<bounds x="4756" y="883" width="118" height="165" />
+		</bezel>
+		<bezel name="digit7" element="digit">
+			<bounds x="4419" y="1104" width="118" height="165" />
+		</bezel>
+		<bezel name="digit14" element="digit">
+			<bounds x="4285" y="1383" width="118" height="165" />
+		</bezel>
+		<bezel name="digit15" element="digit">
+			<bounds x="4419" y="1383" width="118" height="165" />
+		</bezel>
+	</view>	
+</mamelayout>
+
+<!--
+
+- Artwork type: Bezel; LEDs
+- Scanned scoreboard and speaker grill provided by Vintage Arcade Superstore
+- Vectored by jcroach (scoreboard)
+- Converted for MAME by Mr. Do and Ad_Enuff (speaker grill)
+- Lay file by Mr. Do
+
+-->
