@@ -21,6 +21,10 @@ module fb_raster_reader #(
     parameter [15:0] H_ACT  = 16'd320,
     parameter [15:0] V_ACT  = 16'd240,
     parameter [15:0] STRIDE = 16'd320,     // halfwords per row (= H_ACT, tight)
+    parameter [15:0] V_BAND = 16'd0,       // LAYOUT-2026-07-04: reserved top strip for the LED band.
+                                           //   Display rows 0..V_BAND-1 are forced black (band lives there);
+                                           //   video is shifted DOWN — display row R shows framebuffer row R-V_BAND
+                                           //   (bottom V_BAND rows of the frame are cropped). V_BAND=0 => old behaviour.
     parameter [15:0] H_FP = 16'd8, H_SYNC = 16'd32, H_BP = 16'd24,
     parameter [15:0] V_FP = 16'd8, V_SYNC = 16'd4,  V_BP = 16'd16
 )(
@@ -78,7 +82,7 @@ module fb_raster_reader #(
         end else if (ce_pix) begin
             // read this pixel and register the aligned timing flags
             pix_q    <= linebuf[{disp_buf, hcnt[8:0]}];
-            active_q <= h_active & v_active;
+            active_q <= h_active & v_active & (vcnt >= V_BAND);  // reserved top strip -> black (LED band composites there)
             hpos     <= hcnt;   vpos <= vcnt;
             hblank   <= ~h_active;
             vblank   <= ~v_active;
@@ -122,12 +126,14 @@ module fb_raster_reader #(
                     fst   <= F_REQ;
                 end
             F_REQ:
-                if (fline < V_ACT) begin
-                    rdaddr2 <= frame_base_hw + fline*STRIDE + fidx;
+                // display line `fline` shows framebuffer row (fline - V_BAND); rows inside the
+                // reserved band (fline < V_BAND) fetch nothing (they're blanked to black anyway).
+                if (fline >= V_BAND && (fline - V_BAND) < V_ACT) begin
+                    rdaddr2 <= frame_base_hw + (fline - V_BAND)*STRIDE + fidx;
                     rd_req2 <= ~rd_req2;                    // issue read
                     fst     <= F_WAIT;
                 end else begin
-                    fst <= F_IDLE;                          // off-screen line
+                    fst <= F_IDLE;                          // band line or off-screen: no fetch
                 end
             F_WAIT:
                 if (rd_ack2 == rd_req2) begin               // dout2 valid

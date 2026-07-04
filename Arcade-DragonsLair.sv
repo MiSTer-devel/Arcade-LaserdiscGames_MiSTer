@@ -391,7 +391,13 @@ wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
-wire  [7:0] comp_r = led_lit ? 8'hFF : rr_r;   // LED band = red over the video
+// LAYOUT-2026-07-04 (user req): the LED band and the video must be SEPARATE — the band gets a
+// reserved top strip on black, and the video is moved DOWN below it (not overlaid).  The reader
+// (fb_raster_reader V_BAND=BAND_H) blanks display rows 0..BAND_H-1 to black and shifts the video
+// down to start at row BAND_H.  led_band lights rows 2..8 (inside the strip), so the composite is
+// unchanged: red text where lit in the strip, black elsewhere in the strip, video below.
+localparam [15:0] BAND_H = 16'd12;             // reserved top strip height in rows (glyphs at rows 2..8)
+wire  [7:0] comp_r = led_lit ? 8'hFF : rr_r;   // red band text in the strip, video below
 wire  [7:0] comp_g = led_lit ? 8'h00 : rr_g;
 wire  [7:0] comp_b = led_lit ? 8'h00 : rr_b;
 wire [26:0] rr_rdaddr2;
@@ -567,7 +573,7 @@ ddram ddram_fb (
 );
 
 // Read the framebuffer back in scan order, then composite the LED band over it.
-fb_raster_reader rr (
+fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAND_H rows for the LED band, video below
     .clk(CLK_40M), .reset(reset),
     .frame_base_hw(27'd0),                  // test frame at DDR halfword base 0
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2),
