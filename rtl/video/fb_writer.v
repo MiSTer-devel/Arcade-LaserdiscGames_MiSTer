@@ -20,7 +20,6 @@
 // needed.  NOT yet instantiated at top.
 //============================================================================
 module fb_writer #(
-    parameter [26:0] FB_BASE_HW = 27'd0,     // halfword offset of FB within the 0x30000000 region
     parameter [15:0] STRIDE_HW  = 16'd320,   // halfwords per row (= width for tight 16bpp)
     // DIAG-REVERT-2026-07-04: clear-FB-on-reset. Disambiguates "decoder wrote garbage" vs "decoder wrote
     // NOTHING and we're staring at uninitialised DDR" (DDR3 is NOT zeroed on power-up; banding is its natural
@@ -32,6 +31,12 @@ module fb_writer #(
 )(
     input             clk,          // DDRAM_CLK domain
     input             reset,        // active-high
+
+    // FB-DOUBLEBUF-2026-07-15: halfword offset of the buffer to write, in the 0x30000000 region.
+    // Was a fixed parameter; now a live input so the top level can ping-pong it per frame (see
+    // Arcade-DragonsLair.sv fb_buf_sel) instead of writing into the same buffer the raster reader
+    // is scanning out of.
+    input      [26:0] base_hw,
 
     // --- pixel input (from jpeg_frame_decoder drain) ---
     input             px_we,        // pixel valid
@@ -60,8 +65,8 @@ module fb_writer #(
     // assign px_ready = ~busy;
     assign px_ready = ~busy & ~clearing;
 
-    // halfword index = FB_BASE_HW + y*STRIDE_HW + x
-    wire [26:0] hw_index = FB_BASE_HW + (px_y * STRIDE_HW) + {11'd0, px_x};
+    // halfword index = base_hw + y*STRIDE_HW + x
+    wire [26:0] hw_index = base_hw + (px_y * STRIDE_HW) + {11'd0, px_x};
 
     always @(posedge clk) begin
         if (reset) begin
@@ -76,7 +81,7 @@ module fb_writer #(
             // DIAG-REVERT-2026-07-04: fill FB_BASE_HW .. +CLEAR_WORDS-1 with CLEAR_COLOR, one halfword per
             // DDR write, reusing the exact we_req/we_ack handshake. Then drop 'clearing' and hand off below.
             if (!busy) begin
-                wraddr <= FB_BASE_HW + clear_idx;
+                wraddr <= base_hw + clear_idx;
                 din    <= CLEAR_COLOR;
                 we_req <= ~we_req;
                 busy   <= 1'b1;

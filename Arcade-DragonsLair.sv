@@ -610,11 +610,28 @@ jpeg_frame_decoder dec (
     .frame_width(dec_w), .frame_height(dec_h), .frame_done(dec_frame_done), .idle(dec_idle)
 );
 
-fb_writer #(.FB_BASE_HW(27'd0), .STRIDE_HW(16'd320)) fb_wr (
+// FB-DOUBLEBUF-2026-07-15: two-frame ping-pong so the decoder never writes into the same buffer
+// the raster reader is scanning out of. Root cause of the black-line-comb/streak bug (latest17):
+// fb_writer and fb_raster_reader were both hardcoded to DDR halfword base 0 -- one shared
+// framebuffer, no swap at all, so the reader could catch a frame mid-write. Swap on the decoder's
+// own frame_done pulse (dec_frame_done was computed above but never connected to anything).
+localparam [26:0] FB_BUF0_HW = 27'd0;
+localparam [26:0] FB_BUF1_HW = 27'd76800;   // 320*240 halfwords past buf0
+
+reg fb_buf_sel;
+always @(posedge CLK_40M) begin
+    if (reset) fb_buf_sel <= 1'b0;
+    else if (dec_frame_done) fb_buf_sel <= ~fb_buf_sel;
+end
+wire [26:0] fb_wr_base = fb_buf_sel ? FB_BUF1_HW : FB_BUF0_HW;   // decoder writes here (back buffer)
+wire [26:0] fb_rd_base = fb_buf_sel ? FB_BUF0_HW : FB_BUF1_HW;   // raster reader reads here (front buffer)
+
+fb_writer #(.STRIDE_HW(16'd320)) fb_wr (
     .clk(CLK_40M), .reset(reset),
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
     .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
     .px_ready(dec_px_ready),
+    .base_hw(fb_wr_base),
     .wraddr(fb_wraddr), .din(fb_din),
     .we_req(fb_we_req), .we_ack(fb_we_ack)
 );
@@ -642,7 +659,7 @@ ddram ddram_fb (
 // Read the framebuffer back in scan order, then composite the LED band over it.
 fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAND_H rows for the LED band, video below
     .clk(CLK_40M), .reset(reset),
-    .frame_base_hw(27'd0),                  // test frame at DDR halfword base 0
+    .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .ce_pix(rr_ce_pix),
@@ -653,7 +670,7 @@ fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAN
 
 led_band led_band_i (
     .hc(rr_hpos), .vc(rr_vpos),
-    .led_digits(led_digits_flat),   // real score/lives, restored 2026-07-15 (Verilator now covers decoder debug)
+    .led_digits(led_digits_flat),   // real score/lives, restored 2026-07-15
     .seg_lit(led_lit)
 );
 

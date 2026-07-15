@@ -92,6 +92,17 @@ module dlv_streamer #(
     reg [31:0] frm_off, frm_size, frm_start;
     reg [16:0] cur_frame;                     // free-running film frame
 
+    // REDUNDANT-REDRAW-FIX-2026-07-15: last mjpeg frame index actually fetched/decoded/written.
+    // mpeg_fpks (this capture's true fps, e.g. 23.938 for DL) is LOWER than both the 30Hz pacing
+    // tick below and the 29.97fps disc rate, so vid_target legitimately repeats the SAME value
+    // across several consecutive ticks -- without this check, every one of those repeats still
+    // re-fetched/re-decoded/re-wrote the IDENTICAL frame to DDR, redundantly flipping fb_buf_sel
+    // and hammering fb_writer with a fresh 76800-pixel write pass for content that hadn't changed
+    // at all. User's diagnosis (2026-07-15): "the problem is too much data is being thrown at it,
+    // and it's getting out of sync and freaking out" -- this was the actual source of the
+    // black-line-comb/roll/resolution-flicker bugs, not a raster-read-side throughput deficit.
+    reg [16:0] last_fetched_frame;
+
     //------------------------------------------------------------------------
     // Audio ring buffer: 32-bit words, one stereo s16le sample per word
     //   word[15:0] = L (little-endian bytes 0,1), word[31:16] = R (bytes 2,3)
@@ -291,7 +302,15 @@ module dlv_streamer #(
             sd_rd <= 1'b0; sd_lba <= 32'd0; sd_blk_cnt <= 6'd0;
             out_valid <= 1'b0; out_last <= 1'b0;
             header_valid <= 1'b0; frame_fetch <= 1'b0;
-            cur_frame <= START_FRAME;
+            // DEAD-TEST-VALUE-FIX-2026-07-15: was START_FRAME (hardcoded 1000, a leftover
+            // free-run test value from before ld_curr_frame-driven fetching existed). Meaningless
+            // here anyway -- superseded below the instant header_valid inits (which now uses the
+            // REAL vid_target) or a genuine fetch fires. 0 carries no false meaning; 1000 did.
+            cur_frame <= 17'd0;
+            // sentinel, not 17'd0: a real vid_target of 0 is legitimate (first mapped frame), so
+            // resetting to 0 here could skip the very first genuine fetch if vid_target happens to
+            // compute to 0 at boot.
+            last_fetched_frame <= {17{1'b1}};
         end else begin
             case (state)
             // ---- wait for image, then read header sector 0 ----
@@ -312,7 +331,13 @@ module dlv_streamer #(
                     aud_lba       <= aud_off  >> 9;
                     aud_lba_start <= aud_off  >> 9;
                     aud_lba_end   <= (aud_off + aud_size) >> 9;
-                    cur_frame     <= START_FRAME;
+                    // DEAD-TEST-VALUE-FIX-2026-07-15: was START_FRAME (hardcoded 1000). This
+                    // branch re-fires every time header_valid gets cleared (incl. the img_mounted
+                    // re-mount path) -- hardcoding cur_frame here meant EVERY re-init snapped
+                    // playback back to a meaningless fixed frame instead of the real current LD
+                    // position. vid_target (from the live ld_curr_frame) is valid here since the
+                    // header (frame_count/mpeg_fpks) was just parsed.
+                    cur_frame     <= vid_target;
                 end else if (seek_req) begin
                     // HLE-DRIVE-2026-07-04: SEARCH jump -> re-point audio to the mapped sector.
                     // Ring keeps playing (no flush); new-scene audio lands after ~1 ring depth (~93 ms).
@@ -323,10 +348,18 @@ module dlv_streamer #(
                     header_valid <= 1'b0;
                     state <= S_RD_ISSUE;
                 end else if (frame_pending && (aud_level >= FILL_LOW)) begin
-                    // ---- start a video frame fetch (audio comfortable) ----
-                    frame_fetch <= 1'b1;      // decoder held in reset through the fetch
-                    cur_frame   <= vid_target;   // HLE-DRIVE: fetch the mapped mjpeg frame (1:1 placeholder)
-                    state <= S_IDX;
+                    // REDUNDANT-REDRAW-FIX-2026-07-15: only actually fetch/decode/write if the
+                    // mapped mjpeg frame has genuinely changed since the last one we drew. frame_
+                    // pending still clears every tick regardless (frame_start, below, doesn't
+                    // depend on this check) -- ticks where the content hasn't changed just do
+                    // nothing instead of redundantly redrawing identical pixels.
+                    if (vid_target != last_fetched_frame) begin
+                        // ---- start a video frame fetch (audio comfortable) ----
+                        frame_fetch        <= 1'b1;      // decoder held in reset through the fetch
+                        cur_frame          <= vid_target;   // HLE-DRIVE: fetch the mapped mjpeg frame
+                        last_fetched_frame <= vid_target;
+                        state <= S_IDX;
+                    end
                 end else if (aud_level < FILL_HIGH) begin
                     // ---- top up the audio ring: read one audio sector ----
                     cur_sec  <= aud_lba;

@@ -177,8 +177,40 @@ module jpeg_frame_decoder
     assign px_b         = out_b;
     assign frame_width  = out_w;
     assign frame_height = out_h;
-    assign frame_done   = px_we && (out_x == (out_w - 16'd1))
-                                && (out_y == (out_h - 16'd1));
+
+    // FRAME-DONE-PULSE-FIX-2026-07-15: was a pure combinational `assign frame_done = px_we &&
+    // (out_x==out_w-1) && (out_y==out_h-1)` -- a LEVEL condition, not a pulse. core_jpeg's output
+    // handshake holds outport_valid_o (hence px_we, once accepted) asserted at the final pixel
+    // across however many cycles fb_writer's px_ready backpressure takes to actually accept it,
+    // and/or a few pipeline-settling cycles at end-of-frame -- each one re-satisfies this
+    // condition, re-firing frame_done multiple times (confirmed on hardware: ~5-7x per real
+    // decode, diagnosed by an external review after this project's own pacing-timer investigation
+    // came up clean). fb_buf_sel (Arcade-DragonsLair.sv) toggles the DDR front/back buffer on
+    // every frame_done pulse, so this was flipping buffers several times per actual decoded frame
+    // instead of once -- root cause of the "moving content is a mess" bug chased through most of
+    // 2026-07-15 (arbitration reorder, double-buffering, fill-stall, resync, redundant-redraw --
+    // all real, all necessary, none of them were THIS bug).
+    // Fix: latch "already signalled done for this decode" (frame_done_seen_q), cleared only by
+    // rst (asserted once per real decode request, see dlv_streamer.v dec_reset). Guarantees
+    // frame_done pulses at most once between resets, however many times the underlying condition
+    // re-satisfies. (A plain one-cycle-delayed register of the same condition, without this latch,
+    // would NOT fix it -- it would still re-pulse once per re-satisfaction, just cleaner-edged.)
+    reg frame_done_r;
+    reg frame_done_seen_q;
+    always @(posedge clk) begin
+        if (rst) begin
+            frame_done_r      <= 1'b0;
+            frame_done_seen_q <= 1'b0;
+        end else begin
+            frame_done_r <= 1'b0;
+            if (px_we && (out_x == (out_w - 16'd1)) && (out_y == (out_h - 16'd1))
+                      && !frame_done_seen_q) begin
+                frame_done_r      <= 1'b1;
+                frame_done_seen_q <= 1'b1;
+            end
+        end
+    end
+    assign frame_done = frame_done_r;
 
     //------------------------------------------------------------------------
     // core_jpeg instance  (fixed standard Huffman tables)
