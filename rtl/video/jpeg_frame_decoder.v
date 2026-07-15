@@ -49,36 +49,112 @@ module jpeg_frame_decoder
     //------------------------------------------------------------------------
     // Feed: byte -> 32-bit word packer (little-endian byte lanes)
     //------------------------------------------------------------------------
-    reg  [1:0]  bcnt;     // which byte lane fills next (0..3)
-    reg  [31:0] wbuf;
-    reg  [3:0]  sbuf;
-    reg         wlast;
-    reg         wfull;    // a complete word is buffered, awaiting core accept
+    // FIX-2026-07-15: double-buffered (shadow-word) packer. jpeg_input.v's
+    // SOF0/DQT/DHT header-field captures are LEVEL-sensitive on state_q, not
+    // gated on inport_valid_i (e.g. `else if (state_q==STATE_SOF_LENH)
+    // length_q <= {data_r,8'b0};` — no valid check). That design implicitly
+    // assumes a GAPLESS producer (true for FPGAmp's AXI-DMA source). Our old
+    // single-buffer packer asserted in_ready=!wfull, so it stopped accepting
+    // new bytes the instant a word became full and only resumed once the
+    // core drained it — a real multi-cycle gap in inport_valid_i at EVERY
+    // 4-byte word boundary while the shadow word refills from the byte-
+    // serial source. Verilator co-sim (verilator/jpeg_decode/, 2026-07-15)
+    // proved this corrupts header parsing: SOF0's length_q sampled the
+    // marker's own stale 0xC0 byte instead of the length field, capturing
+    // 0xFFFE (a huge bogus length); STATE_SOF_DATA's idx_q then free-runs
+    // 0..63 forever, repeatedly re-latching img_width_q/img_height_q from
+    // whatever unrelated byte is passing by, and the decoder never reaches
+    // DHT/entropy data -> frame_done never fires, zero pixels ever written.
+    // This is not a Quartus-only artifact; the real dlv_streamer/SD path
+    // can't guarantee gapless supply either, so this likely explains the
+    // original HW hang too, not just the sim reproduction.
+    //
+    // Old single-buffer packer (kept for reference/diff, do not restore):
+    // reg  [1:0]  bcnt;
+    // reg  [31:0] wbuf;
+    // reg  [3:0]  sbuf;
+    // reg         wlast;
+    // reg         wfull;
+    // wire in_accept_o;
+    // wire take = in_valid && in_ready;
+    // assign in_ready = !wfull;
+    // always @(posedge clk) begin
+    //     if (rst) begin
+    //         bcnt <= 2'd0; wbuf <= 32'd0; sbuf <= 4'd0; wfull <= 1'b0; wlast <= 1'b0;
+    //     end else begin
+    //         if (wfull && in_accept_o) begin
+    //             wfull <= 1'b0; sbuf <= 4'd0; wlast <= 1'b0;
+    //         end
+    //         if (take) begin
+    //             case (bcnt)
+    //                 2'd0: begin wbuf[ 7:0 ] <= in_byte; sbuf[0] <= 1'b1; end
+    //                 2'd1: begin wbuf[15:8 ] <= in_byte; sbuf[1] <= 1'b1; end
+    //                 2'd2: begin wbuf[23:16] <= in_byte; sbuf[2] <= 1'b1; end
+    //                 2'd3: begin wbuf[31:24] <= in_byte; sbuf[3] <= 1'b1; end
+    //             endcase
+    //             if (bcnt == 2'd3 || in_last) begin
+    //                 bcnt  <= 2'd0; wfull <= 1'b1; wlast <= in_last;
+    //             end else begin
+    //                 bcnt <= bcnt + 2'd1;
+    //             end
+    //         end
+    //     end
+    // end
+    //
+    // New double-buffered packer: wbuf is the word PRESENTED to the core
+    // (inport_valid_i=wfull); wbuf_next is a SHADOW word accumulated from
+    // the byte stream while wbuf is still being drained. The instant the
+    // core accepts wbuf, wbuf_next (already full, since it had the same
+    // ~4 cycles to fill as the core took to drain wbuf) is promoted with
+    // ZERO gap cycles. in_ready now reflects the shadow slot, so bytes
+    // keep flowing continuously instead of stalling every 4th byte.
+    reg  [1:0]  bcnt;          // which lane of wbuf_next fills next (0..3)
+    reg  [31:0] wbuf,      wbuf_next;
+    reg  [3:0]  sbuf,      sbuf_next;
+    reg         wlast,     wlast_next;
+    reg         wfull;         // wbuf holds a complete word presented to the core
+    reg         wfull_next;    // wbuf_next holds a complete word awaiting promotion
 
     wire in_accept_o;     // core_jpeg inport_accept_o
     wire take = in_valid && in_ready;
 
-    assign in_ready = !wfull;   // take bytes until a full word is pending
+    assign in_ready = !wfull_next;   // shadow slot is the only backpressure point
 
     always @(posedge clk) begin
         if (rst) begin
-            bcnt <= 2'd0; wbuf <= 32'd0; sbuf <= 4'd0; wfull <= 1'b0; wlast <= 1'b0;
+            bcnt <= 2'd0;
+            wbuf <= 32'd0; wbuf_next <= 32'd0;
+            sbuf <= 4'd0;  sbuf_next <= 4'd0;
+            wfull <= 1'b0; wfull_next <= 1'b0;
+            wlast <= 1'b0; wlast_next <= 1'b0;
         end else begin
-            // release the buffered word once the core consumes it
-            if (wfull && in_accept_o) begin
+            // Promote the shadow word the instant the core accepts the
+            // presented one (or immediately fill an empty presented slot
+            // at startup) -- this is what removes the inport_valid_i gap.
+            if ((wfull && in_accept_o && wfull_next) ||
+                (!wfull && wfull_next)) begin
+                wbuf  <= wbuf_next;  sbuf  <= sbuf_next;  wlast  <= wlast_next;
+                wfull <= 1'b1;
+                wfull_next <= 1'b0; sbuf_next <= 4'd0; wlast_next <= 1'b0;
+            end else if (wfull && in_accept_o) begin
+                // shadow not ready yet (only possible right at start-of-stream) -> gap
                 wfull <= 1'b0; sbuf <= 4'd0; wlast <= 1'b0;
             end
+
+            // Accumulate the shadow word from the byte stream. Gated by
+            // in_ready(=!wfull_next), so this never overwrites a shadow
+            // word that's still waiting to be promoted.
             if (take) begin
                 case (bcnt)
-                    2'd0: begin wbuf[ 7:0 ] <= in_byte; sbuf[0] <= 1'b1; end
-                    2'd1: begin wbuf[15:8 ] <= in_byte; sbuf[1] <= 1'b1; end
-                    2'd2: begin wbuf[23:16] <= in_byte; sbuf[2] <= 1'b1; end
-                    2'd3: begin wbuf[31:24] <= in_byte; sbuf[3] <= 1'b1; end
+                    2'd0: begin wbuf_next[ 7:0 ] <= in_byte; sbuf_next[0] <= 1'b1; end
+                    2'd1: begin wbuf_next[15:8 ] <= in_byte; sbuf_next[1] <= 1'b1; end
+                    2'd2: begin wbuf_next[23:16] <= in_byte; sbuf_next[2] <= 1'b1; end
+                    2'd3: begin wbuf_next[31:24] <= in_byte; sbuf_next[3] <= 1'b1; end
                 endcase
                 if (bcnt == 2'd3 || in_last) begin
                     bcnt  <= 2'd0;
-                    wfull <= 1'b1;
-                    wlast <= in_last;
+                    wfull_next <= 1'b1;
+                    wlast_next <= in_last;
                 end else begin
                     bcnt <= bcnt + 2'd1;
                 end
@@ -114,8 +190,14 @@ module jpeg_frame_decoder
 
         .inport_valid_i  (wfull),
         .inport_data_i   (wbuf),
-        .inport_strb_i   (sbuf),
-        .inport_last_i   (wlast),
+        // DIAG-REVERT-2026-07-04: match FPGAmp's proven feed of jpeg_core — full strobe + NEVER assert
+        // inport_last_i. jpeg_input.v force-jumps to STATE_IDLE whenever inport_last_i is asserted
+        // ("End of data stream" override), which aborts decode -> zero pixels (solid-white FB on HW).
+        // The JPEG's own EOI marker (FF D9, present in every frame) terminates decode instead.
+        // .inport_strb_i   (sbuf),
+        // .inport_last_i   (wlast),
+        .inport_strb_i   (4'hF),
+        .inport_last_i   (1'b0),
         .inport_accept_o (in_accept_o),
 
         .outport_accept_i(px_ready),

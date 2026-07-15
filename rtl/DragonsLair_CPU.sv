@@ -4,10 +4,12 @@
 //  Based on MAME dlair.cpp (dlus_map / dlair_ldv1000) by Aaron Giles
 //
 //  Single Z80 @ (real 4 MHz) + AY-3-8910 (real 2 MHz) + Pioneer LD-V1000
-//  laserdisc.  The laserdisc is STUBBED here (see "LaserDisc stub" section):
-//  it reports the player as ready/parked/idle so the Z80 POST reaches its
-//  "2nd beep = disc player initialized" and the main game loop runs.  There
-//  is NO real LD video (deliberately — that is a separate later effort).
+//  laserdisc.  The LD is a real command/status HLE (DragonsLair_LDV1000.sv,
+//  see "LaserDisc" section below) — LDV1000-UPGRADE-2026-07-04 replaced the
+//  earlier constant-ready stub. This module has NO video output of its own;
+//  all game video is on the LaserDisc, decoded/composited in the top file
+//  (rtl/video/) — an earlier standalone LED-band raster that lived here was
+//  superseded by that pipeline and removed (DEAD-CODE-2026-07-05, see led_band.v).
 //
 //  Memory map (dlus_map), reads mirror 0x1FC7 / writes mirror 0x1FC7,
 //  device-select = A5:A3, bank-select = A15:A13:
@@ -28,9 +30,9 @@
 //  (M1 + IORQ).  AY needs a 1 T-state WAIT when addressed.
 //
 //  CLOCK (fixed 2026-07-03): the core runs in the 40 MHz domain (CLK_40M from
-//  the PLL).  Z80 = 40/10 = 4.00 MHz, AY = 40/20 = 2.00 MHz, pixel = 40/8 =
-//  5.00 MHz — all real-hardware-correct (previously ran on CLK_10M at 62.5%
-//  speed).  Real-time signals (IRQ ~30.5 Hz, LD strobes) are counted in absolute
+//  the PLL).  Z80 = 40/10 = 4.00 MHz, AY = 40/20 = 2.00 MHz — both
+//  real-hardware-correct (previously ran on CLK_10M at 62.5% speed).
+//  Real-time signals (IRQ ~30.5 Hz, LD strobes) are counted in absolute
 //  40 MHz cycles so they stay wall-clock accurate.
 //
 //============================================================================
@@ -49,14 +51,6 @@ module DragonsLair_CPU
     //   dsw[15:8] = DSW2 -> AY port B
     input  [15:0] dsw,
 
-    // Video (blank raster for now — the US board has NO character generator;
-    // all game video comes from the LaserDisc.  The LED score/status band is
-    // the only native video and is left as a TODO to render.)
-    output  [7:0] video_r, video_g, video_b,
-    output        video_hsync, video_vsync,
-    output        video_hblank, video_vblank,
-    output        ce_pix,
-
     // Audio (AY-3-8910)
     output signed [15:0] sound,
 
@@ -72,23 +66,23 @@ module DragonsLair_CPU
     output [63:0] led_digits_o,
 
     // Bring-up "core alive" heartbeat LED
-    output        dbg_led
+    output        dbg_led,
+
+    // HLE-DRIVE-2026-07-04: LDV1000 HLE current disc frame -> streamer video/audio position
+    output [16:0] ld_frame_o,
+
+    // AUDIO-GATE-2026-07-05: LDV1000 HLE playing flag -> streamer audio ring gate
+    output        ld_playing_o
 );
 
 //------------------------------------------------------- Clock Enables -------------------------------------------------------//
 
-// 40 MHz master -> cen_4m (Z80, /10 = 4 MHz), cen_2m (AY, /20 = 2 MHz), cen_5m (pixel, /8 = 5 MHz).
+// 40 MHz master -> cen_4m (Z80, /10 = 4 MHz), cen_2m (AY, /20 = 2 MHz).
 // One mod-20 counter yields both the Z80 tick (at 0 and 10) and the AY tick (at 0, coincident with a Z80 tick).
 reg [4:0] cdiv = 5'd0;
 always_ff @(posedge clk_sys) cdiv <= (cdiv == 5'd19) ? 5'd0 : cdiv + 5'd1;
 wire cen_4m = (cdiv == 5'd0) | (cdiv == 5'd10);   // 40/10 = 4.00 MHz  (Z80)
 wire cen_2m = (cdiv == 5'd0);                      // 40/20 = 2.00 MHz  (AY)
-
-reg [2:0] pdiv = 3'd0;
-always_ff @(posedge clk_sys) pdiv <= pdiv + 3'd1;
-wire cen_5m = (pdiv == 3'd0);                       // 40/8  = 5.00 MHz  (pixel)
-
-assign ce_pix = cen_5m;
 
 //------------------------------------------------------------ CPU -------------------------------------------------------------//
 
@@ -329,7 +323,8 @@ assign sound = ay_signed;
 // the disc frame, and reports real status + per-frame strobe (see DragonsLair_LDV1000.sv).
 wire  [7:0] ld_status;
 wire        ld_status_strobe, ld_command_strobe;
-wire [16:0] ld_curr_frame;   // TODO(dlair): route to the video path (disc->film map)
+wire [16:0] ld_curr_frame;   // routed to the video path via ld_frame_o below (disc->film map, dlv_streamer.v)
+wire        ld_playing_w;    // AUDIO-GATE-2026-07-05: mode==M_PLAY, for the streamer's audio ring gate
 
 DragonsLair_LDV1000 u_ldv1000 (
     .clk            (clk_sys),
@@ -339,8 +334,14 @@ DragonsLair_LDV1000 u_ldv1000 (
     .status         (ld_status),
     .status_strobe  (ld_status_strobe),
     .command_strobe (ld_command_strobe),
-    .curr_frame     (ld_curr_frame)
+    .curr_frame     (ld_curr_frame),
+    .pause          (pause),            // HLE-DRIVE-2026-07-04: freeze disc motion during pause
+    .playing        (ld_playing_w)      // AUDIO-GATE-2026-07-05
 );
+
+// HLE-DRIVE-2026-07-04: expose disc frame to the top (streamer maps -> mjpeg frame + audio sample)
+assign ld_frame_o    = ld_curr_frame;
+assign ld_playing_o  = ld_playing_w;   // AUDIO-GATE-2026-07-05
 
 //------------------------------------------------- misc_w / LD data latch -----------------------------------------------------//
 //
@@ -379,9 +380,8 @@ end
 // Two banks of 8 common-anode 7-seg digits.  Z80 writes a 4-bit digit code:
 //   0xE038-0xE03F (led_den1) -> digits[0..7]   (MAME led_den1_w: m_digits[0|off])
 //   0xE030-0xE037 (led_den2) -> digits[8..15]  (MAME led_den2_w: m_digits[8|off])
-// The 7-seg lookup (led_map in MAME) is applied at render time.
-// TODO(dlair): render these 16 digits as the on-screen score/status band —
-// with the LD stubbed this is the board's only native video output.
+// The 7-seg lookup (led_map in MAME) is applied at render time by led_band.v
+// (rtl/video/), fed via led_digits_o below — the top file's score/status band.
 reg [3:0] led_digits [0:15];
 integer li;
 initial for (li = 0; li < 16; li = li + 1) led_digits[li] = 4'd0;
@@ -426,116 +426,6 @@ always_ff @(posedge clk_sys) begin
         if (~n_m1 & ~n_iorq) n_irq <= 1'b1;  // INTA clears the hold
     end
 end
-
-//------------------------------------------------------ Video timing ----------------------------------------------------------//
-//
-// Blank raster with valid sync/blank for the MiSTer video pipeline.  The US
-// board has no character generator (all game video is on the LaserDisc), so
-// with the LD stubbed there is nothing to draw yet.  256x240 visible, ~59 Hz.
-// The 16 LED digits (led_digits) are rendered as the on-screen score/status band below.
-reg [8:0] hc = 9'd0;
-reg [8:0] vc = 9'd0;
-always_ff @(posedge clk_sys) if (cen_5m) begin
-    if (hc == 9'd319) begin
-        hc <= 9'd0;
-        if (vc == 9'd262) vc <= 9'd0;
-        else              vc <= vc + 9'd1;
-    end
-    else hc <= hc + 9'd1;
-end
-
-assign video_hblank = (hc >= 9'd256);
-assign video_vblank = (vc >= 9'd240);
-assign video_hsync  = (hc >= 9'd288) & (hc < 9'd312);
-assign video_vsync  = (vc >= 9'd250) & (vc < 9'd254);
-
-//---- LED score/status band: 5x7 bitmap font, thin single CENTRED abbreviated row ----
-// The board's only native video (all game imagery is on the LaserDisc).  One thin,
-// centred row: "P1 <score> L<lives>   P2 <score> L<lives>   CR <credits>".  Score /
-// lives / credit digits come from led_digits[] (dlair.lay map: 0-5 P1 score, 6 P1
-// lives, 7 P2 lives, 8-13 P2 score, 14-15 credits); the P/L/C/R labels and the 1/2 in
-// P1/P2 are static.  led_digits code -> font: 0-9 digits, 10-14 A-E (POST codes), 15
-// blank.  (Font is a plain placeholder glyph — slated for a nicer one later.)
-localparam        FW      = 5;        // glyph width
-localparam        FH      = 7;        // glyph height
-localparam        PITCH   = 6;        // slot pitch (5 glyph + 1px gap)
-localparam        N_SLOT  = 33;       // characters in the row
-localparam [8:0]  X_START = 9'd29;    // (256 - N_SLOT*PITCH)/2 = (256-198)/2, centred
-localparam [8:0]  BAND_Y0 = 9'd2;     // top margin (band = rows 2..8 -> ~9px thin)
-
-// 5x7 font, packed 35 bits/glyph: row0(top)=[34:30] .. row6=[4:0], bit4=leftmost pixel.
-function [34:0] glyph(input [4:0] ch);
-    case (ch)
-        5'd0:  glyph = 35'b01110_10001_10011_10101_11001_10001_01110; // 0
-        5'd1:  glyph = 35'b00100_01100_00100_00100_00100_00100_01110; // 1
-        5'd2:  glyph = 35'b01110_10001_00001_00010_00100_01000_11111; // 2
-        5'd3:  glyph = 35'b11111_00010_00100_00010_00001_10001_01110; // 3
-        5'd4:  glyph = 35'b00010_00110_01010_10010_11111_00010_00010; // 4
-        5'd5:  glyph = 35'b11111_10000_11110_00001_00001_10001_01110; // 5
-        5'd6:  glyph = 35'b00110_01000_10000_11110_10001_10001_01110; // 6
-        5'd7:  glyph = 35'b11111_00001_00010_00100_01000_01000_01000; // 7
-        5'd8:  glyph = 35'b01110_10001_10001_01110_10001_10001_01110; // 8
-        5'd9:  glyph = 35'b01110_10001_10001_01111_00001_00010_01100; // 9
-        5'd10: glyph = 35'b01110_10001_10001_11111_10001_10001_10001; // A
-        5'd11: glyph = 35'b11110_10001_10001_11110_10001_10001_11110; // B
-        5'd12: glyph = 35'b01110_10001_10000_10000_10000_10001_01110; // C
-        5'd13: glyph = 35'b11110_10001_10001_10001_10001_10001_11110; // D
-        5'd14: glyph = 35'b11111_10000_10000_11110_10000_10000_11111; // E
-        5'd16: glyph = 35'b11110_10001_10001_11110_10000_10000_10000; // P
-        5'd17: glyph = 35'b10000_10000_10000_10000_10000_10000_11111; // L
-        5'd18: glyph = 35'b11110_10001_10001_11110_10100_10010_10001; // R
-        default: glyph = 35'd0;                                       // 15 = blank / space
-    endcase
-endfunction
-
-wire [8:0] bx   = hc - X_START;
-wire [5:0] slot = bx / PITCH;                 // 0..32
-wire [2:0] fx   = bx - slot*PITCH;            // 0..5 (5 = inter-char gap)
-wire [2:0] fy   = vc - BAND_Y0;               // 0..6 within the glyph
-wire in_band = (hc >= X_START) & (hc < X_START + N_SLOT*PITCH) &
-               (vc >= BAND_Y0) & (vc < BAND_Y0 + FH);
-
-// Slot -> character (font code).  Dynamic slots pull led_digits[]; the rest are labels.
-reg [4:0] ch;
-always_comb case (slot)
-    6'd0:  ch = 5'd16;                  6'd1:  ch = 5'd1;                   // "P1"
-    6'd3:  ch = {1'b0, led_digits[0]};  6'd4:  ch = {1'b0, led_digits[1]};
-    6'd5:  ch = {1'b0, led_digits[2]};  6'd6:  ch = {1'b0, led_digits[3]};
-    6'd7:  ch = {1'b0, led_digits[4]};  6'd8:  ch = {1'b0, led_digits[5]}; // P1 score 0-5
-    6'd10: ch = 5'd17;                                                     // "L"
-    6'd11: ch = {1'b0, led_digits[6]};                                     // P1 lives
-    6'd14: ch = 5'd16;                  6'd15: ch = 5'd2;                   // "P2"
-    6'd17: ch = {1'b0, led_digits[8]};  6'd18: ch = {1'b0, led_digits[9]};
-    6'd19: ch = {1'b0, led_digits[10]}; 6'd20: ch = {1'b0, led_digits[11]};
-    6'd21: ch = {1'b0, led_digits[12]}; 6'd22: ch = {1'b0, led_digits[13]};// P2 score 8-13
-    6'd24: ch = 5'd17;                                                     // "L"
-    6'd25: ch = {1'b0, led_digits[7]};                                     // P2 lives
-    6'd28: ch = 5'd12;                  6'd29: ch = 5'd18;                  // "CR"
-    6'd31: ch = {1'b0, led_digits[14]}; 6'd32: ch = {1'b0, led_digits[15]};// credits 14,15
-    default: ch = 5'd15;               // spaces / group gaps -> blank
-endcase
-
-// Select the glyph row for this scanline, then the pixel column (bit4=left).
-wire [34:0] gbits = glyph(ch);
-reg  [4:0]  rowbits;
-always_comb case (fy)
-    3'd0: rowbits = gbits[34:30];  3'd1: rowbits = gbits[29:25];
-    3'd2: rowbits = gbits[24:20];  3'd3: rowbits = gbits[19:15];
-    3'd4: rowbits = gbits[14:10];  3'd5: rowbits = gbits[9:5];
-    3'd6: rowbits = gbits[4:0];    default: rowbits = 5'd0;
-endcase
-
-wire pix     = (fx < 3'd5) & rowbits[4 - fx];   // fx 5 = inter-char gap
-wire seg_lit = in_band & pix;
-
-// DIAG note: NOT a diagnostic — permanent LED-band feature.  Old all-black raster
-// kept commented below for a trivial revert if ever needed.
-// assign video_r = 8'd0;
-// assign video_g = 8'd0;
-// assign video_b = 8'd0;
-assign video_r = seg_lit ? 8'hFF : 8'h00;   // red LED text
-assign video_g = 8'h00;
-assign video_b = 8'h00;
 
 //---------------------------------------------------- Heartbeat LED -----------------------------------------------------------//
 

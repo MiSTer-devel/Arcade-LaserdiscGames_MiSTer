@@ -21,7 +21,14 @@
 //============================================================================
 module fb_writer #(
     parameter [26:0] FB_BASE_HW = 27'd0,     // halfword offset of FB within the 0x30000000 region
-    parameter [15:0] STRIDE_HW  = 16'd320    // halfwords per row (= width for tight 16bpp)
+    parameter [15:0] STRIDE_HW  = 16'd320,   // halfwords per row (= width for tight 16bpp)
+    // DIAG-REVERT-2026-07-04: clear-FB-on-reset. Disambiguates "decoder wrote garbage" vs "decoder wrote
+    // NOTHING and we're staring at uninitialised DDR" (DDR3 is NOT zeroed on power-up; banding is its natural
+    // uninitialised signature). After this: solid CLEAR_COLOR = zero writes; any other pixels = it wrote them.
+    // Set CLEAR_ON_RESET=0 to disable (exact prior behaviour). CLEAR_COLOR: white=FFFF, black=0000, magenta=F81F.
+    parameter        CLEAR_ON_RESET = 1'b1,
+    parameter [15:0] CLEAR_ROWS     = 16'd240,   // rows to pre-clear (= FB read region height)
+    parameter [15:0] CLEAR_COLOR    = 16'hFFFF   // solid fill so any decoder write is unmistakable
 )(
     input             clk,          // DDRAM_CLK domain
     input             reset,        // active-high
@@ -42,17 +49,44 @@ module fb_writer #(
     input             we_ack        // ddram raises to == we_req when done
 );
     reg busy;
-    assign px_ready = ~busy;
+
+    // DIAG-REVERT-2026-07-04: clear-FB-on-reset sweep state (write-vs-no-write disambiguation)
+    localparam [26:0] CLEAR_WORDS = STRIDE_HW * CLEAR_ROWS;   // 320*240 = 76800 halfwords
+    reg         clearing;
+    reg  [26:0] clear_idx;
+
+    // DIAG-REVERT-2026-07-04: original 'assign px_ready = ~busy;' below; new line also stalls the
+    // decoder drain (px_ready low) for the whole clear sweep so no pixel write can race the fill.
+    // assign px_ready = ~busy;
+    assign px_ready = ~busy & ~clearing;
 
     // halfword index = FB_BASE_HW + y*STRIDE_HW + x
     wire [26:0] hw_index = FB_BASE_HW + (px_y * STRIDE_HW) + {11'd0, px_x};
 
     always @(posedge clk) begin
         if (reset) begin
-            busy   <= 1'b0;
-            we_req <= 1'b0;
-            wraddr <= 27'd0;
-            din    <= 16'd0;
+            busy      <= 1'b0;
+            we_req    <= 1'b0;
+            wraddr    <= 27'd0;
+            din       <= 16'd0;
+            // DIAG-REVERT-2026-07-04: arm the clear sweep on every reset
+            clearing  <= CLEAR_ON_RESET;
+            clear_idx <= 27'd0;
+        end else if (clearing) begin
+            // DIAG-REVERT-2026-07-04: fill FB_BASE_HW .. +CLEAR_WORDS-1 with CLEAR_COLOR, one halfword per
+            // DDR write, reusing the exact we_req/we_ack handshake. Then drop 'clearing' and hand off below.
+            if (!busy) begin
+                wraddr <= FB_BASE_HW + clear_idx;
+                din    <= CLEAR_COLOR;
+                we_req <= ~we_req;
+                busy   <= 1'b1;
+            end else if (we_ack == we_req) begin
+                busy <= 1'b0;
+                if (clear_idx == CLEAR_WORDS - 27'd1)
+                    clearing <= 1'b0;
+                else
+                    clear_idx <= clear_idx + 27'd1;
+            end
         end else if (!busy) begin
             if (px_we) begin
                 wraddr <= hw_index;

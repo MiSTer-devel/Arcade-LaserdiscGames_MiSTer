@@ -5,9 +5,10 @@
 //  Based on MAME dlair.cpp
 //
 //  Thin wrapper around DragonsLair_CPU (which now contains the Z80, AY-3-8910,
-//  work RAM, program ROM, the LaserDisc stub, the LED latches and the periodic
+//  work RAM, program ROM, the LaserDisc HLE, the LED latches and the periodic
 //  IRQ0).  There is no separate sound board — the AY is driven directly from
-//  the main Z80 inside DragonsLair_CPU.
+//  the main Z80 inside DragonsLair_CPU. No video output of its own — all game
+//  video is on the LaserDisc, decoded/composited in the top file (rtl/video/).
 //
 //============================================================================
 
@@ -23,12 +24,6 @@ module DragonsLair
     // Option switches: dsw[7:0]=DSW1 (AY port A), dsw[15:8]=DSW2 (AY port B)
     input         [15:0] dsw,
 
-    // Video outputs
-    output               video_hsync, video_vsync,
-    output               video_hblank, video_vblank,
-    output               ce_pix,
-    output         [7:0] video_r, video_g, video_b,
-
     // Audio
     output signed [15:0] sound_l,
     output signed [15:0] sound_r,
@@ -42,7 +37,9 @@ module DragonsLair
     input                pause,
 
     output        [63:0] led_digits_o,
-    output               dbg_led
+    output               dbg_led,
+    output        [16:0] ld_frame_o,   // HLE-DRIVE-2026-07-04: LD disc frame -> streamer
+    output               ld_playing_o  // AUDIO-GATE-2026-07-05: LD playing flag -> streamer audio gate
 );
 
 //------------------------------------------------------- ROM Selector --------------------------------------------------------//
@@ -63,15 +60,6 @@ DragonsLair_CPU cpu_board
     .cab(cab),
     .dsw(dsw),
 
-    .video_r(video_r),
-    .video_g(video_g),
-    .video_b(video_b),
-    .video_hsync(video_hsync),
-    .video_vsync(video_vsync),
-    .video_hblank(video_hblank),
-    .video_vblank(video_vblank),
-    .ce_pix(ce_pix),
-
     .sound(snd),
 
     .rom_cs_i(rom_cs),
@@ -82,7 +70,9 @@ DragonsLair_CPU cpu_board
     .pause(pause),
 
     .led_digits_o(led_digits_o),
-    .dbg_led(dbg_led)
+    .dbg_led(dbg_led),
+    .ld_frame_o(ld_frame_o),
+    .ld_playing_o(ld_playing_o)
 );
 
 // Mono -> stereo

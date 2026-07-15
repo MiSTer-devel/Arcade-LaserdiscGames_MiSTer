@@ -196,8 +196,16 @@ assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
 wire signed [15:0] audio_l, audio_r;
-assign AUDIO_L = pause_cpu ? 16'd0 : audio_l;
-assign AUDIO_R = pause_cpu ? 16'd0 : audio_r;
+// STREAMING-2026-07-04: mux .dlv PCM (pcm_l/pcm_r from dlv_streamer, declared near the streamer) with
+// the AY, saturating.  pcm_* forward-referenced (same as pause_cpu below); driven by dlv_strm.
+wire signed [16:0] mix_l = audio_l + pcm_l;
+wire signed [16:0] mix_r = audio_r + pcm_r;
+wire signed [15:0] sat_l = (mix_l >  17'sd32767) ?  16'sd32767 :
+                           (mix_l < -17'sd32768) ? -16'sd32768 : mix_l[15:0];
+wire signed [15:0] sat_r = (mix_r >  17'sd32767) ?  16'sd32767 :
+                           (mix_r < -17'sd32768) ? -16'sd32768 : mix_r[15:0];
+assign AUDIO_L = pause_cpu ? 16'd0 : sat_l;
+assign AUDIO_R = pause_cpu ? 16'd0 : sat_r;
 assign AUDIO_S = 1;   // signed
 assign AUDIO_MIX = 0; // no mix, true stereo
 
@@ -228,6 +236,7 @@ assign VIDEO_ARY = horz ? ((!ar) ? 12'd252 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
 `include "build_id.v"
 localparam CONF_STR = {
 	"DRAGONSLAIR;;",
+	"S0,DLV,Load Disc;",   // LD-VIDEO-2026-07-04: mount slot 0 for the .dlv (name-match auto-mount: dlair.dlv/spaceace.dlv)
 	"ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	// "OC,Orientation,Vert,Horz;",  // ROT0-FIX-2026-07-03: removed — DL/SA horizontal-only, orientation hardcoded (see horz)
 	"OB,Flip Vertical,Off,On;",
@@ -266,9 +275,25 @@ wire [21:0] gamma_bus;
 wire        direct_video;
 wire        video_rotated = 1'b0;   // screen_rotate removed (ROT0) — video is never rotated
 
+// LD-VIDEO-2026-07-04: .dlv block-mount interface (hps_io SD slot 0, VDNUM=1) -> dlv_streamer.
+// The .dlv is a mounted block device (CHD-style, read on demand), NOT an ioctl_download blob.
+wire        dlv_img_mounted;        // [VD:0]=1 bit, pulses on a new mount
+wire [63:0] dlv_img_size;
+wire [31:0] dlv_sd_lba[1];          // unpacked array (VDNUM=1)
+wire  [5:0] dlv_sd_blk_cnt[1];
+wire        dlv_sd_rd;
+wire        dlv_sd_wr;
+wire        dlv_sd_ack;
+wire  [8:0] dlv_sd_buff_addr;
+wire  [7:0] dlv_sd_buff_dout;
+wire  [7:0] dlv_sd_buff_din[1];
+wire        dlv_sd_buff_wr;
+assign dlv_sd_wr          = 1'b0;   // read-only image
+assign dlv_sd_buff_din[0] = 8'd0;   // never write back
+
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
-	.clk_sys(CLK_10M),
+	.clk_sys(CLK_40M),   // CLOCK-UNIFY-2026-07-04: was CLK_10M (Kangaroo leftover); core is single-clock 40M now
 	.HPS_BUS(HPS_BUS),
 	.EXT_BUS(),
 	.gamma_bus(gamma_bus),
@@ -292,7 +317,21 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
-	.ps2_key(ps2_key)
+	.ps2_key(ps2_key),
+
+	// LD-VIDEO-2026-07-04: .dlv block-mount (slot 0) -> dlv_streamer (all CLK_40M, no CDC)
+	.img_mounted(dlv_img_mounted),
+	.img_readonly(),
+	.img_size(dlv_img_size),
+	.sd_lba(dlv_sd_lba),
+	.sd_blk_cnt(dlv_sd_blk_cnt),
+	.sd_rd(dlv_sd_rd),
+	.sd_wr(dlv_sd_wr),
+	.sd_ack(dlv_sd_ack),
+	.sd_buff_addr(dlv_sd_buff_addr),
+	.sd_buff_dout(dlv_sd_buff_dout),
+	.sd_buff_din(dlv_sd_buff_din),
+	.sd_buff_wr(dlv_sd_buff_wr)
 );
 
 ////////////////////   CLOCKS   ///////////////////
@@ -330,7 +369,7 @@ reg btn_service  = 0;
 
 wire pressed = ~ps2_key[9];
 wire [7:0] code = ps2_key[7:0];
-always @(posedge CLK_10M) begin
+always @(posedge CLK_40M) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M
 	reg old_state;
 	old_state <= ps2_key[10];
 	if(old_state != ps2_key[10]) begin
@@ -373,21 +412,23 @@ wire m_pause    = btn_pause     | joystick_0[11];
 // PAUSE SYSTEM
 wire pause_cpu;
 wire [23:0] rgb_out;
+// DEAD-CODE-2026-07-05 FOLLOWUP: r/g/b used to be implicitly connected via .* to the
+// (since-removed) dead CPU-video wires -- explicit now so this can't silently break again.
+// rgb_out is still NOT consumed by arcade_video (RGB_in is fed by comp_r/g/b directly, see
+// below) -- the dim-after-10s-paused feature has been non-functional since the FB-PIVOT-
+// 2026-07-04 rewiring, predating this session. Left as-is (pre-existing, separate gap) rather
+// than silently also wiring it in -- that's a real display-behavior change, not a compile fix.
 pause #(8,8,8,10) pause
 (
 	.*,
-	.clk_sys(CLK_10M),
+	.clk_sys(CLK_40M),   // CLOCK-UNIFY-2026-07-04: was CLK_10M
 	.user_button(m_pause),
 	.pause_request(1'b0),   // hiscore removed 2026-07-04
-	.options(~status[26:25])
+	.options(~status[26:25]),
+	.r(comp_r), .g(comp_g), .b(comp_b)
 );
 
 ///////////////                 Video                  ////////////////
-
-wire hblank, vblank;
-wire hs, vs;
-wire [7:0] r, g, b;
-wire ce_pix;
 
 // ---- Raster video path (DDR framebuffer -> arcade_video) : FB-PIVOT-2026-07-04 ----
 wire [63:0] led_digits_flat;
@@ -410,31 +451,18 @@ wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
 wire        rr_rd_req2, rr_rd_ack2;
 
-// DIAG-2026-06-18: 2x pixel clock for "double the size then reduce". arcade_video now renders 512 px/line
-// (each of the 256 source columns doubled -> MAME-style dimmed-copy interleave); screen_rotate + the
-// scaler then shrink the 512-wide framebuffer back to the display ("reduce the resolution/size").
-// ce_pix MUST be a CLK_40M-domain pulse: the core's 5 MHz ce_pix lives in the 10 MHz domain and can't be
-// cleanly doubled there. Phase (==2) samples mid-period after the core's RGB settles; if pixels shimmer
-// or smear horizontally, try ==1 or ==3. To revert: arcade_video back to #(256,24) and drop .ce_pix below.
-reg [1:0] ce_pix_div = 2'd0;
-always @(posedge CLK_40M) ce_pix_div <= ce_pix_div + 1'd1;
-wire ce_pix_2x = (ce_pix_div == 2'd2);   // 10 MHz, 1-in-4 of CLK_40M
-
-// TODO(dlair): Dragon's Lair / Space Ace are ROT0 (horizontal). The video path
-// below is inherited from the Kangaroo (ROT90) copy and still rotates. It only
-// rotates a BLANK bring-up raster for now, so it is cosmetically irrelevant
-// until real LD video is added — revisit orientation (and drop the 512-wide
-// doubling / screen_rotate) when that lands.
-wire rotate_ccw = 0;
-// ROT0-FIX-2026-07-03: was `status[12] | direct_video` (rotated when Vert). DL/SA horizontal-only → never rotate.
-wire no_rotate = horz | direct_video;   // = 1
-wire flip = status[11] | ~no_rotate;
-// SCREEN_ROTATE-REMOVED-2026-07-04: DL/SA are ROT0 (no_rotate=1), so screen_rotate only
-// rotated a BLANK raster — and it drives FB_*/DDRAM_*, which our LD-video framebuffer now
-// owns (see the STAGE-2 VIDEO block near endmodule).  Removed to resolve the multiple-driver
-// conflict on FB_*/DDRAM_*.  video_rotated (its only other output) is tied off at its decl.
-// To restore rotation: uncomment this and delete the FB_* assigns + STAGE-2 VIDEO block.
-// screen_rotate screen_rotate(.*);
+// DEAD-CODE-2026-07-05: the Kangaroo-derived rotation/2x-doubling scheme (ce_pix_2x,
+// rotate_ccw, no_rotate, flip) was removed here — its only consumer, screen_rotate, was
+// already commented out 2026-07-04 (SCREEN_ROTATE-REMOVED, see below), leaving those wires
+// unread by anything (confirmed by grep + arcade_video's real port list has no such ports).
+// DL/SA are ROT0 (horizontal) and always were; the video path never actually rotated.
+//
+// SCREEN_ROTATE-REMOVED-2026-07-04: DL/SA are ROT0, so screen_rotate only ever rotated a
+// BLANK raster — and it drives FB_*/DDRAM_*, which our LD-video framebuffer now owns (see
+// the STAGE-2 VIDEO block near endmodule).  Removed to resolve the multiple-driver conflict
+// on FB_*/DDRAM_*.  video_rotated (its only other output) is tied off at its decl.
+// To restore rotation: reinstate rotate_ccw/no_rotate/flip above, re-add
+// `screen_rotate screen_rotate(.*);`, and delete the FB_* assigns + STAGE-2 VIDEO block.
 
 // RASTER PATH (FB-PIVOT-2026-07-04): arcade_video is now driven by fb_raster_reader
 // (DDR framebuffer) with the LED band composited over it — replaces the old core LED
@@ -460,11 +488,13 @@ arcade_video #(320,24) arcade_video
 // download). The MRA <switches> writes DSW1 -> byte 0, DSW2 -> byte 1.
 // dsw[7:0] = DSW1 (AY port A), dsw[15:8] = DSW2 (AY port B).
 reg [7:0] dip_sw[8] = '{8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00};
-always @(posedge CLK_10M) begin
+always @(posedge CLK_40M) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M (ioctl now same-domain 40M)
 	if (ioctl_wr && (ioctl_index == 8'd254) && !ioctl_addr[24:3])
 		dip_sw[ioctl_addr[2:0]] <= ioctl_dout;
 end
 wire [15:0] dsw = {dip_sw[1], dip_sw[0]};
+wire [16:0] ld_curr_frame_top;   // HLE-DRIVE-2026-07-04: LD disc frame from DragonsLair -> dlv_streamer
+wire        ld_playing_top;      // AUDIO-GATE-2026-07-05: LD mode==PLAY from DragonsLair -> dlv_streamer
 
 //Instantiate Dragon's Lair top-level game module
 DragonsLair dl_inst
@@ -480,16 +510,6 @@ DragonsLair dl_inst
 	// dsw[7:0] = DSW1 (AY port A), dsw[15:8] = DSW2 (AY port B)
 	.dsw(dsw),
 
-	.video_hsync(hs),
-	.video_vsync(vs),
-	.video_vblank(vblank),
-	.video_hblank(hblank),
-	.ce_pix(ce_pix),
-
-	.video_r(r),
-	.video_g(g),
-	.video_b(b),
-
 	.sound_l(audio_l),
 	.sound_r(audio_r),
 
@@ -501,7 +521,9 @@ DragonsLair dl_inst
 	.pause(pause_cpu),
 
 	.led_digits_o(led_digits_flat),
-	.dbg_led(dbg_led)
+	.dbg_led(dbg_led),
+	.ld_frame_o(ld_curr_frame_top),   // HLE-DRIVE-2026-07-04
+	.ld_playing_o(ld_playing_top)     // AUDIO-GATE-2026-07-05
 );
 
 // HISCORE REMOVED 2026-07-04 — Dragon's Lair / Space Ace / Thayer's Quest do not
@@ -543,17 +565,56 @@ wire        tp_we, tp_ready;
 wire [15:0] tp_x, tp_y;
 wire  [7:0] tp_r, tp_g, tp_b;
 
-fb_testpattern tp_gen (
+// LD-VIDEO-STAGE1-2026-07-04: real .dlv -> block streamer -> JPEG decoder -> fb_writer.
+// DIAG-REVERT-2026-07-04: the proven test-pattern source is kept commented for a 1-uncomment
+// fallback (also restore fb_writer's px_* to tp_* below if you re-enable it).
+// fb_testpattern tp_gen (
+//     .clk(CLK_40M), .reset(reset),
+//     .ready(tp_ready), .we(tp_we),
+//     .x(tp_x), .y(tp_y), .r(tp_r), .g(tp_g), .b(tp_b)
+// );
+
+// ---- .dlv block streamer (hps_io slot 0) — all CLK_40M, single-clock, no CDC ----
+wire  [7:0] strm_byte;
+wire        strm_valid, strm_ready, strm_last;
+wire        dec_reset_w;                // STREAMING-2026-07-04: per-frame decoder reset (decoder only)
+wire signed [15:0] pcm_l, pcm_r;        // STREAMING-2026-07-04: .dlv PCM -> audio mux (see AUDIO_L/R above)
+
+// STREAMING-2026-07-04: continuous video+audio streamer.  Free-runs film frames from START_FRAME
+// (paced ~30 fps), and keeps a 44.1 kHz PCM ring topped up (audio has SD priority).  The one-shot
+// frame fetch (ld_req_*/STAGE1_FRAME) is removed — this is the real streaming path.
+dlv_streamer #(.START_FRAME(17'd1000)) dlv_strm (
     .clk(CLK_40M), .reset(reset),
-    .ready(tp_ready), .we(tp_we),
-    .x(tp_x), .y(tp_y), .r(tp_r), .g(tp_g), .b(tp_b)
+    .img_mounted(dlv_img_mounted), .img_size(dlv_img_size),
+    .sd_lba(dlv_sd_lba[0]), .sd_blk_cnt(dlv_sd_blk_cnt[0]),
+    .sd_rd(dlv_sd_rd), .sd_ack(dlv_sd_ack),
+    .sd_buff_addr(dlv_sd_buff_addr), .sd_buff_dout(dlv_sd_buff_dout), .sd_buff_wr(dlv_sd_buff_wr),
+    .out_byte(strm_byte), .out_valid(strm_valid), .out_ready(strm_ready), .out_last(strm_last),
+    .dec_reset(dec_reset_w),
+    .pcm_l(pcm_l), .pcm_r(pcm_r),
+    .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),   // HLE-DRIVE-2026-07-04
+    .ld_playing(ld_playing_top)                             // AUDIO-GATE-2026-07-05
+);
+
+// ---- JPEG frame decoder: byte stream -> px writes (block-order, addressed by x,y) ----
+wire        dec_px_we, dec_px_ready;
+wire [15:0] dec_px_x, dec_px_y, dec_w, dec_h;
+wire  [7:0] dec_px_r, dec_px_g, dec_px_b;
+wire        dec_frame_done, dec_idle;
+
+jpeg_frame_decoder dec (
+    .clk(CLK_40M), .rst(dec_reset_w),   // STREAMING-2026-07-04: per-frame reset (NOT global); fb_writer stays on global reset
+    .in_byte(strm_byte), .in_valid(strm_valid), .in_ready(strm_ready), .in_last(strm_last),
+    .px_ready(dec_px_ready), .px_we(dec_px_we),
+    .px_x(dec_px_x), .px_y(dec_px_y), .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
+    .frame_width(dec_w), .frame_height(dec_h), .frame_done(dec_frame_done), .idle(dec_idle)
 );
 
 fb_writer #(.FB_BASE_HW(27'd0), .STRIDE_HW(16'd320)) fb_wr (
     .clk(CLK_40M), .reset(reset),
-    .px_we(tp_we), .px_x(tp_x), .px_y(tp_y),
-    .px_r(tp_r), .px_g(tp_g), .px_b(tp_b),
-    .px_ready(tp_ready),
+    .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
+    .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
+    .px_ready(dec_px_ready),
     .wraddr(fb_wraddr), .din(fb_din),
     .we_req(fb_we_req), .we_ack(fb_we_ack)
 );
@@ -592,7 +653,7 @@ fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAN
 
 led_band led_band_i (
     .hc(rr_hpos), .vc(rr_vpos),
-    .led_digits(led_digits_flat),
+    .led_digits(led_digits_flat),   // real score/lives, restored 2026-07-15 (Verilator now covers decoder debug)
     .seg_lit(led_lit)
 );
 
