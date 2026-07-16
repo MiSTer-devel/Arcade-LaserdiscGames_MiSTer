@@ -51,6 +51,12 @@ module fb_raster_reader #(
     output reg        rd_req2,
     input             rd_ack2,
 
+    // WRITE-GATE-2026-07-16 (new port, no original to restore -- delete on revert): high while the
+    // fill FSM is PARKED, i.e. this line's fetch already landed and is just waiting for the
+    // end-of-line swap, so there is no read2 traffic in flight and fb_writer may use the DDR bus.
+    // Low while a fetch is running => fb_writer must yield.  See fb_writer.v's matching tag.
+    output            fill_idle,
+
     // video raster out (-> arcade_video)
     output            ce_pix,
     output reg        hsync,
@@ -208,6 +214,11 @@ module fb_raster_reader #(
             endcase
         end
     end
+
+    // WRITE-GATE-2026-07-16: fill_done_q is set only when a line's fetch has fully landed, and the
+    // F_IDLE state does nothing while it's high -- so it is exactly "the fill FSM is not touching
+    // read2 right now".  (Delete this assign + the port on revert.)
+    assign fill_idle = fill_done_q;
 
     assign vid_r = active_q ? {pix_q[15:11], pix_q[15:13]} : 8'd0;  // 5->8
     assign vid_g = active_q ? {pix_q[10:5],  pix_q[10:9]}  : 8'd0;  // 6->8

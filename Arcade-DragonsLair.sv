@@ -450,6 +450,10 @@ wire  [7:0] comp_b = led_lit ? 8'h00 : rr_b;
 wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
 wire        rr_rd_req2, rr_rd_ack2;
+// WRITE-GATE-2026-07-16 (new wire, delete on revert): fb_raster_reader tells fb_writer when its
+// line fetch has landed, so the writer never contends with an in-flight read2.  Declared here
+// because fb_writer is instantiated ABOVE fb_raster_reader.
+wire        rr_fill_idle;
 
 // DEAD-CODE-2026-07-05: the Kangaroo-derived rotation/2x-doubling scheme (ce_pix_2x,
 // rotate_ccw, no_rotate, flip) was removed here — its only consumer, screen_rotate, was
@@ -631,6 +635,7 @@ fb_writer #(.STRIDE_HW(16'd320)) fb_wr (
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
     .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
     .px_ready(dec_px_ready),
+    .fill_idle(rr_fill_idle),       // WRITE-GATE-2026-07-16: yield DDR while the raster reader fetches (delete on revert)
     .base_hw(fb_wr_base),
     .wraddr(fb_wraddr), .din(fb_din),
     .we_req(fb_we_req), .we_ack(fb_we_ack)
@@ -662,6 +667,7 @@ fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAN
     .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
+    .fill_idle(rr_fill_idle),               // WRITE-GATE-2026-07-16 (delete on revert)
     .ce_pix(rr_ce_pix),
     .hsync(rr_hs), .vsync(rr_vs), .hblank(rr_hblank), .vblank(rr_vblank),
     .hpos(rr_hpos), .vpos(rr_vpos),
