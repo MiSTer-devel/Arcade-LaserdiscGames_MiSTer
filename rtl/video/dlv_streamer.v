@@ -250,7 +250,36 @@ module dlv_streamer #(
     // HEADER-FIELDS-2026-07-05: LD_LEADER used to be a hardcoded 17'd151 constant (right for DL by
     // luck); now reads header@28 (ld_leader_off), which pack_dlv.py computes per-game from that
     // game's own Daphne framefile -- Space Ace / Thayer's Quest will have their own real values.
-    localparam [11:0] SAMP_PER_FRAME = 12'd1471;    // 44100 / 29.97 samples per disc frame
+    // AUDIO-TIMEBASE-FIX-2026-07-16: was 12'd1471 (= 44100/29.97). Uncomment to revert.
+    // localparam [11:0] SAMP_PER_FRAME = 12'd1471;    // 44100 / 29.97 samples per disc frame
+    //
+    // The audio map MUST share a timebase with the video map, and ONE-TO-ONE-FIX-2026-07-16
+    // changed the video's. They used to agree BY ACCIDENT -- both were wrong in the same way:
+    //     old video: vid = disc_rel*mpeg/disc  -> position in the m2v = disc_rel/29.97 s
+    //     audio:     disc_rel*1471 samples     -> position           = disc_rel/29.97 s   (agreed)
+    // Now video is 1:1 (vid = disc_rel), so the video sits at disc_rel/23.938 s while 1471 still
+    // points the audio at disc_rel/29.97 s => they diverge ~25% and every seek re-lands them apart
+    // (HW-observed 2026-07-16: "audio is getting out of sync again on seeks").
+    //
+    // One video frame is now one DISC frame, and the m2v runs at 23.938fps, so a disc frame is
+    // worth 44100/23.938 = 1842.26 samples. The header agrees independently -- this is NOT a
+    // fudge factor: total_samples/frame_count = 81343495/44154 = 1842.28 for DL.
+    //
+    // Corroboration: at 1471, disc_rel*1471 over all 44154 frames reaches only ~79% of the audio
+    // blob -- 21% of the track was UNREACHABLE. At 1842 it spans it almost exactly. The blob was
+    // packed for 1842.
+    //
+    // ⚠️ NOT PER-GAME YET -- 1842 is DL's value. The correct general form is
+    // round(total_samples/frame_count), both of which are already in the header (@40 and @16), so
+    // this should become header-derived before Space Ace / Thayer's Quest (whose ratios differ, and
+    // whose containers are separately known-bad -- see the pack_dlv.py mpeg_fpks note in the vault).
+    // Hardcoded for now to keep this a one-variable change against the 1:1 fix.
+    //
+    // Precision: 1842 vs 1842.28 drifts 0.28 samples/frame, but every SEARCH re-points aud_lba
+    // (seek_req -> aud_target_lba), so drift only accumulates within one scene: ~11 ms over a 60 s
+    // continuous play. Inaudible. Widths unchanged: SAMP_PER_FRAME still fits 12 bits (1842<4095),
+    // and disc_rel*1842 max 241M still fits aud_prod's 32 bits.
+    localparam [11:0] SAMP_PER_FRAME = 12'd1842;    // 44100 / 23.938 = total_samples/frame_count
 
     wire [16:0] ld_leader = ld_leader_off[16:0];
     wire [16:0] disc_rel = (ld_curr_frame > ld_leader) ? (ld_curr_frame - ld_leader) : 17'd0;
@@ -271,10 +300,58 @@ module dlv_streamer #(
     // path, it's the first place to look; NOT a cosmetic CE-gated warning (see
     // feedback_dont_rathole_timing) since there's no clock-enable gating this combinational logic.
     localparam [31:0] DISC_FPKS = 32'd29970;
-    wire [16:0] mpeg_fpks_17 = mpeg_fpks[16:0];
-    wire [33:0] vid_prod   = (disc_rel * mpeg_fpks_17) + (DISC_FPKS >> 1);
-    wire [33:0] vid_scaled = vid_prod / DISC_FPKS;
-    wire [16:0] vid_ratio  = vid_scaled[16:0];
+
+    //------------------------------------------------------------------------
+    // ONE-TO-ONE-FIX-2026-07-16 -- HW-EVIDENCED (two exact, independent predictions).
+    //
+    // disc -> video is **1:1**:   video_frame = disc_frame - ld_leader = disc_rel
+    //
+    // The fps-RATIO map below (VIDEO-RATIO-2026-07-05) is a FABRICATION and was the
+    // "seeks to entirely the wrong frame" bug.  Its own comment called the 1:1 code it
+    // replaced "a 1:1 placeholder" -- it was not a placeholder, it was CORRECT.
+    //
+    // AUTHORITY: Daphne's framefile IS the disc->film map, and it is a single offset:
+    //     _Arcade/laserdiscs/dragonslair/dlair.txt  ->  "151  lair.m2v"
+    // Daphne's VLDP seeks the m2v BY FRAME NUMBER, so mpeg_frame = disc_frame - 151.
+    // There is no time/fps scaling anywhere in Daphne's model, because the m2v is
+    // captured frame-per-frame off the disc.  (Our whole asset chain is Daphne-derived;
+    // MAME is NOT a valid reference here -- it reads frame numbers from disc VBI/gap
+    // data that our .dlv does not encode at all.)
+    //
+    // HW EVIDENCE (2026-07-16, user browsed the .dlv with _Arcade/laserdiscs/browse_dlv.py
+    // and visually identified each screen -- both predictions made BEFORE the lookup):
+    //     FPGA showed video 36  => ratio map implies DL asked disc 196 => 1:1 predicts 45
+    //                              -> video 45 IS the "insert coins" screen.   EXACT
+    //     FPGA showed video 124 => ratio map implies DL asked disc 306 => 1:1 predicts 155
+    //                              -> video 155 IS the "instructions" screen.  EXACT
+    // The error was 0 at the leader and grew linearly with frame number, which is exactly
+    // why the first attract seek always "worked" and everything deeper was wrong.
+    //
+    // WHY THE "attract timing is correct" OBSERVATION DID NOT CONTRADICT THIS: the attract
+    // LOOP is paced by the Z80's own script and by curr_frame advancing at 29.97 via the
+    // LD-V1000's frame_tick -- neither depends on this map.  Only the fetched CONTENT did.
+    //
+    // DEAD CONSTANTS AFTER THIS FIX (verified by grep, not assumed):
+    //   * `mpeg_fpks` (header@24) is now WRITTEN by the header parser and never READ.  It
+    //     reads 23938 for DL, which pack_dlv.py:119 derives by ASSUMING audio duration ==
+    //     video duration -- the same bad assumption that gives Space Ace an impossible
+    //     41.218fps.  **Do not resurrect it as a video scaler.**  Left parsed only because
+    //     it is part of the on-disk header layout.
+    //   * `DISC_FPKS` is now referenced ONLY by its own localparam below -- fully dead.
+    //     Both may draw "unused" warnings from Quartus; that is expected, not a mistake.
+    // The AUDIO map above is untouched and uses SAMP_PER_FRAME (=1471) only -- it is
+    // genuinely time-based (44100 samples/s / 29.97 disc fps) and is HW-CONFIRMED in sync.
+    // Do not touch it.
+    //
+    // The frame_count clamp is KEPT: it bounds a corrupt/over-range disc frame to the last
+    // real frame instead of indexing off the end of the index table.
+    //
+    // REVERT: delete the two lines below and uncomment the ratio block.
+    // wire [16:0] mpeg_fpks_17 = mpeg_fpks[16:0];
+    // wire [33:0] vid_prod   = (disc_rel * mpeg_fpks_17) + (DISC_FPKS >> 1);
+    // wire [33:0] vid_scaled = vid_prod / DISC_FPKS;
+    // wire [16:0] vid_ratio  = vid_scaled[16:0];
+    wire [16:0] vid_ratio  = disc_rel;                       // 1:1, per Daphne's framefile
     wire [16:0] vid_target = (vid_ratio >= frame_count[16:0]) ? (frame_count[16:0] - 17'd1) : vid_ratio;
 
     // SEARCH-sized jump detect: PLAY advances +1/frame -> no jump; SEARCH ramps in big steps -> jump.
@@ -285,11 +362,25 @@ module dlv_streamer #(
 
     reg  seek_req;
     wire seek_consume = (state == S_READY) && header_valid && seek_req;
+    // SEEK-REQ-RACE-FIX-2026-07-16: original two-if body commented below, uncomment to revert.
+    // BUG: both ifs are in ONE always block, so when jump_w and seek_consume coincide the LAST
+    // assignment wins and seek_req <= 1'b0 -- the jump is SILENTLY LOST and the audio never
+    // re-points for that seek.  jump_w is only a 1-cycle pulse (prev_ld tracks ld_curr_frame with a
+    // 1-cycle delay), so the coincidence window is narrow but real.
+    // THIS WAS SURVIVABLE ONLY BY ACCIDENT: the old LD-V1000 halving ramp emitted ~14 jumps per
+    // seek, so losing one still left 13.  DAPHNE-ATOMIC-SEEK-2026-07-16 makes the seek a single
+    // atomic jump => there is now exactly ONE jump_w per seek, and losing it means audio never
+    // re-points AT ALL.  The two fixes must ship together.
+    // Giving jump_w priority is correct in both directions: a jump arriving on a consume cycle
+    // leaves seek_req set, so the request is simply serviced on the next S_READY pass rather than
+    // dropped.  No jump can be lost; at worst one is serviced a cycle late.
     always @(posedge clk) begin
         if (reset) seek_req <= 1'b0;
         else begin
-            if (jump_w)       seek_req <= 1'b1;
-            if (seek_consume) seek_req <= 1'b0;
+            // if (jump_w)       seek_req <= 1'b1;
+            // if (seek_consume) seek_req <= 1'b0;
+            if (jump_w)            seek_req <= 1'b1;   // jump ALWAYS wins -- never drop a seek
+            else if (seek_consume) seek_req <= 1'b0;
         end
     end
 
