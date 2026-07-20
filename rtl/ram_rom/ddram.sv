@@ -50,6 +50,7 @@ module ddram
 
 	input  [27:1] rdaddr2,
 	output [15:0] dout2,
+	output [63:0] dout2_64,   // READ-COALESCE-2026-07-20: additive, whole cached word (see below)
 	input         rd_req2,
 	output reg    rd_ack2
 );
@@ -62,7 +63,15 @@ assign DDRAM_DIN      = ram_data;
 assign DDRAM_WE       = ram_write;
 
 assign dout  =  ram_q[{rdaddr[2:1],  4'b0000} +:16];
-assign dout2 = ram_q2[{rdaddr2[2:1], 4'b0000} +:16]; 
+assign dout2 = ram_q2[{rdaddr2[2:1], 4'b0000} +:16];
+
+// READ-COALESCE-2026-07-20 (ADDITIVE ONLY -- this file is stock Sorgelig; nothing above or below
+// is modified, no logic/timing/behaviour change, and dout2 still works exactly as before).
+// Exposes the WHOLE cached 64-bit word that dout2 slices 16 bits out of, so a sequential reader
+// can take all 4 halfwords from ONE request instead of issuing 4 (see fb_raster_reader.v).
+// Valid on the same rd_ack2 handshake as dout2; ram_q2 holds the 4 halfwords whose address share
+// rdaddr2[27:3], i.e. {A|3, A|2, A|1, A|0} for a 4-aligned A, low halfword in bits [15:0].
+assign dout2_64 = ram_q2;
 
 reg  [7:0] ram_burst;
 reg [63:0] ram_q, next_q, ram_q2, next_q2;

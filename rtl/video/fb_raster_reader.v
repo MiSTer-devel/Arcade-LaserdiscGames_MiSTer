@@ -48,6 +48,7 @@ module fb_raster_reader #(
     // ddram.sv read port 2
     output reg [26:0] rdaddr2,
     input      [15:0] dout2,
+    input      [63:0] dout2_64,     // READ-COALESCE-2026-07-20: whole cached word (4 halfwords)
     output reg        rd_req2,
     input             rd_ack2,
 
@@ -108,8 +109,24 @@ module fb_raster_reader #(
     // as long as it takes (it doesn't return to F_IDLE until done, so it's immune to line-boundary
     // pressure) and the swap below only fires once fill_done_q confirms the target actually landed.
     // Worst case under contention: a line repeats for a few extra line-times -- never a torn buffer.
-    localparam F_IDLE = 2'd0, F_REQ = 2'd1, F_WAIT = 2'd2;
+    // READ-COALESCE-2026-07-20: one DDR request now yields FOUR halfwords.
+    // WHY: ddram.sv caches a 64-bit word per read port and dout2 slices ONE halfword out of it, so
+    // the old one-request-per-pixel loop issued 320 requests/line where 80 suffice. dout2_64 (an
+    // ADDITIVE output on ddram.sv, no behaviour change there) exposes the whole cached word, so we
+    // request every 4th halfword and unpack locally.
+    // ALIGNMENT (checked, load-bearing): STRIDE=320 and H_ACT=320 are both /4, and every framebuffer
+    // base (0, 76800, 153600) is /4, so rdaddr2[2:1]==00 on every request we issue => ram_q2 holds
+    // exactly linebuf[fidx..fidx+3], low halfword in bits [15:0]. If H_ACT or STRIDE ever stops
+    // being a multiple of 4, or a base becomes unaligned, THIS BREAKS -- add a tail path first.
+    // linebuf is single-write-port BRAM, so the 4 halfwords are stored over 4 cycles (F_ST1..3)
+    // from a latched copy; that costs cycles but NOT DDR transactions, which is the point (it frees
+    // arbiter bandwidth for fb_writer, whose px_ready is gated on this FSM being idle).
+    localparam F_IDLE = 2'd0, F_REQ = 2'd1, F_WAIT = 2'd2, F_STORE = 2'd3;
     reg [1:0]  fst  = F_IDLE;
+    reg [47:0] fw_hold;      // halfwords 1..3 awaiting store (hw0 is written directly on ack)
+    reg [1:0]  fw_cnt;       // which of the remaining 3 is being stored
+    reg [15:0] fw_idx;       // linebuf index for the current F_STORE write (named reg on purpose:
+                             // Quartus 17 elaborates .v as Verilog-2001, where (expr)[8:0] is illegal)
     reg [15:0] fidx;
     reg [15:0] fline;
     reg        fill_done_q;    // 1 once fline's data is fully loaded into fill_buf, awaiting the swap below
@@ -141,6 +158,7 @@ module fb_raster_reader #(
             fst <= F_IDLE; fidx <= 16'd0; rd_req2 <= 1'b0; rdaddr2 <= 27'd0;
             frame_base_hw_q <= 27'd0;
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
+            fw_hold <= 48'd0; fw_cnt <= 2'd0; fw_idx <= 16'd0;   // READ-COALESCE-2026-07-20
         end else begin
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
@@ -200,16 +218,31 @@ module fb_raster_reader #(
                     fill_done_q <= 1'b1;
                 end
             F_WAIT:
-                if (rd_ack2 == rd_req2) begin               // dout2 valid
-                    linebuf[{fill_buf, fidx[8:0]}] <= dout2;
-                    if (fidx == H_ACT - 16'd1) begin
+                if (rd_ack2 == rd_req2) begin               // dout2/dout2_64 valid
+                    // READ-COALESCE-2026-07-20: store halfword 0 now, hold 1..3 for F_STORE.
+                    linebuf[{fill_buf, fidx[8:0]}] <= dout2_64[15:0];
+                    fw_hold <= dout2_64[63:16];
+                    fw_cnt  <= 2'd0;
+                    fw_idx  <= fidx + 16'd1;     // named reg: NO expression bit-select in a .v file
+                    fst     <= F_STORE;
+                end
+            F_STORE: begin
+                // write halfwords 1,2,3 of the fetched word on successive cycles
+                linebuf[{fill_buf, fw_idx[8:0]}] <= fw_hold[15:0];
+                fw_hold <= {16'd0, fw_hold[47:16]};
+                fw_idx  <= fw_idx + 16'd1;
+                if (fw_cnt == 2'd2) begin
+                    if (fidx + 16'd4 >= H_ACT) begin        // whole line landed
                         fst         <= F_IDLE;
                         fill_done_q <= 1'b1;
                     end else begin
-                        fidx <= fidx + 16'd1;
+                        fidx <= fidx + 16'd4;
                         fst  <= F_REQ;
                     end
+                end else begin
+                    fw_cnt <= fw_cnt + 2'd1;
                 end
+            end
             default: fst <= F_IDLE;
             endcase
         end

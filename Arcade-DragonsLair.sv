@@ -449,6 +449,7 @@ wire  [7:0] comp_g = led_lit ? 8'h00 : rr_g;
 wire  [7:0] comp_b = led_lit ? 8'h00 : rr_b;
 wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
+wire [63:0] rr_dout2_64;    // READ-COALESCE-2026-07-20: whole cached word from ddram read port 2
 wire        rr_rd_req2, rr_rd_ack2;
 // WRITE-GATE-2026-07-16 (new wire, delete on revert): fb_raster_reader tells fb_writer when its
 // line fetch has landed, so the writer never contends with an in-flight read2.  Declared here
@@ -736,14 +737,15 @@ ddram ddram_fb (
     .rdaddr(27'd0), .dout(), .rom_din(16'd0), .rom_be(2'd0),
     .rom_we(1'b0), .rom_req(1'b0), .rom_ack(),
     // second read port — raster reader (DDR framebuffer -> video)
-    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
+    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),   // READ-COALESCE-2026-07-20
+    .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
 );
 
 // Read the framebuffer back in scan order, then composite the LED band over it.
 fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAND_H rows for the LED band, video below
     .clk(CLK_40M), .reset(reset),
     .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
-    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2),
+    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),   // READ-COALESCE-2026-07-20
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .fill_idle(rr_fill_idle),               // WRITE-GATE-2026-07-16 (delete on revert)
     .ce_pix(rr_ce_pix),
