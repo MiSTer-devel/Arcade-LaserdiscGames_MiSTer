@@ -619,16 +619,94 @@ jpeg_frame_decoder dec (
 // fb_writer and fb_raster_reader were both hardcoded to DDR halfword base 0 -- one shared
 // framebuffer, no swap at all, so the reader could catch a frame mid-write. Swap on the decoder's
 // own frame_done pulse (dec_frame_done was computed above but never connected to anything).
-localparam [26:0] FB_BUF0_HW = 27'd0;
-localparam [26:0] FB_BUF1_HW = 27'd76800;   // 320*240 halfwords past buf0
+// FB-TRIPLEBUF-2026-07-20: the two-buffer ping-pong above was NOT sufficient, and the reason is
+// structural -- keeping the old code commented directly below for reference.
+//
+// THE BUG IT FIXES (matches "garbage rows in the TOP area of specific frames, identical every
+// attract cycle"): fb_raster_reader deliberately LATCHES frame_base_hw once per raster frame
+// (fb_raster_reader.v:128-134, applied at v_last) so a mid-scan flip can't tear one displayed
+// frame across two buffers. But fb_wr_base flipped IMMEDIATELY on dec_frame_done. So when the
+// decoder finished mid-scanout:
+//   reader has BUF1 latched and is still scanning it  ->  fb_buf_sel toggles  ->
+//   writer's base becomes BUF1  ->  writer writes the NEXT frame INTO THE BUFFER BEING DISPLAYED.
+// fb_writer emits top-to-bottom, so wherever it outran the raster beam those upper rows showed
+// the new frame's pixels, with correct output below = a garbage band at the top that recovers.
+// Deterministic per frame because decode duration tracks frame size, so a given frame always
+// collides at the same point. With only TWO buffers this is unavoidable: the writer's back buffer
+// and the reader's latched front buffer are forced to be the same buffer.
+// (The fill_idle write-gate does not help -- it arbitrates DDR BUS access, not buffer choice.)
+//
+// THE FIX: three buffers with an explicit ready/display handoff. Invariant maintained below:
+// wr_idx != disp_idx ALWAYS, so the writer can never target the displayed buffer.
+//   - dec_frame_done : the just-written buffer becomes `ready`; writing moves to the one buffer
+//                      that is neither `ready` nor `disp` (indices 0+1+2=3, so free = 3-a-b).
+//   - reader vblank  : if a completed frame is waiting, adopt it as the new display buffer.
+// Updating disp_idx at the RISING EDGE OF VBLANK gives the value time to settle well before the
+// reader's own latch fires at v_last, so the reader still sees one stable base per frame.
+// Cost: one extra 320x240x16b buffer = 153,600 B in the 0x30000000 region (ddram_fb is ours
+// alone -- rom_req is hardwired off on this core's instance).
+//
+// DIAG-REVERT-2026-07-20: original two-buffer logic, uncomment to restore
+// localparam [26:0] FB_BUF0_HW = 27'd0;
+// localparam [26:0] FB_BUF1_HW = 27'd76800;   // 320*240 halfwords past buf0
+// reg fb_buf_sel;
+// always @(posedge CLK_40M) begin
+//     if (reset) fb_buf_sel <= 1'b0;
+//     else if (dec_frame_done) fb_buf_sel <= ~fb_buf_sel;
+// end
+// wire [26:0] fb_wr_base = fb_buf_sel ? FB_BUF1_HW : FB_BUF0_HW;   // decoder writes here (back buffer)
+// wire [26:0] fb_rd_base = fb_buf_sel ? FB_BUF0_HW : FB_BUF1_HW;   // raster reader reads here (front buffer)
 
-reg fb_buf_sel;
+localparam [26:0] FB_BUF_HW    = 27'd76800;   // 320*240 halfwords per buffer
+localparam [26:0] FB_BUF0_HW   = 27'd0;
+localparam [26:0] FB_BUF1_HW   = FB_BUF_HW;
+localparam [26:0] FB_BUF2_HW   = FB_BUF_HW * 2;
+
+reg  [1:0] fb_wr_idx;      // buffer the decoder is writing
+reg  [1:0] fb_disp_idx;    // buffer the raster reader is displaying
+reg  [1:0] fb_ready_idx;   // most recently COMPLETED frame, waiting to be displayed
+reg        fb_have_new;    // a completed frame is waiting for the next vblank
+
+reg        rr_vblank_q;
+wire       fb_vbl_rise = rr_vblank & ~rr_vblank_q;
+
+// Adoption and completion can land on the SAME cycle, so the free-buffer choice must be made
+// against the buffer that will be displayed AFTER this cycle -- not the current one. Using the
+// stale fb_disp_idx there would pick exactly the buffer vblank is about to start displaying.
+wire       fb_adopt    = fb_vbl_rise & fb_have_new;
+wire [1:0] fb_next_disp = fb_adopt ? fb_ready_idx : fb_disp_idx;
+// the one index that is neither a nor b (0+1+2=3; valid because the invariant keeps them distinct)
+wire [1:0] fb_free_idx  = 2'd3 - fb_wr_idx - fb_next_disp;
+
 always @(posedge CLK_40M) begin
-    if (reset) fb_buf_sel <= 1'b0;
-    else if (dec_frame_done) fb_buf_sel <= ~fb_buf_sel;
+    rr_vblank_q <= rr_vblank;
+    if (reset) begin
+        fb_wr_idx    <= 2'd0;
+        fb_disp_idx  <= 2'd1;
+        fb_ready_idx <= 2'd1;
+        fb_have_new  <= 1'b0;
+        rr_vblank_q  <= 1'b0;
+    end else begin
+        // start of vblank: adopt the newest completed frame, if any
+        if (fb_adopt) begin
+            fb_disp_idx <= fb_ready_idx;
+            fb_have_new <= 1'b0;
+        end
+        // decoder finished: publish it, move writing to the free buffer.
+        // Ordered AFTER the adopt block so its fb_have_new<=1'b1 wins on a simultaneous cycle
+        // (we adopted the old ready, and this newly finished frame is immediately pending).
+        if (dec_frame_done) begin
+            fb_ready_idx <= fb_wr_idx;
+            fb_wr_idx    <= fb_free_idx;   // != fb_next_disp by construction
+            fb_have_new  <= 1'b1;
+        end
+    end
 end
-wire [26:0] fb_wr_base = fb_buf_sel ? FB_BUF1_HW : FB_BUF0_HW;   // decoder writes here (back buffer)
-wire [26:0] fb_rd_base = fb_buf_sel ? FB_BUF0_HW : FB_BUF1_HW;   // raster reader reads here (front buffer)
+
+wire [26:0] fb_wr_base = (fb_wr_idx   == 2'd0) ? FB_BUF0_HW :
+                         (fb_wr_idx   == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
+wire [26:0] fb_rd_base = (fb_disp_idx == 2'd0) ? FB_BUF0_HW :
+                         (fb_disp_idx == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
 
 fb_writer #(.STRIDE_HW(16'd320)) fb_wr (
     .clk(CLK_40M), .reset(reset),
