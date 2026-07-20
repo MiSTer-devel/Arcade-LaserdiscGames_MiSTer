@@ -89,7 +89,37 @@ reg  [7:0] ram_be = 0;
 reg [1:0]  state  = 0;
 reg        ch = 0;
 
+// DDR-DOUTREADY-FIX-2026-07-20 -- ROOT CAUSE OF THE VIDEO HARD LOCK.
+// States 2 and 3 CONSUME read data (DDRAM_DOUT_READY). They were nested inside the
+// `if(!DDRAM_BUSY)` gate below, so if the HPS ever asserted BUSY and DOUT_READY on the SAME
+// cycle the returning word was silently DROPPED and this state machine waited for it forever.
+// BUSY (command FIFO full) and DOUT_READY (read data returning) are INDEPENDENT channels on the
+// f2h bridge and can coincide under load.
+// Consequence: rd_ack2 never returns -> fb_raster_reader never finishes a line -> fill_idle stuck
+// low -> fb_writer's px_ready stuck low -> the JPEG decoder stalls -> dlv_streamer wedges on its
+// untimed S_STRM_VLD wait -> VIDEO AND .dlv AUDIO BOTH DIE while the Z80 keeps running.
+// Reproduced in the full-subsystem co-sim: with BUSY asserted independently ~1 cycle in 64 the
+// pipeline wedges within one frame (px_ready=0, fill_idle=0, we_pending=0); with BUSY asserted
+// only during transactions it never wedges.
+// FIX: handle DOUT_READY OUTSIDE the BUSY gate. States 2/3 only receive data -- they issue no
+// commands -- so they never needed that gate. Command issue (states 0/1) still respects BUSY.
+// NOTE this is stock Sorgelig code; the hazard does not bite the usual MiSTer pattern (load ROM
+// once, then read) and only surfaces with sustained CONCURRENT read+write traffic like ours.
 always @(posedge DDRAM_CLK) begin
+
+	// ---- read-data return path: MUST NOT be gated by DDRAM_BUSY ----
+	if(DDRAM_DOUT_READY) begin
+		if(state == 2) begin
+			if (~ch) begin ram_q  <= DDRAM_DOUT; rom_ack <= rom_req; end
+			else     begin ram_q2 <= DDRAM_DOUT; rd_ack2 <= rd_req2; end
+			state <= 3;
+		end
+		else if(state == 3) begin
+			if (~ch) next_q  <= DDRAM_DOUT;
+			else     next_q2 <= DDRAM_DOUT;
+			state <= 0;
+		end
+	end
 
 	if(!DDRAM_BUSY) begin
 		ram_write <= 0;
@@ -173,27 +203,13 @@ always @(posedge DDRAM_CLK) begin
 					state <= 0;
 				end
 
-			2: if(DDRAM_DOUT_READY) begin
-					if (~ch) begin
-						ram_q  <= DDRAM_DOUT;
-						rom_ack <= rom_req;
-					end
-					else begin
-						ram_q2  <= DDRAM_DOUT;
-						rd_ack2 <= rd_req2;
-					end 
-					state <= 3;
-				end
-
-			3: if(DDRAM_DOUT_READY) begin
-					if (~ch) begin
-						next_q <= DDRAM_DOUT;
-					end
-					else begin
-						next_q2 <= DDRAM_DOUT;
-					end 
-					state <= 0;
-				end
+			// DDR-DOUTREADY-FIX-2026-07-20: states 2 and 3 are now handled at the TOP of this
+			// always block, OUTSIDE the !DDRAM_BUSY gate (see the note there). Leaving them here
+			// as well would double-drive `state`. Original bodies, for reference:
+			//   2: if(DDRAM_DOUT_READY) begin ...ram_q/ram_q2 + ack...; state <= 3; end
+			//   3: if(DDRAM_DOUT_READY) begin ...next_q/next_q2...;     state <= 0; end
+			2: ;
+			3: ;
 		endcase
 	end
 end
