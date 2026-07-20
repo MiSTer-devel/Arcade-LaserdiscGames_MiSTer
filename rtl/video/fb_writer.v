@@ -54,7 +54,13 @@ module fb_writer #(
 
     // --- ddram.sv write port ---
     output reg [27:1] wraddr,       // halfword address
-    output reg [15:0] din,          // RGB565
+    output reg [15:0] din,          // RGB565 (legacy; ddram no longer uses it for the write port)
+    // WRITE-STAGE-A-2026-07-20: full 64-bit write word + byte enables, computed HERE instead of
+    // inside ddram. Stage A drives EXACTLY what ddram used to derive (one halfword, 2 lanes
+    // enabled) => provably identical DDR traffic and the same 76,800 writes/frame. It exists so
+    // stage B can widen a write to 4 pixels without any further change to ddram.
+    output reg [63:0] din64,
+    output reg  [7:0] be64,
     output reg        we_req,       // toggle to request a write
     input             we_ack        // ddram raises to == we_req when done
 );
@@ -109,12 +115,23 @@ module fb_writer #(
     // halfword index = base_hw + y*STRIDE_HW + x
     wire [26:0] hw_index = base_hw + (px_y * STRIDE_HW) + {11'd0, px_x};
 
+    // WRITE-STAGE-A-2026-07-20: named wires -- Quartus 17 elaborates .v as Verilog-2001, where a
+    // bit-select of an EXPRESSION, e.g. (base_hw+clear_idx)[1:0], is illegal (error 10170).
+    wire [26:0] clear_addr = base_hw + clear_idx;
+    wire [15:0] px565      = {px_r[7:3], px_g[7:2], px_b[7:3]};
+    // byte enables for one halfword: 2 lanes, selected by the halfword's position in the 64-bit
+    // word. Identical to ddram's old `8'd3<<{wraddr[2:1],1'b0}` because wraddr[2:1] == addr[1:0].
+    wire  [7:0] be_pix     = 8'd3 << {hw_index[1:0],   1'b0};
+    wire  [7:0] be_clr     = 8'd3 << {clear_addr[1:0], 1'b0};
+
     always @(posedge clk) begin
         if (reset) begin
             busy      <= 1'b0;
             we_req    <= 1'b0;
             wraddr    <= 27'd0;
             din       <= 16'd0;
+            din64     <= 64'd0;      // WRITE-STAGE-A-2026-07-20
+            be64      <= 8'd0;
             // DIAG-REVERT-2026-07-04: arm the clear sweep on every reset
             clearing  <= CLEAR_ON_RESET;
             clear_idx <= 27'd0;
@@ -122,8 +139,10 @@ module fb_writer #(
             // DIAG-REVERT-2026-07-04: fill FB_BASE_HW .. +CLEAR_WORDS-1 with CLEAR_COLOR, one halfword per
             // DDR write, reusing the exact we_req/we_ack handshake. Then drop 'clearing' and hand off below.
             if (!busy) begin
-                wraddr <= base_hw + clear_idx;
+                wraddr <= clear_addr;
                 din    <= CLEAR_COLOR;
+                din64  <= {4{CLEAR_COLOR}};   // WRITE-STAGE-A: same value ddram used to replicate
+                be64   <= be_clr;             //                same lanes ddram used to select
                 we_req <= ~we_req;
                 busy   <= 1'b1;
             end else if (we_ack == we_req) begin
@@ -136,7 +155,9 @@ module fb_writer #(
         end else if (!busy) begin
             if (px_we) begin
                 wraddr <= hw_index;
-                din    <= {px_r[7:3], px_g[7:2], px_b[7:3]};   // RGB565
+                din    <= px565;                                // RGB565
+                din64  <= {4{px565}};                           // WRITE-STAGE-A: as ddram did
+                be64   <= be_pix;                               //                as ddram did
                 we_req <= ~we_req;                              // request a write
                 busy   <= 1'b1;
             end

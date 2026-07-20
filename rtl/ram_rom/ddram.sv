@@ -37,6 +37,11 @@ module ddram
 
 	input  [27:1] wraddr,
 	input  [15:0] din,
+	// WRITE-STAGE-A-2026-07-20: the write port now takes the FULL 64-bit word + its byte enables
+	// from fb_writer, instead of ddram deriving them from a single halfword. NOTE this REMOVES
+	// logic from the write path (no mux, no conditional) rather than adding any -- see below.
+	input  [63:0] din64,
+	input   [7:0] be64,
 	input         we_req,
 	output reg    we_ack,
 
@@ -92,8 +97,14 @@ always @(posedge DDRAM_CLK) begin
 
 		case(state)
 			0: if(we_ack != we_req) begin
-					ram_be      <= 8'd3<<{wraddr[2:1],1'b0};
-					ram_data		<= {4{din}};
+					// WRITE-STAGE-A-2026-07-20: was
+					//   ram_be   <= 8'd3<<{wraddr[2:1],1'b0};
+					//   ram_data <= {4{din}};
+					// fb_writer now supplies both directly. For a single-pixel write it drives
+					// exactly those two values, so this is BYTE-FOR-BYTE equivalent; it just lets
+					// fb_writer widen the write later (stage B) without touching this file again.
+					ram_be      <= be64;
+					ram_data		<= din64;
 					ram_address <= wraddr[27:3];
 					ram_write 	<= 1;
 					ram_burst   <= 1;

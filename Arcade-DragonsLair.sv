@@ -566,6 +566,8 @@ assign DDRAM_CLK = CLK_40M;
 wire [27:1] fb_wraddr;
 wire [15:0] fb_din;
 wire        fb_we_req, fb_we_ack;
+wire [63:0] fb_din64;   // WRITE-STAGE-A-2026-07-20
+wire  [7:0] fb_be64;
 wire        tp_we, tp_ready;
 wire [15:0] tp_x, tp_y;
 wire  [7:0] tp_r, tp_g, tp_b;
@@ -717,6 +719,7 @@ fb_writer #(.STRIDE_HW(16'd320)) fb_wr (
     .fill_idle(rr_fill_idle),       // WRITE-GATE-2026-07-16: yield DDR while the raster reader fetches (delete on revert)
     .base_hw(fb_wr_base),
     .wraddr(fb_wraddr), .din(fb_din),
+    .din64(fb_din64), .be64(fb_be64),   // WRITE-STAGE-A-2026-07-20
     .we_req(fb_we_req), .we_ack(fb_we_ack)
 );
 
@@ -732,7 +735,9 @@ ddram ddram_fb (
     .DDRAM_BE(DDRAM_BE),
     .DDRAM_WE(DDRAM_WE),
     // write port (fb_writer)
-    .wraddr(fb_wraddr), .din(fb_din), .we_req(fb_we_req), .we_ack(fb_we_ack),
+    .wraddr(fb_wraddr), .din(fb_din),
+    .din64(fb_din64), .be64(fb_be64),   // WRITE-STAGE-A-2026-07-20
+    .we_req(fb_we_req), .we_ack(fb_we_ack),
     // rom read/write port — unused
     .rdaddr(27'd0), .dout(), .rom_din(16'd0), .rom_be(2'd0),
     .rom_we(1'b0), .rom_req(1'b0), .rom_ack(),
