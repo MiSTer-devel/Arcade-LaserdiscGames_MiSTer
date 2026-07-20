@@ -27,7 +27,10 @@ module fb_writer #(
     // Set CLEAR_ON_RESET=0 to disable (exact prior behaviour). CLEAR_COLOR: white=FFFF, black=0000, magenta=F81F.
     parameter        CLEAR_ON_RESET = 1'b1,
     parameter [15:0] CLEAR_ROWS     = 16'd240,   // rows to pre-clear (= FB read region height)
-    parameter [15:0] CLEAR_COLOR    = 16'hFFFF   // solid fill so any decoder write is unmistakable
+    parameter [15:0] CLEAR_COLOR    = 16'hFFFF,  // solid fill so any decoder write is unmistakable
+    // FB-RANGE-GUARD-2026-07-20: visible framebuffer extent; writes outside are DISCARDED
+    parameter [15:0] FB_COLS        = 16'd320,
+    parameter [15:0] FB_ROWS        = 16'd240
 )(
     input             clk,          // DDRAM_CLK domain
     input             reset,        // active-high
@@ -124,6 +127,22 @@ module fb_writer #(
     wire  [7:0] be_pix     = 8'd3 << {hw_index[1:0],   1'b0};
     wire  [7:0] be_clr     = 8'd3 << {clear_addr[1:0], 1'b0};
 
+    // ---- FB-RANGE-GUARD-2026-07-20 -----------------------------------------------------------
+    // ROOT CAUSE OF THE TOP-OF-FRAME CORRUPTION (found in the full-subsystem co-sim, 2026-07-20).
+    // The decoder emits MORE pixels than the frame contains: measured px_we up to 77,000 for a
+    // 76,800-pixel frame, with **max_y = 255** on a 240-row image, 0 duplicates, all excess
+    // out-of-range. Cause: 240 is not a multiple of 16, so the last 4:2:0 MCU row runs to y=255
+    // and core_jpeg does not clip it to frame_height.
+    // Consequence WITHOUT this guard: hw_index = base_hw + y*320 + x for y >= 240 runs PAST the
+    // end of this buffer. Buffers are 76,800 halfwords apart, so those writes land at the START
+    // of the NEXT buffer -- i.e. its TOP ROWS -- which is exactly the observed artifact:
+    // MCU-aligned garbage in the first 16 rows, real decoded content (so it differs per frame),
+    // and worse on Space Ace (135-200 stray px/frame) than Dragon's Lair (0-135).
+    // Why every previous fix missed it: triple buffering, read coalescing and write batching all
+    // change TIMING/BANDWIDTH; this is an ADDRESS-RANGE bug and none of them touch it.
+    // Clipping here (rather than in core_jpeg) keeps the third-party decoder untouched.
+    wire in_range = (px_x < FB_COLS) && (px_y < FB_ROWS);
+
     always @(posedge clk) begin
         if (reset) begin
             busy      <= 1'b0;
@@ -153,7 +172,7 @@ module fb_writer #(
                     clear_idx <= clear_idx + 27'd1;
             end
         end else if (!busy) begin
-            if (px_we) begin
+            if (px_we && in_range) begin      // FB-RANGE-GUARD-2026-07-20
                 wraddr <= hw_index;
                 din    <= px565;                                // RGB565
                 din64  <= {4{px565}};                           // WRITE-STAGE-A: as ddram did
