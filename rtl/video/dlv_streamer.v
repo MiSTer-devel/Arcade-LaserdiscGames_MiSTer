@@ -241,42 +241,88 @@ module dlv_streamer #(
     // to "frame 0 of real content" and plays the movie's true opening audio 5s early.
     wire on_leader = (ld_curr_frame < ld_leader);   // ld_leader now header-driven, see HEADER-FIELDS-2026-07-05 below
 
+    // SAMP-PER-FRAME-2026-07-20: COMPUTED from ACTUAL DATA COUNTS, not hardcoded and NOT from
+    // mpeg_fpks. ⚠️ mpeg_fpks is UNRELIABLE -- Space Ace's is garbage (41218 = impossible fps), and
+    // the whole 2026-07-05 "RATE != MAP" mess was about not trusting it. The self-consistent source
+    // is total_samples / frame_count (independently corroborated 1842 for DL:
+    // 81343495/44154 = 1842.28). total_samples = aud_size/4 (stereo s16 = 4 bytes/sample), and BOTH
+    // aud_size and frame_count are already parsed -- so:
+    //     samp_per_frame = (aud_size >> 2) / frame_count
+    // This is garbage-fps-proof (it derives from the blob's own extents) and tracks any re-encode.
+    // Used by BOTH the frame-lock credit AND the seek re-point (aud_prod) -- one source.
+    // (If a re-encode also changes the audio sample rate, ACC_INC -- the 44.1 kHz drain divider --
+    //  must change too; the fully general endpoint is pack_dlv.py writing samples/frame into the
+    //  header directly, removing this divide.)
+    wire [31:0] spf_q = (frame_count != 32'd0) ? ((aud_size >> 2) / frame_count) : 32'd1842;
+    wire [13:0] samp_per_frame = (header_valid && spf_q >= 32'd256 && spf_q <= 32'd8191)
+                                 ? spf_q[13:0] : 14'd1842;   // fallback = DL's 1842
+
+    // ---- FRAME-LOCK-2026-07-20 -----------------------------------------------------------------
+    // Slave the audio drain to the DISC FRAME POSITION instead of a free 44.1 kHz clock, so audio
+    // and video share ONE master (the disc, which the Z80 controls) and cannot drift.
+    // ROOT CAUSE this fixes: video content = f(ld_curr_frame) (it STALLS if the disc stalls), but
+    // audio was draining at a fixed 44.1 kHz regardless -- so any video/disc hiccup let audio pull
+    // ahead ("audio blasting away"). Attract played fine only because the disc there advances
+    // smoothly; gameplay's SEARCH/PLAY cycling stalls the disc while audio free-wheeled.
+    // MECHANISM (credit / leaky-bucket): each disc frame the LDV1000 advances is worth 1842 samples
+    // of credit (= SAMP_PER_FRAME, defined below; hardcoded here only because it is textually later
+    // -- keep the two equal). A drain spends one sample. Audio drains at 44.1 kHz WHILE it has
+    // credit and STALLS the instant the disc stalls -- exactly how audio+video are frame-locked on
+    // the physical disc. A frame JUMP (>2, i.e. a seek fwd or a backward wrap) auto-resets credit,
+    // so this stays correct even if the CMD_SEARCH flush pulse is mistimed.
+    reg  [16:0] aud_prev_frame;
+    reg  [13:0] aud_credit;                       // samples the disc position currently permits
+    localparam [13:0] AUD_CREDIT_MAX = 14'd7368;  // 4 frames -- anti-burst cap on catch-up
+    wire [16:0] aud_fadv  = ld_curr_frame - aud_prev_frame;    // unsigned; a large value = a jump
+    wire        aud_jump  = (aud_fadv > 17'd2);                // >2 frames/cycle = seek, not 1x play
+    wire        aud_muted = hold_play || !ld_playing || on_leader || !header_valid;
+    wire        aud_drain = samp_tick && (aud_wr != aud_rd) && (aud_credit != 14'd0) && !aud_muted;
+    wire [14:0] aud_add   = (aud_jump)          ? 15'd0 :                  // samp_per_frame per frame
+                            (aud_fadv == 17'd1) ? {1'b0, samp_per_frame} :
+                            (aud_fadv == 17'd2) ? {samp_per_frame, 1'b0} : 15'd0;
+    wire [15:0] aud_cred_nx  = {2'b0, aud_credit} + {1'b0, aud_add} - (aud_drain ? 16'd1 : 16'd0);
+    wire [13:0] aud_cred_cap = (aud_cred_nx > {2'b0, AUD_CREDIT_MAX}) ? AUD_CREDIT_MAX : aud_cred_nx[13:0];
+
     always @(posedge clk) begin
         if (reset) begin
             aud_rd <= {AUD_AW{1'b0}};
             pcm_l  <= 16'sd0;
             pcm_r  <= 16'sd0;
+            aud_prev_frame <= 17'd0;    // FRAME-LOCK-2026-07-20
+            aud_credit     <= 14'd0;
         // SEEK-FLUSH-2026-07-20: empty the ring's read side on a seek (matches aud_wr flush).
         // aud_rd=0 with aud_wr=0 => ring empty => aud_level=0 => not primed => held until it
         // refills past SEEK_FILL, at which point drain resumes from word 0 = the new segment's
         // first sample, released together with the first new video frame.
+        // SEEK-FLUSH-2026-07-20: empty the ring's read side on a seek (matches the aud_wr flush) so
+        // old-segment audio is discarded and refill starts clean. FRAME-LOCK: also zero the credit
+        // and re-anchor prev_frame so the jump adds no spurious credit.
         end else if (seek_flush) begin
             aud_rd <= {AUD_AW{1'b0}};
             pcm_l  <= 16'sd0;
             pcm_r  <= 16'sd0;
-        // SEEK-HOLD-2026-07-20: hold_play joins the existing mute+hold set. Identical semantics
-        // to the PARK/SEARCH/leader cases that already work: silence out, and aud_rd HELD so we
-        // resume exactly where we stopped instead of having drained ahead while muted. The FILL
-        // side keeps topping the ring up in the background (capped at FILL_HIGH).
-        end else if (hold_play || !ld_playing || on_leader || !header_valid) begin
-            // AUDIO-GATE-2026-07-05: not PLAYing (PARK/SEARCH/STOP), OR still on the pre-content
-            // leader, OR the header hasn't been parsed yet -> silence, and HOLD aud_rd so playback
-            // resumes from the same point instead of having drained ahead while muted. (The fill
-            // side still tops the ring up in the background, capped at FILL_HIGH.)
-            // HEADER-FIELDS-2026-07-05: !header_valid is load-bearing, not defensive filler --
-            // ld_leader_off has no reset value, so before the .dlv is mounted+parsed it powers up
-            // ~0, making on_leader permanently FALSE (ld_curr_frame can't be < 0). Every other header
-            // field in this file is protected because its only consumer already checks header_valid
-            // first (see S_READY); this one wasn't, so the leader-mute silently did nothing for
-            // however long boot-to-mount takes -- exactly the "still plays too early" window.
-            pcm_l <= 16'sd0;
-            pcm_r <= 16'sd0;
-        end else if (samp_tick && (aud_wr != aud_rd)) begin   // sample due & not empty
-            pcm_l  <= aud_rd_q[15:0];      // aud_rd steady ~907 cyc -> aud_rd_q settled to current word
-            pcm_r  <= aud_rd_q[31:16];
-            aud_rd <= aud_rd + 1'b1;
+            aud_prev_frame <= ld_curr_frame;
+            aud_credit     <= 14'd0;
+        end else begin
+            // FRAME-LOCK-2026-07-20: credit + prev_frame advance EVERY cycle (independent of the
+            // mute/drain branch below). A frame jump auto-flushes the credit.
+            aud_prev_frame <= ld_curr_frame;
+            aud_credit     <= aud_jump ? 14'd0 : aud_cred_cap;
+
+            // AUDIO-GATE-2026-07-05: not PLAYing / on the leader / header not parsed / SEEK-HOLD ->
+            // silence + HOLD aud_rd (resume from the same point). SEEK-HOLD-2026-07-20 folded in via
+            // aud_muted. !header_valid is load-bearing (ld_leader_off powers up ~0 -> on_leader
+            // false pre-mount); see HEADER-FIELDS-2026-07-05.
+            if (aud_muted) begin
+                pcm_l <= 16'sd0;
+                pcm_r <= 16'sd0;
+            end else if (aud_drain) begin   // FRAME-LOCK: 44.1 kHz drain, but only while the disc
+                pcm_l  <= aud_rd_q[15:0];    // position has "paid" for the sample (aud_credit != 0).
+                pcm_r  <= aud_rd_q[31:16];   // Disc stalls -> credit hits 0 -> audio holds with it.
+                aud_rd <= aud_rd + 1'b1;
+            end
+            // underrun (empty OR out of credit while playing): hold last pcm
         end
-        // underrun (empty at tick while playing): hold last pcm
     end
 
     //------------------------------------------------------------------------
@@ -314,13 +360,14 @@ module dlv_streamer #(
     // (seek_req -> aud_target_lba), so drift only accumulates within one scene: ~11 ms over a 60 s
     // continuous play. Inaudible. Widths unchanged: SAMP_PER_FRAME still fits 12 bits (1842<4095),
     // and disc_rel*1842 max 241M still fits aud_prod's 32 bits.
-    localparam [11:0] SAMP_PER_FRAME = 12'd1842;    // 44100 / 23.938 = total_samples/frame_count
+    // SAMP_PER_FRAME is now the COMPUTED `samp_per_frame` wire (SAMP-PER-FRAME-2026-07-20 above),
+    // derived from the header's mpeg_fpks so it tracks a re-encode. (Old: localparam 12'd1842.)
 
     wire [16:0] ld_leader = ld_leader_off[16:0];
     wire [16:0] disc_rel = (ld_curr_frame > ld_leader) ? (ld_curr_frame - ld_leader) : 17'd0;
 
     // audio target sector = aud_lba_start + (disc_rel * 1471 samples) / 128 samples-per-sector
-    wire [31:0] aud_prod       = disc_rel * SAMP_PER_FRAME;
+    wire [31:0] aud_prod       = disc_rel * samp_per_frame;   // SAMP-PER-FRAME-2026-07-20
     wire [31:0] aud_target_lba = aud_lba_start + (aud_prod >> 7);
 
     // VIDEO-RATIO-2026-07-05: real ratio applied (was a 1:1 placeholder). video_frame =
