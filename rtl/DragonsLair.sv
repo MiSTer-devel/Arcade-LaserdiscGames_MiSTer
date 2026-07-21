@@ -38,6 +38,7 @@ module DragonsLair
 
     output        [63:0] led_digits_o,
     output               dbg_led,
+    output               ld_search_cmd_o, // SEEK-HOLD-2026-07-20: Z80's CMD_SEARCH accepted (1-cyc)
     output        [16:0] ld_frame_o,   // HLE-DRIVE-2026-07-04: LD disc frame -> streamer
     output               ld_playing_o  // AUDIO-GATE-2026-07-05: LD playing flag -> streamer audio gate
 );
@@ -71,6 +72,7 @@ DragonsLair_CPU cpu_board
 
     .led_digits_o(led_digits_o),
     .dbg_led(dbg_led),
+    .search_cmd_o(ld_search_cmd_o),   // SEEK-HOLD-2026-07-20
     .ld_frame_o(ld_frame_o),
     .ld_playing_o(ld_playing_o)
 );

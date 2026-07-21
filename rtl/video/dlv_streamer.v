@@ -65,7 +65,21 @@ module dlv_streamer #(
     // DRAIN (not the fill) so audio stays silent + the read pointer holds during PARK/SEARCH/STOP
     // or an explicit AUDIO-off command, instead of free-running from the blob start the instant
     // the .dlv mounts (was: audible immediately, wrong scene at PLAY).
-    input             ld_playing
+    input             ld_playing,
+
+    // --- SEEK-HOLD-2026-07-20 step 1 (authentic LD seek latency) -----------------------------
+    // A real LD player stalls visibly while the head moves; the games were built around that
+    // pause. We hold BOTH streams on a seek, refill, then release together so they restart in
+    // sync instead of video racing to catch up.
+    output            aud_primed,   // ring has enough buffered to resume cleanly
+    input             hold_play,    // 1 = freeze audio playout (silence + HOLD aud_rd)
+    // SEEK-FLUSH-2026-07-20: 1-cycle pulse on the Z80's SEARCH command. EMPTIES the audio ring
+    // (aud_wr=aud_rd=0) so the old segment's buffered tail is DISCARDED and the ring refills with
+    // ONLY the new segment. Without this the hold merely paused aud_rd and then drained the stale
+    // old-segment audio on release -- i.e. it held but did NOT align. Flush + refill-while-held +
+    // release-with-video = the actual alignment the user asked for. (The existing seek_req/jump_w
+    // machinery re-points aud_lba to the new segment, so the refill sources the correct audio.)
+    input             seek_flush
 );
     //------------------------------------------------------------------------
     // Compressed-frame BRAM (video)
@@ -114,6 +128,11 @@ module dlv_streamer #(
     reg [31:0] aud_ring [0:(1<<AUD_AW)-1];
     reg [AUD_AW-1:0] aud_wr, aud_rd;
     wire [AUD_AW-1:0] aud_level = aud_wr - aud_rd;       // mod-2^AW occupancy (fill is capped so never wraps past)
+    // SEEK-HOLD-2026-07-20: "enough audio buffered to resume after a seek". Deliberately deeper
+    // than FILL_LOW (which only gates STARTING a video frame) so playback resumes with margin
+    // rather than on the edge of underrun. 3072 words = ~70 ms @44.1 kHz.
+    localparam [AUD_AW-1:0] SEEK_FILL = 12'd3072;
+    assign aud_primed = (aud_level >= SEEK_FILL);
 
     reg [23:0] aud_word_asm;                             // lanes 0..2 assembled during fill
     reg [31:0] aud_lba, aud_lba_start, aud_lba_end;      // audio sector cursor (+ loop bounds)
@@ -199,6 +218,10 @@ module dlv_streamer #(
     always @(posedge clk) begin
         if (reset) begin
             aud_wr <= {AUD_AW{1'b0}};
+        // SEEK-FLUSH-2026-07-20: empty the ring's write side on a seek. Priority over the fill so
+        // the pointer starts clean; the refill then begins from the re-pointed aud_lba.
+        end else if (seek_flush) begin
+            aud_wr <= {AUD_AW{1'b0}};
         end else if (aud_word_we) begin
             aud_ring[aud_wr] <= aud_word;
             aud_wr           <= aud_wr + 1'b1;
@@ -223,7 +246,19 @@ module dlv_streamer #(
             aud_rd <= {AUD_AW{1'b0}};
             pcm_l  <= 16'sd0;
             pcm_r  <= 16'sd0;
-        end else if (!ld_playing || on_leader || !header_valid) begin
+        // SEEK-FLUSH-2026-07-20: empty the ring's read side on a seek (matches aud_wr flush).
+        // aud_rd=0 with aud_wr=0 => ring empty => aud_level=0 => not primed => held until it
+        // refills past SEEK_FILL, at which point drain resumes from word 0 = the new segment's
+        // first sample, released together with the first new video frame.
+        end else if (seek_flush) begin
+            aud_rd <= {AUD_AW{1'b0}};
+            pcm_l  <= 16'sd0;
+            pcm_r  <= 16'sd0;
+        // SEEK-HOLD-2026-07-20: hold_play joins the existing mute+hold set. Identical semantics
+        // to the PARK/SEARCH/leader cases that already work: silence out, and aud_rd HELD so we
+        // resume exactly where we stopped instead of having drained ahead while muted. The FILL
+        // side keeps topping the ring up in the background (capped at FILL_HIGH).
+        end else if (hold_play || !ld_playing || on_leader || !header_valid) begin
             // AUDIO-GATE-2026-07-05: not PLAYing (PARK/SEARCH/STOP), OR still on the pre-content
             // leader, OR the header hasn't been parsed yet -> silence, and HOLD aud_rd so playback
             // resumes from the same point instead of having drained ahead while muted. (The fill

@@ -69,6 +69,7 @@ module DragonsLair_CPU
     output        dbg_led,
 
     // HLE-DRIVE-2026-07-04: LDV1000 HLE current disc frame -> streamer video/audio position
+    output        search_cmd_o,   // SEEK-HOLD-2026-07-20: Z80's CMD_SEARCH accepted (1-cycle)
     output [16:0] ld_frame_o,
 
     // AUDIO-GATE-2026-07-05: LDV1000 HLE playing flag -> streamer audio ring gate
@@ -334,6 +335,7 @@ DragonsLair_LDV1000 u_ldv1000 (
     .status         (ld_status),
     .status_strobe  (ld_status_strobe),
     .command_strobe (ld_command_strobe),
+    .search_cmd_o   (search_cmd_o),     // SEEK-HOLD-2026-07-20
     .curr_frame     (ld_curr_frame),
     .pause          (pause),            // HLE-DRIVE-2026-07-04: freeze disc motion during pause
     .playing        (ld_playing_w)      // AUDIO-GATE-2026-07-05

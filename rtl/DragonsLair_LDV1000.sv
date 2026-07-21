@@ -73,6 +73,11 @@ module DragonsLair_LDV1000
     output reg [7:0]  status,         // -> 0xC020 laserdisc_r
     output reg        status_strobe,  // -> SYSTEM b6   (idle 1, asserts low)
     output reg        command_strobe, // SYSTEM b7 = ~command_strobe (idle 1 => b7=0 ready)
+    // SEEK-HOLD-2026-07-20: 1-cycle pulse when the Z80's SEARCH command (CMD_SEARCH, 0xF7) is
+    // ACCEPTED. This is the REAL event -- the command from the CPU -- NOT an inference from head
+    // movement (a frame-delta threshold) and NOT a mode transition. A delta heuristic both guesses
+    // and misses: a seek shorter than its threshold would never register.
+    output reg        search_cmd_o,
     output reg [16:0] curr_frame,     // current disc frame (0..54000) for the video path
     input             pause,          // HLE-DRIVE-2026-07-04: freeze disc motion + strobes during pause
     output            playing         // AUDIO-GATE-2026-07-05: mode==M_PLAY, speed==1x, AND both AUDIO1/2
@@ -197,6 +202,11 @@ module DragonsLair_LDV1000
     wire [1:0] speed_rem = speed_sum[1:0];
 
     always @(posedge clk) begin
+        // SEEK-HOLD-2026-07-20: default LOW here, OUTSIDE the reset/pause branches, so
+        // search_cmd_o is ALWAYS a 1-cycle pulse. If this default lived inside the `!pause`
+        // branch, a pause asserting just after a SEARCH would FREEZE the pulse HIGH for the whole
+        // pause -- which downstream would read as a permanent seek and hold playback forever.
+        search_cmd_o <= 1'b0;
         if (!reset_n) begin
             mode <= M_PARK; status <= ST_PARK | ST_READY;   // 0xFC
             number <= 17'd0; search_frame <= 17'd0; stop_frame <= 17'd0;
@@ -391,6 +401,7 @@ module DragonsLair_LDV1000
                             search_frame <= number; mode <= M_SEARCH;
                             status <= ST_SEARCH;              // 0x50 busy
                             stop_valid <= 1'b0; number <= 17'd0;
+                            search_cmd_o <= 1'b1;             // SEEK-HOLD-2026-07-20: the REAL event
                         end
                         CMD_PLAY: begin
                             mode <= M_PLAY; status <= ST_PLAY; // 0x64

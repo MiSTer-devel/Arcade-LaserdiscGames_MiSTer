@@ -499,6 +499,27 @@ always @(posedge CLK_40M) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M (ioctl 
 end
 wire [15:0] dsw = {dip_sw[1], dip_sw[0]};
 wire [16:0] ld_curr_frame_top;   // HLE-DRIVE-2026-07-04: LD disc frame from DragonsLair -> dlv_streamer
+
+// ---- SEEK-HOLD-2026-07-20 (step 1: the delay mechanism) --------------------------------------
+// A real LD player does NOT seek instantly -- the head moves and playback visibly stalls. The
+// games were designed around that pause. Resuming instantly is what left video racing to catch up
+// (stutter, frames shown that should have been passed, audio ahead of picture). So: on a seek,
+// HOLD both streams, refill the pipeline, then release TOGETHER and free-run until the next seek.
+//   video : fb_adopt inhibited -> display FREEZES on the last frame (better than the black/zigzag
+//           a real player showed).
+//   audio : dlv_streamer mutes and HOLDS aud_rd, so the ring REFILLS instead of draining.
+// Release requires BOTH: SEEK_PRIME post-seek frames decoded AND the audio ring primed.
+//
+// Declared here (above the dlv_streamer instance) because the instance uses them; the rest of the
+// state machine lives with the framebuffer logic further down.
+wire       fb_seek_pulse;      // = the Z80's CMD_SEARCH, straight from the LDV1000
+reg        fb_seek_q;          // SEEK-HOLD-2026-07-20: edge-detect the arm. Belt-and-braces --
+wire       fb_seek_edge = fb_seek_pulse & ~fb_seek_q;   // if the source ever stuck HIGH, a
+                               // LEVEL-triggered arm would re-arm every cycle and the hold could
+                               // never release (FSM-model-proven). An EDGE can only arm once.
+wire       fb_aud_primed;      // from dlv_streamer (ring >= SEEK_FILL)
+reg        fb_seek_hold;       // driven in the framebuffer block below
+
 wire        ld_playing_top;      // AUDIO-GATE-2026-07-05: LD mode==PLAY from DragonsLair -> dlv_streamer
 
 //Instantiate Dragon's Lair top-level game module
@@ -527,7 +548,7 @@ DragonsLair dl_inst
 
 	.led_digits_o(led_digits_flat),
 	.dbg_led(dbg_led),
-	.ld_frame_o(ld_curr_frame_top),   // HLE-DRIVE-2026-07-04
+	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE / SEEK-HOLD-2026-07-20
 	.ld_playing_o(ld_playing_top)     // AUDIO-GATE-2026-07-05
 );
 
@@ -600,6 +621,7 @@ dlv_streamer #(.START_FRAME(17'd1000)) dlv_strm (
     .dec_reset(dec_reset_w),
     .pcm_l(pcm_l), .pcm_r(pcm_r),
     .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),   // HLE-DRIVE-2026-07-04
+    .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/FLUSH-2026-07-20
     .ld_playing(ld_playing_top)                             // AUDIO-GATE-2026-07-05
 );
 
@@ -670,13 +692,25 @@ reg  [1:0] fb_disp_idx;    // buffer the raster reader is displaying
 reg  [1:0] fb_ready_idx;   // most recently COMPLETED frame, waiting to be displayed
 reg        fb_have_new;    // a completed frame is waiting for the next vblank
 
+// ---- SEEK-HOLD-2026-07-20 state (see the note above the dlv_streamer instance) ---------------
+localparam [2:0]  SEEK_PRIME = 3'd3;          // post-seek frames to bank before resuming
+localparam [25:0] SEEK_TMO   = 26'd40000000;  // ~1 s @40 MHz -- SAFETY, see below
+reg  [2:0]  fb_prime_cnt;
+reg  [25:0] fb_seek_tmr;
+reg         fb_wr_stale;   // frame decoding when the seek hit -> finish it, but never publish it
+// ⚠️ SAFETY TIMEOUT IS NON-NEGOTIABLE. An unbounded "wait until buffers fill" is a brand-new
+// hard-lock source -- exactly the class of bug removed from this core (fill_idle/ddram). The
+// timer is NOT re-zeroed by a further seek while already holding, so a burst of seeks cannot keep
+// the hold alive indefinitely: the bound is measured from the FIRST seek of the burst.
+wire fb_seek_release = (fb_prime_cnt >= SEEK_PRIME && fb_aud_primed) || (fb_seek_tmr >= SEEK_TMO);
+
 reg        rr_vblank_q;
 wire       fb_vbl_rise = rr_vblank & ~rr_vblank_q;
 
 // Adoption and completion can land on the SAME cycle, so the free-buffer choice must be made
 // against the buffer that will be displayed AFTER this cycle -- not the current one. Using the
 // stale fb_disp_idx there would pick exactly the buffer vblank is about to start displaying.
-wire       fb_adopt    = fb_vbl_rise & fb_have_new;
+wire       fb_adopt    = fb_vbl_rise & fb_have_new & ~fb_seek_hold;   // SEEK-HOLD: freeze display
 wire [1:0] fb_next_disp = fb_adopt ? fb_ready_idx : fb_disp_idx;
 // the one index that is neither a nor b (0+1+2=3; valid because the invariant keeps them distinct)
 wire [1:0] fb_free_idx  = 2'd3 - fb_wr_idx - fb_next_disp;
@@ -689,7 +723,13 @@ always @(posedge CLK_40M) begin
         fb_ready_idx <= 2'd1;
         fb_have_new  <= 1'b0;
         rr_vblank_q  <= 1'b0;
+        fb_seek_q    <= 1'b0;
+        fb_seek_hold <= 1'b0;      // SEEK-HOLD-2026-07-20
+        fb_prime_cnt <= 3'd0;
+        fb_seek_tmr  <= 26'd0;
+        fb_wr_stale  <= 1'b0;
     end else begin
+        fb_seek_q <= fb_seek_pulse;   // SEEK-HOLD-2026-07-20
         // start of vblank: adopt the newest completed frame, if any
         if (fb_adopt) begin
             fb_disp_idx <= fb_ready_idx;
@@ -701,7 +741,28 @@ always @(posedge CLK_40M) begin
         if (dec_frame_done) begin
             fb_ready_idx <= fb_wr_idx;
             fb_wr_idx    <= fb_free_idx;   // != fb_next_disp by construction
-            fb_have_new  <= 1'b1;
+            // SEEK-HOLD: a frame that was mid-decode when the seek hit is from the OLD disc
+            // position -- let it finish into its buffer, but never publish it.
+            fb_have_new  <= ~fb_wr_stale;
+            fb_wr_stale  <= 1'b0;
+            // bank post-seek frames (a stale one does not count toward priming)
+            if (fb_seek_hold && !fb_wr_stale && fb_prime_cnt < SEEK_PRIME)
+                fb_prime_cnt <= fb_prime_cnt + 3'd1;
+        end
+        // SEEK-HOLD: run the safety timer and release once primed (or on timeout)
+        if (fb_seek_hold) begin
+            if (fb_seek_tmr < SEEK_TMO) fb_seek_tmr <= fb_seek_tmr + 26'd1;
+            if (fb_seek_release)        fb_seek_hold <= 1'b0;
+        end
+        // SEEK-HOLD: arm. LAST so it wins any coincidence -- a frame completing on the same cycle
+        // as a seek was decoded BEFORE it, so it is stale too. Note fb_seek_tmr is only zeroed
+        // when NOT already holding (see the safety note above).
+        if (fb_seek_edge) begin
+            fb_have_new  <= 1'b0;              // drop the frame waiting to be displayed
+            fb_wr_stale  <= 1'b1;              // and tag the one still decoding
+            fb_seek_hold <= 1'b1;
+            fb_prime_cnt <= 3'd0;
+            if (!fb_seek_hold) fb_seek_tmr <= 26'd0;
         end
     end
 end
