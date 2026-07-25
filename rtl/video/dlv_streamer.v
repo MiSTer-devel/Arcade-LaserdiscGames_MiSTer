@@ -362,9 +362,44 @@ module dlv_streamer #(
     wire        aud_jump  = (aud_fadv > 17'd2);                // >2 frames/cycle = seek, not 1x play
     wire        aud_muted = hold_play || !ld_playing || on_leader || !header_valid;
     wire        aud_drain = samp_tick && (aud_wr != aud_rd) && (aud_credit != 14'd0) && !aud_muted;
-    wire [14:0] aud_add   = (aud_jump)          ? 15'd0 :                  // samp_per_frame per frame
-                            (aud_fadv == 17'd1) ? {1'b0, samp_per_frame} :
-                            (aud_fadv == 17'd2) ? {samp_per_frame, 1'b0} : 15'd0;
+
+    // ---- FRAME-LOCK-SPF-FIX-2026-07-25 ---------------------------------------------------------
+    // HW 2026-07-25, Space Ace: *"absolutely a stuttery trash mess"* -- AFTER `ace.dlv` header @96
+    // was corrected to the film-rate 1839.3375. That patch fixed the WRONG CONSUMER: @96
+    // (`spf_q16`) feeds ONLY `aud_prod_q16`/`aud_target_lba`, i.e. WHERE a seek lands. The
+    // FRAME-LOCK drain credit below used `samp_per_frame`, which is `(aud_size>>2)/frame_count`
+    // (line ~341) -- the AUDIO-BLOB RATIO, not the header -- so Space Ace kept granting 1069
+    // samples per disc frame and the bucket still ran dry every frame. The comment at
+    // SEEK-Q16 even names "samp_per_frame's other user (the credit adder)"; it was not acted on.
+    // It also left the two INCONSISTENT (land at 1839.34, drain at 1069), which plausibly sounded
+    // worse than the original bug.
+    //
+    // THE KEY INSIGHT -- these two numbers answer DIFFERENT questions and must NOT share a source:
+    //   * the SEEK re-point pairs with the BLOB : samples per film frame AS PACKED = 1839.3375
+    //     (= SRATE * 1001/24000). Container-derived, per game. That is `spf_q16` @96. Correct.
+    //   * the DRAIN CREDIT pairs with the TICK  : it must let the ring drain at real-time 44100 Hz
+    //     given the rate `curr_frame` ACTUALLY advances, which is FILM_PERIOD in
+    //     DragonsLair_LDV1000.sv = 1,670,983 cyc = 23.93798 fps. So credit = 44100/23.93798 =
+    //     1842.27 -> 1842. Because FILM_PERIOD is a CONSTANT, this must be a constant too:
+    //     deriving it from the container is wrong BY DESIGN, which is what
+    //     SAMP-PER-FRAME-2026-07-20 got wrong and why Space Ace regressed while DL/TQ survived
+    //     (their blob ratios happen to equal ~1842).
+    // Supply becomes 23.93798 * 1842 = 44,094 /s = 99.99% of drain -- identical to DL, which is
+    // HW-confirmed good. Space Ace goes 58.1% -> 99.99%.
+    // Residual: credit (1842) vs blob (1839.34) differ 0.16%, so within one continuous scene audio
+    // creeps ~1.6 ms/s ahead of the seek map (~96 ms over 60 s), re-anchored at every SEARCH. Same
+    // class of residual the 2026-07-16 note already accepted. Closing it properly means making
+    // FILM_PERIOD the TRUE 23.976 fps -- do NOT do that now: it would also shift the display
+    // cadence ratio and the CADENCE-FIX-2026-07-24 refresh change is HW-CONFIRMED GOOD.
+    // ⚠️ If FILM_PERIOD is ever changed, THIS CONSTANT MUST CHANGE WITH IT (= 44100/film_fps).
+    localparam [13:0] SAMP_PER_TICK = 14'd1842;
+    // ORIGINAL (credit came from the container ratio -- the regression):
+    // wire [14:0] aud_add   = (aud_jump)          ? 15'd0 :
+    //                         (aud_fadv == 17'd1) ? {1'b0, samp_per_frame} :
+    //                         (aud_fadv == 17'd2) ? {samp_per_frame, 1'b0} : 15'd0;
+    wire [14:0] aud_add   = (aud_jump)          ? 15'd0 :                  // SAMP_PER_TICK per frame
+                            (aud_fadv == 17'd1) ? {1'b0, SAMP_PER_TICK} :
+                            (aud_fadv == 17'd2) ? {SAMP_PER_TICK, 1'b0} : 15'd0;
     wire [15:0] aud_cred_nx  = {2'b0, aud_credit} + {1'b0, aud_add} - (aud_drain ? 16'd1 : 16'd0);
     wire [13:0] aud_cred_cap = (aud_cred_nx > {2'b0, AUD_CREDIT_MAX}) ? AUD_CREDIT_MAX : aud_cred_nx[13:0];
 

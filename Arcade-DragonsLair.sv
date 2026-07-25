@@ -781,7 +781,18 @@ always @(posedge CLK_40M) begin
         // when NOT already holding (see the safety note above).
         if (fb_seek_edge) begin
             fb_have_new  <= 1'b0;              // drop the frame waiting to be displayed
-            fb_wr_stale  <= 1'b1;              // and tag the one still decoding
+            // STILL-FRAME-FIX-2026-07-25: original below, uncomment (and delete the line under it)
+            // to restore.  BUG: fb_wr_stale was tagged UNCONDITIONALLY on every seek, whether or
+            // not a decode was actually in flight.  It is cleared only by the next dec_frame_done,
+            // and that same completion does `fb_have_new <= ~fb_wr_stale`.  On a SEEK-TO-STILL the
+            // disc parks (M_STOP) so vid_target is CONSTANT, the REDUNDANT-REDRAW-FIX gate
+            // (dlv_streamer.v:721) fetches exactly ONE frame, and that one frame therefore always
+            // absorbed the stale tag: never published (fb_have_new stuck 0), and fb_prime_cnt never
+            // left 0 either (its guard is !fb_wr_stale).  Display stayed frozen on the PRE-SEEK
+            // buffer for the whole hold -- black whenever the previous scene faded out.  Stills only
+            // ever appeared when the watchdog (dlv_streamer.v:893) happened to force a re-fetch.
+            // fb_wr_stale  <= 1'b1;              // and tag the one still decoding
+            fb_wr_stale  <= ~dec_idle;         // only tag a frame that is ACTUALLY mid-decode
             fb_seek_hold <= 1'b1;
             fb_prime_cnt <= 3'd0;
             if (!fb_seek_hold) fb_seek_tmr <= 26'd0;
