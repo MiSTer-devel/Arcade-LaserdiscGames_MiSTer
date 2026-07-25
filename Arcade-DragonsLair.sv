@@ -230,8 +230,16 @@ wire horz = 1'b1;
 // AR is set to 320:252 (NOT 4:3) so pixels stay SQUARE and the 320x240 video sub-region renders
 // exact 4:3 — the LED band is proportional overscan above it, video undistorted / uncropped.
 // (This AR is HDMI/scaler-only; a real CRT ignores it.  If BAND_H changes, make this 240+BAND_H.)
-assign VIDEO_ARX = horz ? ((!ar) ? 12'd320 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
-assign VIDEO_ARY = horz ? ((!ar) ? 12'd252 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
+// RES-512x480-2026-07-24: 512x480 is ANAMORPHIC (non-square NTSC pixels), unlike 320x240 which was
+// already exact 4:3. So "Original" can no longer be the raw pixel count -- it must be the DISPLAY
+// ratio. The 480 video rows want 4:3, and BAND_H=12 rows are added on top, so:
+//     ARX:ARY = 4 : 3*(480+12)/480  ->  640 : 492
+// (the old 320:252 was the same construction for a 240-row 4:3 image plus the same 12-row band).
+// ORIGINAL:
+// assign VIDEO_ARX = horz ? ((!ar) ? 12'd320 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
+// assign VIDEO_ARY = horz ? ((!ar) ? 12'd252 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
+assign VIDEO_ARX = horz ? ((!ar) ? 12'd640 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
+assign VIDEO_ARY = horz ? ((!ar) ? 12'd500 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);  // 4 : 3*(480+BAND_H)/480
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -438,12 +446,14 @@ wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
 // LAYOUT-2026-07-04 (Option B — grow canvas): the LED band and the video are SEPARATE, never
 // overlaid.  The reader (fb_raster_reader #(.V_BAND(BAND_H))) grows the active frame to
-// 240+BAND_H rows: rows 0..BAND_H-1 = black band strip ON TOP, rows BAND_H.. = the FULL, pixel-
+// FB_ROWS_HW+BAND_H rows (RES-512x480-2026-07-24: 480+12; was 240+12): rows 0..BAND_H-1 = black band strip ON TOP, rows BAND_H.. = the FULL, pixel-
 // exact 320x240 video (NO crop, NO scale).  led_band lights rows 2..8 (inside the strip), so the
 // composite mux is unchanged: red text where lit in the strip, black elsewhere in it, video below.
 // NB: VIDEO_ARX/ARY "Original" is 320:(240+BAND_H) so the video stays exact 4:3 — if BAND_H
 // changes, update that ratio too (see the VIDEO_ARX/ARY assigns above).
-localparam [15:0] BAND_H = 16'd12;             // reserved top strip height in rows (glyphs at rows 2..8)
+// RES-512x480-FIX-2026-07-24: 12 -> 20. The 2x-magnified glyph needs BAND_Y0 + FH*2 = 16
+// rows; 20 leaves margin. ORIGINAL: localparam [15:0] BAND_H = 16'd12;
+localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
 wire  [7:0] comp_r = led_lit ? 8'hFF : rr_r;   // red band text in the strip, video below
 wire  [7:0] comp_g = led_lit ? 8'h00 : rr_g;
 wire  [7:0] comp_b = led_lit ? 8'h00 : rr_b;
@@ -473,7 +483,10 @@ wire        rr_fill_idle;
 // (DDR framebuffer) with the LED band composited over it — replaces the old core LED
 // raster + 512-wide doubling.  Everything is on the standard core-video path, so the
 // LED band shows AND the MiSTer screenshot captures it.
-arcade_video #(320,24) arcade_video
+// RES-512x480-2026-07-24: first parameter is arcade_video's WIDTH -- the depth of video_mixer's
+// scandoubler/hq2x line buffers. It MUST be >= H_ACT or those buffers wrap mid-line.
+// ORIGINAL: arcade_video #(320,24) arcade_video
+arcade_video #(512,24) arcade_video
 (
 	.*,
 
@@ -682,7 +695,16 @@ jpeg_frame_decoder dec (
 // wire [26:0] fb_wr_base = fb_buf_sel ? FB_BUF1_HW : FB_BUF0_HW;   // decoder writes here (back buffer)
 // wire [26:0] fb_rd_base = fb_buf_sel ? FB_BUF0_HW : FB_BUF1_HW;   // raster reader reads here (front buffer)
 
-localparam [26:0] FB_BUF_HW    = 27'd76800;   // 320*240 halfwords per buffer
+// ---- RES-512x480-2026-07-24: framebuffer geometry, defined ONCE and passed everywhere ----------
+// The Daphne source m2v IS 512x480, so encoding at 512x480 is a pure re-compress with NO resampling
+// at all -- which is why raising JPEG quality (q3 -> q2) and switching the downscale to lanczos both
+// bought ZERO visible improvement: resampling was never the dominant loss, the 320x240 pixel budget
+// was. 512 is also exactly fb_raster_reader's line-buffer ceiling (linebuf[0:1023] indexed
+// {buf, hcnt[8:0]} => 2 x 512), so the widest useful target needs no line-buffer change.
+// ORIGINAL (320x240): FB_COLS_HW=320, FB_ROWS_HW=240, FB_BUF_HW=27'd76800.
+localparam [15:0] FB_COLS_HW   = 16'd512;
+localparam [15:0] FB_ROWS_HW   = 16'd480;
+localparam [26:0] FB_BUF_HW    = 27'd245760;  // 512*480 halfwords per buffer (was 76800)
 localparam [26:0] FB_BUF0_HW   = 27'd0;
 localparam [26:0] FB_BUF1_HW   = FB_BUF_HW;
 localparam [26:0] FB_BUF2_HW   = FB_BUF_HW * 2;
@@ -772,7 +794,15 @@ wire [26:0] fb_wr_base = (fb_wr_idx   == 2'd0) ? FB_BUF0_HW :
 wire [26:0] fb_rd_base = (fb_disp_idx == 2'd0) ? FB_BUF0_HW :
                          (fb_disp_idx == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
 
-fb_writer #(.STRIDE_HW(16'd320)) fb_wr (
+// RES-512x480-2026-07-24: geometry now passed explicitly instead of relying on the module's
+// 320x240 defaults -- CLEAR_ROWS especially, which would otherwise clear only the top half of each
+// buffer and leave the rest as uninitialised DDR. ORIGINAL: fb_writer #(.STRIDE_HW(16'd320)) fb_wr (
+fb_writer #(
+    .STRIDE_HW (FB_COLS_HW),
+    .FB_COLS   (FB_COLS_HW),
+    .FB_ROWS   (FB_ROWS_HW),
+    .CLEAR_ROWS(FB_ROWS_HW)
+) fb_wr (
     .clk(CLK_40M), .reset(reset),
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
     .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
@@ -808,7 +838,31 @@ ddram ddram_fb (
 );
 
 // Read the framebuffer back in scan order, then composite the LED band over it.
-fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAND_H rows for the LED band, video below
+// LAYOUT-2026-07-04: reserve top BAND_H rows for the LED band, video below.
+// RES-512x480-2026-07-24: geometry + pixel-clock divider passed explicitly.
+//   raster = (512+8+32+24) x (480+12+8+4+16) = 576 x 520
+//   ce_pix = clk/2  ->  576*520*2 = 599,040 cyc = 14.98 ms = 66.8 Hz, safely above the 23.938 fps
+//   content rate. clk/8 would be 16.7 Hz here -- BELOW content rate, dropping frames at the display.
+// ⚠️ CE_DIV_LOG2 is the BANDWIDTH DIAL: DDR read traffic scales directly with refresh. If 512x480
+// starves, set 3'd2 (clk/4 = 33.4 Hz, still above content rate) to halve reads before changing
+// anything structural. ORIGINAL: fb_raster_reader #(.V_BAND(BAND_H)) rr (
+fb_raster_reader #(
+    .H_ACT      (FB_COLS_HW),
+    .V_ACT      (FB_ROWS_HW),
+    .STRIDE     (FB_COLS_HW),
+    .V_BAND     (BAND_H),
+    // RES-512x480-FIX-2026-07-24: was 3'd1 (clk/2, 66.8 Hz). HW result: **bottom of the picture cut
+    // off** -- the classic fill-stall signature. The reader must fetch H_ACT/4 = 128 words inside ONE
+    // line-time; at clk/2 that is 576*2 = 1152 cycles = only 9 cycles per DDR request, which it
+    // cannot make. It then misses the h_last swap, repeats the line, `fline` falls behind `vcnt`,
+    // and the bottom of the framebuffer is never scanned out. (Same mechanism as the 2026-07-15
+    // "progressive vertical stretch, mild at top / severe at bottom" -- that was DDR contention,
+    // this is line rate.) Per FRAME the bandwidth is fine (61,440 requests in 599,040 cycles); it is
+    // purely the per-LINE deadline.
+    // clk/4 -> 576*4 = 2304 cyc/line = 18 cycles per request, and 33.4 Hz is still above the
+    // 23.938 fps content rate. Also halves DDR read traffic (5.57 M/s -> 3.52 M/s).
+    .CE_DIV_LOG2(3'd2)
+) rr (
     .clk(CLK_40M), .reset(reset),
     .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),   // READ-COALESCE-2026-07-20
@@ -820,7 +874,9 @@ fb_raster_reader #(.V_BAND(BAND_H)) rr (   // LAYOUT-2026-07-04: reserve top BAN
     .vid_r(rr_r), .vid_g(rr_g), .vid_b(rr_b)
 );
 
-led_band led_band_i (
+// RES-512x480-FIX-2026-07-24: recentre for 512 wide and magnify 2x (see led_band.v).
+//   X_START = (512 - 33*6*2)/2 = 58.  ORIGINAL: led_band led_band_i (
+led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1)) led_band_i (
     .hc(rr_hpos), .vc(rr_vpos),
     .led_digits(led_digits_flat),   // real score/lives, restored 2026-07-15
     .seg_lit(led_lit)

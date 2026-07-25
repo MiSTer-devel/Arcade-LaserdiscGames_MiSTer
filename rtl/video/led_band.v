@@ -12,7 +12,14 @@
 // 8-13 P2 score, 14-15 credits.  (matches MAME dlair.lay / DragonsLair_CPU)
 //============================================================================
 module led_band #(
+    // RES-512x480-FIX-2026-07-24: X_START must be recentred for the new width, and the glyphs
+    // magnified or they render half-size on a 480-row image.
+    //   SCALE_LOG2=0 (1x): X_START = (W - N_SLOT*PITCH)/2      -> 320: 61
+    //   SCALE_LOG2=1 (2x): X_START = (W - N_SLOT*PITCH*2)/2    -> 512: 58
+    // The band must be tall enough for the magnified glyph: BAND_H >= BAND_Y0 + FH*2^SCALE_LOG2.
+    // ORIGINAL: parameter [15:0] X_START = 16'd61;  (no SCALE_LOG2)
     parameter [15:0] X_START = 16'd61,   // (320 - N_SLOT*PITCH)/2, centred
+    parameter [1:0]  SCALE_LOG2 = 2'd0,  // glyph magnification = 2^SCALE_LOG2
     parameter [15:0] BAND_Y0 = 16'd2
 )(
     input      [15:0] hc,
@@ -47,12 +54,16 @@ module led_band #(
         endcase
     endfunction
 
-    wire [15:0] bx   = hc - X_START;
-    wire [5:0]  slot = bx[15:0] / PITCH;         // 0..32
+    // RES-512x480-FIX-2026-07-24: >> SCALE_LOG2 magnifies by replicating source pixels; the
+    // in_band extents grow by the same factor. SCALE_LOG2=0 reproduces the original exactly.
+    wire [15:0] hoff = hc - X_START;
+    wire [15:0] voff = vc - BAND_Y0;
+    wire [15:0] bx   = hoff >> SCALE_LOG2;
+    wire [5:0]  slot = bx / PITCH;                // 0..32
     wire [2:0]  fx   = bx - slot*PITCH;           // 0..5 (5 = inter-char gap)
-    wire [2:0]  fy   = vc - BAND_Y0;              // 0..6 within the glyph
-    wire in_band = (hc >= X_START) && (hc < X_START + N_SLOT*PITCH) &&
-                   (vc >= BAND_Y0) && (vc < BAND_Y0 + FH);
+    wire [2:0]  fy   = voff >> SCALE_LOG2;        // 0..6 within the glyph
+    wire in_band = (hc >= X_START) && (hc < X_START + ((N_SLOT*PITCH) << SCALE_LOG2)) &&
+                   (vc >= BAND_Y0) && (vc < BAND_Y0 + (FH << SCALE_LOG2));
 
     // slot -> character (font code).  Dynamic slots pull led_digits[].
     reg [4:0] ch;

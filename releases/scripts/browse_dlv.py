@@ -16,8 +16,8 @@ Use the [Mark SEEN] / [Mark EXPECTED] buttons, then read the DIFF panel.
 
 Mapping (kept bit-identical to rtl/video/dlv_streamer.v):
     disc_rel   = ld_curr_frame - ld_leader            (clamped at 0)
-    vid_target = (disc_rel*mpeg_fpks + DISC_FPKS/2) / DISC_FPKS      [int div]
-The forward map is many-to-one (mpeg_fpks < DISC_FPKS), so the inverse is a
+    vid_target = disc_rel            [1:1, ONE-TO-ONE-FIX-2026-07-16]
+The old fps-ratio map below was a FABRICATION and is gone; the inverse used to be a
 RANGE of disc frames -- both ends are shown rather than a fake single value.
 
 Opcode table verified against Daphne ldp-in/ldv1000.cpp:181-214 (NOT MAME --
@@ -50,20 +50,34 @@ class Dlv:
     def __init__(self, path):
         self.path = path
         self.f = open(path, "rb")
-        h = self.f.read(96)
+        # DLV-V2-2026-07-24: read the WHOLE header sector, not the first 96 bytes -- v2 puts
+        # samp_per_frame_q16 @96 and max_frame_size @100, which a 96-byte read cannot see.
+        # ORIGINAL: h = self.f.read(96) / if len(h) < 96: raise ...
+        h = self.f.read(512)
         if len(h) < 96:
             raise ValueError("file too short to hold a .dlv header")
         magic, self.ver, self.w, self.h, self.frame_count = struct.unpack_from("<4sIIII", h, 0)
         if magic != b"DLV1":
             raise ValueError(f"bad magic {magic!r} (expected b'DLV1') -- not a .dlv?")
-        self.disc_fpks, self.mpeg_fpks, self.ldoff = struct.unpack_from("<III", h, 20)
+        # DLV-V2-2026-07-24: @24 (mpeg_fpks) is RESERVED=0 and @28 (ldoff) is SIGNED (TQ = -16).
+        self.disc_fpks, self.mpeg_fpks = struct.unpack_from("<II", h, 20)
+        (self.ldoff,) = struct.unpack_from("<i", h, 28)
         self.srate, self.chans, self.total_samples = struct.unpack_from("<IIQ", h, 32)
         self.idx_off, self.idx_len = struct.unpack_from("<QQ", h, 48)
         self.vid_off, self.vsize = struct.unpack_from("<QQ", h, 64)
         self.aud_off, self.asize = struct.unpack_from("<QQ", h, 80)
 
-        if self.mpeg_fpks == 0 or self.disc_fpks == 0:
-            raise ValueError("header has a zero fps field; container is broken")
+        # v2: samples-per-disc-frame in 16.16, and the largest coded frame.
+        self.spf_q16, self.max_frame = (struct.unpack_from("<II", h, 96)
+                                        if len(h) >= 104 else (0, 0))
+        if self.ver >= 2 and 1 << 20 <= self.spf_q16 < 1 << 27:
+            # fps derived from the AUDIO, which is the only self-consistent source; mpeg_fpks was
+            # removed in v2 precisely because it assumed audio duration == video duration.
+            self.fps = self.srate / (self.spf_q16 / 65536.0)
+        elif self.mpeg_fpks:
+            self.fps = self.mpeg_fpks / 1000.0          # v1 fallback
+        else:
+            raise ValueError("no usable frame rate in header (v1 with zero mpeg_fpks?)")
 
         # index: frame_count * {u32 off_in_video_blob, u32 size}
         self.f.seek(self.idx_off)
@@ -74,18 +88,17 @@ class Dlv:
 
     # ---- the RTL's forward map, integer-identical to dlv_streamer.v ----
     def disc_rel_to_vid(self, disc_rel):
-        return (disc_rel * self.mpeg_fpks + self.disc_fpks // 2) // self.disc_fpks
+        # ONE-TO-ONE-FIX-2026-07-16: the disc->video map is 1:1. The fps-ratio map this used to
+        # apply was a FABRICATION (Daphne's framefile is a single offset, with no fps scaling
+        # anywhere in its model) and was the "seeks to entirely the wrong frame" bug.
+        # ORIGINAL: return (disc_rel*self.mpeg_fpks + self.disc_fpks//2) // self.disc_fpks
+        return disc_rel
 
     def vid_to_disc_range(self, vid):
-        """Inverse of the above: the disc-frame span that maps to this video frame."""
-        d, m = self.disc_fpks, self.mpeg_fpks
-        lo_num = vid * d - d // 2
-        hi_num = (vid + 1) * d - d // 2
-        lo = max(0, -(-lo_num // m))          # ceil
-        hi = max(0, -(-hi_num // m) - 1)      # ceil - 1
-        if hi < lo:
-            hi = lo
-        return lo + self.ldoff, hi + self.ldoff
+        # ONE-TO-ONE-FIX-2026-07-16: the map is 1:1, so the inverse is exact -- one disc frame per
+        # video frame, not a range. The old many-to-one inverse existed only because of the
+        # fabricated fps-ratio map. Tuple kept so callers are unchanged.
+        return vid + self.ldoff, vid + self.ldoff
 
     def jpeg(self, vid):
         off, size = self.index[vid]
@@ -97,8 +110,22 @@ class Dlv:
 
 
 def digits_of(disc_frame, n=5):
-    s = str(disc_frame).zfill(n)
-    return [int(c) for c in s[-n:]]
+    """Disc frame -> the n decimal digits an LD-V1000 SEARCH would carry.
+
+    DLV-V2-2026-07-24: the disc frame CAN BE NEGATIVE. Thayer's Quest has ldoff = -16, so video
+    frames 0..15 sit at disc frames -16..-1 -- i.e. the capture starts BEFORE disc frame 0. There
+    is no digit encoding for a negative frame and a real player cannot SEARCH there, so clamp to 0
+    (see searchable() -- callers should say so rather than pretend frame 0 was requested).
+    Previously str(-16).zfill(5) gave '-0016' and int('-') raised ValueError.
+    ORIGINAL: s = str(disc_frame).zfill(n)
+    """
+    d = 0 if disc_frame < 0 else min(disc_frame, 10 ** n - 1)
+    return [int(c) for c in f"{d:0{n}d}"[-n:]]
+
+
+def searchable(disc_frame):
+    """False for frames a real LD-V1000 SEARCH cannot address (before disc frame 0)."""
+    return disc_frame >= 0
 
 
 def opcode_seq(disc_frame, with_acks=False):
@@ -219,11 +246,12 @@ class App:
             err = str(ex)
 
         lo, hi = d.vid_to_disc_range(self.vid)
-        t = self.vid / (d.mpeg_fpks / 1000.0)
+        t = self.vid / d.fps
         m = self.meta
         m.delete("1.0", "end")
         m.insert("end", f" file        {os.path.basename(d.path)}\n")
-        m.insert("end", f" {d.w}x{d.h}  frames={d.frame_count}  {d.mpeg_fpks/1000:.3f}fps\n")
+        m.insert("end", f" v{d.ver} {d.w}x{d.h}  frames={d.frame_count}  {d.fps:.3f}fps"
+                       f"  ldoff={d.ldoff}" + (f"  maxframe={d.max_frame}" if d.max_frame else "") + "\n")
         m.insert("end", f" ldoff(leader)={d.ldoff}   disc={d.disc_fpks/1000:.2f}fps\n")
         m.insert("end", "-" * 52 + "\n")
         m.insert("end", f" VIDEO frame   {self.vid}\n")
@@ -234,10 +262,13 @@ class App:
         m.insert("end", "-" * 52 + "\n")
         rng = f"{lo}" if lo == hi else f"{lo} .. {hi}"
         m.insert("end", f" DISC frame    {rng}\n")
-        m.insert("end", "   (disc->video is many-to-one; both ends shown)\n\n")
+        m.insert("end", "   (disc->video is 1:1 -- ONE-TO-ONE-FIX-2026-07-16)\n\n")
         for tag, df in (("lo", lo), ("hi", hi)) if lo != hi else (("", lo),):
             ds = digits_of(df)
-            m.insert("end", f"   {tag+':' if tag else '':4s}{df:05d}  digits {' '.join(map(str,ds))}\n")
+            m.insert("end", f"   {tag+':' if tag else '':4s}{df:>6d}  digits {' '.join(map(str,ds))}\n")
+            if not searchable(df):
+                m.insert("end", "        ** NEGATIVE disc frame -- BEFORE disc frame 0, so a real\n"
+                                "           LD-V1000 SEARCH cannot reach it. Digits shown clamped to 0. **\n")
             m.insert("end", f"        SEARCH  {hexs(opcode_seq(df))}\n")
         m.insert("end", "\n   (with 0xFF handshake ACKs, as really sent:)\n")
         m.insert("end", f"   {hexs(opcode_seq(lo, with_acks=True))}\n")
@@ -277,7 +308,7 @@ def main():
     except Exception as ex:
         sys.exit(f"failed to open {path}: {ex}")
     print(f"[dlv] {path}")
-    print(f"      {dlv.w}x{dlv.h} frames={dlv.frame_count} mpeg_fpks={dlv.mpeg_fpks} "
+    print(f"      v{dlv.ver} {dlv.w}x{dlv.h} frames={dlv.frame_count} fps={dlv.fps:.4f} "
           f"ldoff={dlv.ldoff} dur={dlv.duration_s():.1f}s")
     root = tk.Tk()
     App(root, dlv)

@@ -39,7 +39,15 @@ module fb_raster_reader #(
                                            //   video (row R -> framebuffer row R-V_BAND).  Video is NEVER cropped/scaled.
                                            //   V_BAND=0 => old behaviour (no band).
     parameter [15:0] H_FP = 16'd8, H_SYNC = 16'd32, H_BP = 16'd24,
-    parameter [15:0] V_FP = 16'd8, V_SYNC = 16'd4,  V_BP = 16'd16
+    parameter [15:0] V_FP = 16'd8, V_SYNC = 16'd4,  V_BP = 16'd16,
+    // RES-512x480-2026-07-24: ce_pix = clk / 2^CE_DIV_LOG2.  Was hardwired to clk/8, which at
+    // 320x240 gave 384*280*8 = 860,160 cyc = 21.5 ms = 46.5 Hz.  At 512x480 the raster is
+    // 576*520, so clk/8 would be 59.9 ms = 16.7 Hz -- BELOW the 23.938 fps content rate, i.e. we
+    // would drop frames at the display.  clk/2 gives 14.98 ms = 66.8 Hz, comfortably above it.
+    // This is also the BANDWIDTH DIAL: DDR read traffic scales directly with refresh rate, so if
+    // 512x480 turns out to be bandwidth-starved, raise this to 3'd2 (clk/4 = 33.4 Hz) and halve
+    // the read load before touching anything structural.
+    parameter [2:0]  CE_DIV_LOG2 = 3'd3
 )(
     input             clk,            // CLK_40M (= DDRAM_CLK)
     input             reset,          // active-high
@@ -76,10 +84,15 @@ module fb_raster_reader #(
     localparam [15:0] H_TOTAL = H_ACT + H_FP + H_SYNC + H_BP;
     localparam [15:0] V_TOTAL = V_DISP + V_FP + V_SYNC + V_BP;
 
-    // pixel clock enable = clk/8 (~5 MHz)
+    // pixel clock enable = clk / 2^CE_DIV_LOG2  (RES-512x480-2026-07-24; was hardwired clk/8).
+    // The counter still free-runs over its full 3 bits; only the compare mask narrows, so
+    // CE_DIV_LOG2=3 reproduces the original clk/8 exactly. Mask is built 4 bits wide first because
+    // (3'd1 << 3) would wrap to 0 in 3 bits.
+    localparam [3:0] CE_MASK4 = (4'd1 << CE_DIV_LOG2) - 4'd1;
+    localparam [2:0] CE_MASK  = CE_MASK4[2:0];
     reg [2:0] cediv = 3'd0;
     always @(posedge clk) cediv <= cediv + 3'd1;
-    assign ce_pix = (cediv == 3'd0);
+    assign ce_pix = ((cediv & CE_MASK) == 3'd0);
 
     // raster counters
     reg [15:0] hcnt = 16'd0, vcnt = 16'd0;
