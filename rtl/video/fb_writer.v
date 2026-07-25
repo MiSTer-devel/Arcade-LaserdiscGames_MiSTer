@@ -30,7 +30,11 @@ module fb_writer #(
     parameter [15:0] CLEAR_COLOR    = 16'hFFFF,  // solid fill so any decoder write is unmistakable
     // FB-RANGE-GUARD-2026-07-20: visible framebuffer extent; writes outside are DISCARDED
     parameter [15:0] FB_COLS        = 16'd320,
-    parameter [15:0] FB_ROWS        = 16'd240
+    parameter [15:0] FB_ROWS        = 16'd240,
+    // WRITE-COALESCE-2026-07-24 isolation switch. 1 = merge the 4 halfwords sharing a 64-bit DDR
+    // word (19,200 writes/frame). 0 = one write per pixel, EXACTLY the prior behaviour (76,800),
+    // with no code removed -- so a bad HW result is attributable by flipping this, not by reverting.
+    parameter        COALESCE       = 1'b1
 )(
     input             clk,          // DDRAM_CLK domain
     input             reset,        // active-high
@@ -113,7 +117,15 @@ module fb_writer #(
     // px_ready and ties core_jpeg's outport_accept_i to px_ready, so px_we structurally cannot
     // assert while this is low => no pixel can be dropped, the decoder just stalls.
     // assign px_ready = ~busy & ~clearing;
-    assign px_ready = ~busy & ~clearing & fill_idle;
+    // WRITE-COALESCE-2026-07-24: the decoder no longer stalls for EVERY write -- that is the whole
+    // throughput win. A pixel is accepted while a DDR write is in flight whenever it does not need
+    // the bus: either it merges into the group being accumulated (acc_hit), or the accumulator is
+    // empty. Only a pixel belonging to a DIFFERENT 64-bit word must wait, since that forces a flush.
+    // ORIGINAL (one stall per pixel), uncomment + set COALESCE=0 to revert:
+    // assign px_ready = ~busy & ~clearing & fill_idle;
+    // The new assign lives BELOW the coalescing wires it depends on -- Quartus 17 elaborates .v as
+    // Verilog-2001, where using a net before its declaration is not reliable (already a known
+    // sim-vs-synthesis divergence on this project), so declaration order here is load-bearing.
 
     // halfword index = base_hw + y*STRIDE_HW + x
     wire [26:0] hw_index = base_hw + (px_y * STRIDE_HW) + {11'd0, px_x};
@@ -143,6 +155,59 @@ module fb_writer #(
     // Clipping here (rather than in core_jpeg) keeps the third-party decoder untouched.
     wire in_range = (px_x < FB_COLS) && (px_y < FB_ROWS);
 
+    // ---- WRITE-COALESCE-2026-07-24 (5th attempt) ---------------------------------------------
+    // 76,800 single-halfword DDR writes per frame, each a serialised we_req/we_ack round trip, is
+    // the dominant term in decode latency (~41 ms of pure DDR latency at 20-cycle f2h latency --
+    // the entire frame budget, before any decoding). Merging the 4 halfwords that share a 64-bit
+    // word cuts that to 19,200 transactions. Measured previously: 934k -> 310k cycles, latency
+    // tolerance ~10 -> ~25 cycles, px_ready duty 8.5% -> 25%.
+    //
+    // core_jpeg emits in 8x8 BLOCK order, so consecutive px_we events walk x by 1 for 8 pixels.
+    // Blocks start on multiples of 8 and FB_COLS is a multiple of 4, so each block row yields
+    // exactly two COMPLETE 4-halfword groups -- coalescing is a natural 4:1 here, not opportunistic.
+    //
+    // *** WHY THIS ATTEMPT IS WRITTEN DIFFERENTLY FROM THE FOUR THAT FAILED ***
+    // All four previous versions passed every Verilator test and came back DEAD on hardware. Two
+    // structural reasons, both now addressed:
+    //  1. Their harness bypassed dlv_streamer, where the closed-loop dec_reset trap lived, so any
+    //     transient stall they introduced became a permanent wedge that sim could not model. That
+    //     trap is gone (WEDGE-WATCHDOG-2026-07-24) -- a stall now recovers and counts wd_trips.
+    //  2. A slot-mask accumulator naturally wants to be written as a full-vector NBA plus a
+    //     partial-select NBA to the SAME reg (acc_data <= 0; acc_data[slot*16 +: 16] <= px).
+    //     Quartus 17 and the simulator do NOT agree on that construct, and it has already bitten
+    //     this project once. So: EVERY register below gets EXACTLY ONE full-vector NBA, with the next
+    //     value computed in combinational wires. The construct cannot occur.
+    //
+    // COALESCE=0 restores one-write-per-pixel exactly (every pixel forces a flush of the previous
+    // single-pixel group) without removing any code -- the isolation switch, so a bad HW result can
+    // be attributed with a parameter change instead of a revert.
+    wire [24:0] px_grp  = hw_index[26:2];          // 64-bit word address
+    wire [63:0] px_dat  = {4{px565}};              // replicated; be_pix selects the live lane
+    wire [63:0] lane_m  = {{8{be_pix[7]}}, {8{be_pix[6]}}, {8{be_pix[5]}}, {8{be_pix[4]}},
+                           {8{be_pix[3]}}, {8{be_pix[2]}}, {8{be_pix[1]}}, {8{be_pix[0]}}};
+    reg  [63:0] acc_data;
+    reg   [7:0] acc_be;
+    reg  [24:0] acc_grp;
+    reg         acc_valid;
+    reg   [7:0] acc_idle;
+    localparam [7:0] ACC_IDLE_MAX = 8'd255;        // tail flush; see below
+
+    // px_we is (out_valid & px_ready), so px_ready must NOT depend on px_we or it forms a
+    // combinational loop. px_grp comes from px_x/px_y, which the decoder drives independently of
+    // px_ready, so gating on it is safe. When out_valid is low px_grp is don't-care and may assert
+    // this stall spuriously -- harmless, no pixel is being offered, and it clears when busy does.
+    wire        acc_hit   = acc_valid && (px_grp == acc_grp) && (COALESCE != 1'b0);
+    wire        grp_diff  = acc_valid && !acc_hit;
+    wire [63:0] acc_mrg   = (acc_data & ~lane_m) | (px_dat & lane_m);   // single expression
+    wire        acc_take  = px_we && in_range;
+    // Flush when an incoming pixel belongs to a different 64-bit word, or when the decoder has gone
+    // quiet (the frame's LAST group never sees a group change, so it needs this). A mid-frame stall
+    // longer than ACC_IDLE_MAX just flushes a partial group as a MASKED write -- correct, only
+    // slightly less efficient, at most one extra write per raster line.
+    wire        do_flush  = acc_valid && ((acc_take && grp_diff) || (acc_idle == ACC_IDLE_MAX));
+
+    assign px_ready = ~clearing & fill_idle & ~(busy & grp_diff);
+
     always @(posedge clk) begin
         if (reset) begin
             busy      <= 1'b0;
@@ -154,6 +219,11 @@ module fb_writer #(
             // DIAG-REVERT-2026-07-04: arm the clear sweep on every reset
             clearing  <= CLEAR_ON_RESET;
             clear_idx <= 27'd0;
+            acc_data  <= 64'd0;   // WRITE-COALESCE-2026-07-24
+            acc_be    <= 8'd0;
+            acc_grp   <= 25'd0;
+            acc_valid <= 1'b0;
+            acc_idle  <= 8'd0;
         end else if (clearing) begin
             // DIAG-REVERT-2026-07-04: fill FB_BASE_HW .. +CLEAR_WORDS-1 with CLEAR_COLOR, one halfword per
             // DDR write, reusing the exact we_req/we_ack handshake. Then drop 'clearing' and hand off below.
@@ -171,17 +241,52 @@ module fb_writer #(
                 else
                     clear_idx <= clear_idx + 27'd1;
             end
-        end else if (!busy) begin
-            if (px_we && in_range) begin      // FB-RANGE-GUARD-2026-07-20
-                wraddr <= hw_index;
-                din    <= px565;                                // RGB565
-                din64  <= {4{px565}};                           // WRITE-STAGE-A: as ddram did
-                be64   <= be_pix;                               //                as ddram did
-                we_req <= ~we_req;                              // request a write
-                busy   <= 1'b1;
+        end else begin
+            // WRITE-COALESCE-2026-07-24. ORIGINAL one-write-per-pixel body, uncomment to revert
+            // (and restore the px_ready assign above):
+            // end else if (!busy) begin
+            //     if (px_we && in_range) begin      // FB-RANGE-GUARD-2026-07-20
+            //         wraddr <= hw_index;
+            //         din    <= px565;
+            //         din64  <= {4{px565}};
+            //         be64   <= be_pix;
+            //         we_req <= ~we_req;
+            //         busy   <= 1'b1;
+            //     end
+            // end else if (we_ack == we_req) begin
+            //     busy <= 1'b0;
+            // end
+            //
+            // EVERY register below is written by exactly ONE full-vector NBA per branch -- no
+            // partial-select assignment to a reg that also takes a whole-vector one. That construct
+            // is where Verilator and Quartus 17 diverge, and it is the most likely reason four
+            // sim-clean attempts came back dead on hardware.
+            if (busy && (we_ack == we_req)) busy <= 1'b0;       // retire the in-flight write
+
+            if (acc_take)                                    acc_idle <= 8'd0;
+            else if (acc_valid && (acc_idle != ACC_IDLE_MAX)) acc_idle <= acc_idle + 8'd1;
+
+            if (!busy && do_flush) begin
+                wraddr    <= {acc_grp, 2'b00};                  // group -> halfword address
+                din       <= acc_data[15:0];                    // legacy port, kept driven
+                din64     <= acc_data;
+                be64      <= acc_be;                            // masked: partial groups are safe
+                we_req    <= ~we_req;
+                busy      <= 1'b1;
+                // this same cycle may also carry the first pixel of the NEXT group
+                acc_valid <= acc_take;
+                acc_grp   <= px_grp;
+                acc_data  <= px_dat;
+                acc_be    <= be_pix;
+                acc_idle  <= 8'd0;
+            end else if (acc_take) begin
+                // merge into the open group, or open a new one. Needs no DDR either way, which is
+                // why px_ready lets this happen while a write is still in flight.
+                acc_valid <= 1'b1;
+                acc_grp   <= px_grp;
+                acc_data  <= acc_hit ? acc_mrg          : px_dat;
+                acc_be    <= acc_hit ? (acc_be | be_pix) : be_pix;
             end
-        end else if (we_ack == we_req) begin
-            busy <= 1'b0;                                       // write complete
         end
     end
 endmodule
