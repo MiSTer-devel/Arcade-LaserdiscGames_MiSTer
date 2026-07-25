@@ -84,7 +84,15 @@ module dlv_streamer #(
     //------------------------------------------------------------------------
     // Compressed-frame BRAM (video)
     //------------------------------------------------------------------------
-    localparam FBUF_AW = 15;                 // 32 KB (largest q3 320x240 JPEG ~24 KB)
+    // FBUF-GROW-2026-07-24: 15 -> 17 (32 KB -> 128 KB).
+    // The q3 320x240 encode peaks at 30,051 B = 92% of the old 32 KB buffer, so ANY quality or
+    // resolution increase overflowed it -- and the overflow is SILENT: `fbuf[bytes_got[FBUF_AW-1:0]]`
+    // wraps and `frm_size[FBUF_AW-1:0]-1` truncates, feeding the decoder a corrupt JPEG with no
+    // error anywhere. 128 KB costs ~77 M10K of the 348 free (block memory 26% -> ~39%) and covers
+    // any 320x240 quality plus a later resolution bump. pack_dlv.py now hard-fails at pack time if a
+    // frame does not fit, and names the FBUF_AW required.
+    // localparam FBUF_AW = 15;              // ORIGINAL, 32 KB -- uncomment to revert
+    localparam FBUF_AW = 17;                 // 128 KB
     reg [7:0] fbuf [0:(1<<FBUF_AW)-1];
     reg [7:0] fbuf_q;
     assign out_byte = fbuf_q;
@@ -99,7 +107,12 @@ module dlv_streamer #(
     // NOTHING, so the RTL hardcoded LD_LEADER=151 (right for DL by luck only) and a 1:1 video ratio
     // (known wrong per the handoff, root cause was just never traced back to "read the header field").
     reg [31:0] ld_leader_off;   // header@28: disc frame where the captured content begins (was: LD_LEADER const)
-    reg [31:0] mpeg_fpks;       // header@24: this capture's true fps*1000, scales vid_target (VIDEO-RATIO-2026-07-05)
+    // DLV-V2-2026-07-24: header@24 (mpeg_fpks) is GONE -- pack_dlv.py writes 0 there now. It was
+    // derived by assuming audio duration == video duration (impossible 41.218 fps for Space Ace) and
+    // nothing has read it since the disc->video map was established as 1:1. This reg is repurposed
+    // for the field that replaces it.
+    // reg [31:0] mpeg_fpks;    // ORIGINAL header@24 -- uncomment to revert
+    reg [31:0] spf_q16_hdr;     // header@96: samples per DISC frame, 16.16 fixed point (.dlv v2)
     reg        header_valid;
 
     // current frame index entry
@@ -435,12 +448,46 @@ module dlv_streamer #(
     // SAMP_PER_FRAME is now the COMPUTED `samp_per_frame` wire (SAMP-PER-FRAME-2026-07-20 above),
     // derived from the header's mpeg_fpks so it tracks a re-encode. (Old: localparam 12'd1842.)
 
-    wire [16:0] ld_leader = ld_leader_off[16:0];
-    wire [16:0] disc_rel = (ld_curr_frame > ld_leader) ? (ld_curr_frame - ld_leader) : 17'd0;
+    // ---- SIGNED-LEADER-2026-07-24 -------------------------------------------------------------
+    // header@28 is a SIGNED s32. Dragon's Lair is +151 and Space Ace +2, but **Thayer's Quest is
+    // -16** -- its capture begins BEFORE disc frame 0. Read unsigned, -16 became 0x1FFF0 = 131056,
+    // so `ld_curr_frame > ld_leader` was never true (disc_rel pinned at 0 = permanently frame 0) and
+    // `on_leader` was always true (audio permanently muted). Both are fixed by reading it signed.
+    // A negative offset means there is no leader at all, hence the clamp to 0.
+    // ORIGINAL: wire [16:0] ld_leader = ld_leader_off[16:0];
+    wire signed [31:0] ld_leader_s = ld_leader_off;
+    wire [16:0] ld_leader  = (ld_leader_s <= 32'sd0)      ? 17'd0     :
+                             (ld_leader_s > 32'sd131071)  ? 17'h1FFFF : ld_leader_s[16:0];
+    // ORIGINAL: wire [16:0] disc_rel = (ld_curr_frame > ld_leader) ? (ld_curr_frame - ld_leader) : 17'd0;
+    wire signed [31:0] disc_rel_s = $signed({15'd0, ld_curr_frame}) - ld_leader_s;
+    wire [16:0] disc_rel   = (disc_rel_s <= 32'sd0)       ? 17'd0     :
+                             (disc_rel_s > 32'sd131071)   ? 17'h1FFFF : disc_rel_s[16:0];
 
-    // audio target sector = aud_lba_start + (disc_rel * 1471 samples) / 128 samples-per-sector
-    wire [31:0] aud_prod       = disc_rel * samp_per_frame;   // SAMP-PER-FRAME-2026-07-20
-    wire [31:0] aud_target_lba = aud_lba_start + (aud_prod >> 7);
+    // ---- SEEK-Q16-2026-07-24: EXACT audio seek re-point ----------------------------------------
+    // THE BUG THIS FIXES (root cause of "some segments start off out of sync IMMEDIATELY"):
+    // samp_per_frame is an INTEGER divide, 1842 for DL, but the true value is
+    // 81343495/44154 = 1842.267858. The seek re-point MULTIPLIES that 0.267858 error by the frame
+    // number, so the landing error grows LINEARLY with disc position -- 6.07 ms per 1000 disc frames:
+    //     disc_rel  5,000 ->  30 ms   (attract loops back to a low frame => looked perfect)
+    //     disc_rel 35,000 -> 213 ms   (whirlpools/rapids => audibly wrong the instant they land)
+    //     disc_rel 44,003 -> 267 ms   (end of disc)
+    // Fix: take samples-per-disc-frame from the .dlv v2 header as 16.16 fixed point (@96) instead of
+    // recomputing a truncated integer. Residual error: 267 ms -> 0.005 ms.
+    //
+    // BACKWARD COMPATIBLE: a v1 image has 0 at @96 (the old packer zero-filled the header), which
+    // fails the range test and falls back to `samp_per_frame << 16` -- i.e. EXACTLY today's
+    // behaviour. An un-repacked Space Ace / Thayer's Quest still boots and behaves as it does now.
+    // ⚠️ That fallback is why the (aud_size>>2)/frame_count divider is KEPT rather than deleted as
+    // originally planned -- deleting it would silently desync any image not yet repacked to v2.
+    // Once every game is v2 it can go, along with samp_per_frame's other user (the credit adder).
+    wire        spf_hdr_ok = header_valid && (spf_q16_hdr >= 32'd1048576)      // >= 16.0 samp/frame
+                                          && (spf_q16_hdr <  32'd134217728);   // <  2048.0
+    wire [29:0] spf_q16    = spf_hdr_ok ? spf_q16_hdr[29:0] : {samp_per_frame, 16'd0};
+
+    // audio target sector = aud_lba_start + (disc_rel * samples_per_frame) / 128 samples-per-sector
+    // >>16 undoes the Q16 scaling and >>7 converts samples to sectors, hence >>23.
+    wire [46:0] aud_prod_q16   = disc_rel * spf_q16;
+    wire [31:0] aud_target_lba = aud_lba_start + {8'd0, aud_prod_q16[46:23]};
 
     // VIDEO-RATIO-2026-07-05: real ratio applied (was a 1:1 placeholder). video_frame =
     // round(disc_rel * mpeg_fpks / DISC_FPKS). mpeg_fpks is header@24 (this capture's true
@@ -563,6 +610,9 @@ module dlv_streamer #(
             sd_rd <= 1'b0; sd_lba <= 32'd0; sd_blk_cnt <= 6'd0;
             out_valid <= 1'b0; out_last <= 1'b0;
             header_valid <= 1'b0; frame_fetch <= 1'b0;
+            // DLV-V2-2026-07-24: 0 => "absent", so a v1 image deterministically takes the
+            // samp_per_frame fallback instead of powering up on an undefined value.
+            spf_q16_hdr  <= 32'd0;
             // DEAD-TEST-VALUE-FIX-2026-07-15: was START_FRAME (hardcoded 1000, a leftover
             // free-run test value from before ld_curr_frame-driven fetching existed). Meaningless
             // here anyway -- superseded below the instant header_valid inits (which now uses the
@@ -722,10 +772,13 @@ module dlv_streamer #(
                         9'd17: frame_count[15:8]  <= sd_buff_dout;
                         9'd18: frame_count[23:16] <= sd_buff_dout;
                         9'd19: frame_count[31:24] <= sd_buff_dout;
-                        9'd24: mpeg_fpks[7:0]     <= sd_buff_dout;   // HEADER-FIELDS-2026-07-05
-                        9'd25: mpeg_fpks[15:8]    <= sd_buff_dout;
-                        9'd26: mpeg_fpks[23:16]   <= sd_buff_dout;
-                        9'd27: mpeg_fpks[31:24]   <= sd_buff_dout;
+                        // DLV-V2-2026-07-24: @24 (mpeg_fpks) no longer parsed -- it is RESERVED=0.
+                        // The v2 field below replaces it. Original:
+                        //   9'd24: mpeg_fpks[7:0]  <= sd_buff_dout;  ... 9'd27: mpeg_fpks[31:24] <= ...
+                        9'd96:  spf_q16_hdr[7:0]   <= sd_buff_dout;   // samples/disc-frame, Q16
+                        9'd97:  spf_q16_hdr[15:8]  <= sd_buff_dout;
+                        9'd98:  spf_q16_hdr[23:16] <= sd_buff_dout;
+                        9'd99:  spf_q16_hdr[31:24] <= sd_buff_dout;
                         9'd28: ld_leader_off[7:0]  <= sd_buff_dout;   // HEADER-FIELDS-2026-07-05
                         9'd29: ld_leader_off[15:8] <= sd_buff_dout;
                         9'd30: ld_leader_off[23:16]<= sd_buff_dout;
