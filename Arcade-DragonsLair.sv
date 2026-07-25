@@ -861,7 +861,43 @@ fb_raster_reader #(
     // purely the per-LINE deadline.
     // clk/4 -> 576*4 = 2304 cyc/line = 18 cycles per request, and 33.4 Hz is still above the
     // 23.938 fps content rate. Also halves DDR read traffic (5.57 M/s -> 3.52 M/s).
-    .CE_DIV_LOG2(3'd2)
+    .CE_DIV_LOG2(3'd2),
+
+    // ---- CADENCE-FIX-2026-07-24 ------------------------------------------------------------
+    // SYMPTOM this addresses (user, on Space Ace): "the graphics are very jumpy" -- specifically
+    // a LURCHING CADENCE of otherwise-correct footage (not corrupt frames, not wrong scenes).
+    //
+    // A new film frame can only become visible at the start of a display scan, so what matters is
+    // refresh / film_rate.  refresh = 40e6 / (2^CE_DIV_LOG2 * H_TOTAL * V_TOTAL), where
+    // H_TOTAL = H_ACT+H_FP+H_SYNC+H_BP and V_TOTAL = V_ACT+V_BAND+V_FP+V_SYNC+V_BP:
+    //   BEFORE (320x240, BAND_H=12, clk/8): 384*280  -> 46.503 Hz = 1.9427x  =~ 2  -> every film
+    //       frame got exactly TWO refreshes; even cadence, one mild hitch every ~17 frames. SMOOTH.
+    //   AFTER  (512x480, BAND_H=20, clk/4): 576*528  -> 32.881 Hz = 1.3736x -> 41.774 ms of content
+    //       against a 30.413 ms refresh means frames alternate ONE and TWO refreshes, i.e. on-screen
+    //       durations of 30.4 / 60.8 ms -- a 2:1 swing about 3 times per 8 film frames (~9 Hz).
+    //       That is the lurch.  The resolution change did this; it is NOT Space Ace specific.
+    // clk/2 (66.8 Hz, 2.789x) is not available -- it already failed on HW (per-LINE deadline, see
+    // RES-512x480-FIX above), and 2x the film rate (47.876 Hz) needs clk/2-class rates too:
+    // at clk/4 it would need H_TOTAL*V_TOTAL = 208,878 < the 512*500 = 256,000 active pixels.
+    //
+    // So the only integer ratio reachable at clk/4 is 1:1 -- ONE refresh per film frame, which is
+    // the ideal presentation for film content (zero judder by construction).  Pure BLANKING change:
+    //   V_TOTAL = 500+8+4+213 = 725 ; 4*576*725 = 1,670,400 cyc = 23.9464 Hz
+    //   film_tick (DragonsLair_LDV1000.sv FILM_PERIOD) = 1,670,983 cyc = 23.9380 Hz
+    //   ratio 1.00035 -> phase slips one refresh every ~2860 frames (~2 min): a single micro-hitch,
+    //   versus the current ~9 Hz lurch.
+    // BONUS: fewer scans/second CUTS DDR read traffic another 27% (3.52 M/s -> 2.57 M/s), which is
+    // the opposite direction from every other option here.
+    // Per-LINE budget is UNCHANGED (still clk/4 = 2304 cyc/line = 18 cyc/request, the known-good
+    // value), so this cannot reintroduce the bottom-of-picture cut-off.
+    //
+    // ⚠️ UNVERIFIED ON HW, AND ONE REAL RISK: a ~23.9 Hz core output is unusually low for the
+    // MiSTer video chain. If the scaler/monitor flickers or refuses it, REVERT THIS ONE LINE
+    // (V_BP back to the 16 default) and the only loss is that the lurch returns.
+    // ⚠️ ALSO CHECK DRAGON'S LAIR IN THE SAME BUILD: DL and TQ share the 23.938 film tick, so they
+    // were juddering too. If DL looked SMOOTH before this change, the analysis above is WRONG.
+    // ORIGINAL: V_BP defaulted to 16'd16 (V_TOTAL 528 -> 32.881 Hz). Delete this line to revert.
+    .V_BP       (16'd213)
 ) rr (
     .clk(CLK_40M), .reset(reset),
     .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
