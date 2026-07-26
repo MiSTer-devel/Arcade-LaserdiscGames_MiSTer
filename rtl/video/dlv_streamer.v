@@ -248,6 +248,11 @@ module dlv_streamer #(
     reg [20:0] frame_cnt;
     reg        frame_tick;
     reg        frame_pending;
+    // FETCH-PHASE-LOCK-2026-07-25: content-change detect, driven below (after vid_target is
+    // declared).  Declared HERE so frame_pending's block can read it without a forward reference
+    // -- this is a .v file, elaborated as Verilog-2001.
+    reg [16:0] vid_target_q;
+    reg        vid_chg;
     // FRAME-TICK-SWALLOW-FIX-2026-07-24: frame_start CLEARS frame_pending (below), but it was
     // testing only "would S_READY like to fetch?" while the S_READY case chain could still take an
     // EARLIER branch and fetch nothing -- so the 30 Hz tick was consumed with no frame fetched.
@@ -270,7 +275,14 @@ module dlv_streamer #(
     always @(posedge clk) begin
         if (reset) frame_pending <= 1'b0;
         else begin
-            if (frame_tick)  frame_pending <= 1'b1;
+            // FETCH-PHASE-LOCK-2026-07-25: revert = uncomment orig, delete the line below + the
+            // vid_target_q/vid_chg regs and their always block.
+            // BUG: pacer free-ran at 30 Hz (FRAME_DIV) while content advances at 23.938 (FILM_PERIOD)
+            // => changes detected 0-33 ms late, phase walking => +/-0.8 frame jitter at segment ends.
+            // ADDITIVE: frame_tick KEPT as safety net (watchdog re-fetch + re-mount rely on it);
+            // vid_chg just means we stop WAITING. Rate still bounded by fetch duration, not this tick.
+            // if (frame_tick)  frame_pending <= 1'b1;
+            if (frame_tick || vid_chg) frame_pending <= 1'b1;
             if (frame_start) frame_pending <= 1'b0;   // clear wins if same cycle
         end
     end
@@ -589,6 +601,18 @@ module dlv_streamer #(
     // wire [16:0] vid_ratio  = vid_scaled[16:0];
     wire [16:0] vid_ratio  = disc_rel;                       // 1:1, per Daphne's framefile
     wire [16:0] vid_target = (vid_ratio >= frame_count[16:0]) ? (frame_count[16:0] - 17'd1) : vid_ratio;
+
+    // FETCH-PHASE-LOCK-2026-07-25: 1-cycle pulse when the mapped frame changes. Declared up with the
+    // pacer regs; driven here, where vid_target exists. Delete this block to revert.
+    always @(posedge clk) begin
+        if (reset) begin
+            vid_target_q <= {17{1'b1}};
+            vid_chg      <= 1'b0;
+        end else begin
+            vid_target_q <= vid_target;
+            vid_chg      <= (vid_target != vid_target_q);
+        end
+    end
 
     // SEARCH-sized jump detect: PLAY advances +1/frame -> no jump; SEARCH ramps in big steps -> jump.
     reg  [16:0] prev_ld;

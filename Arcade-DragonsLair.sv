@@ -792,7 +792,15 @@ always @(posedge CLK_40M) begin
             // buffer for the whole hold -- black whenever the previous scene faded out.  Stills only
             // ever appeared when the watchdog (dlv_streamer.v:893) happened to force a re-fetch.
             // fb_wr_stale  <= 1'b1;              // and tag the one still decoding
-            fb_wr_stale  <= ~dec_idle;         // only tag a frame that is ACTUALLY mid-decode
+            // INFLIGHT-FIX-2026-07-25: ~dec_idle alone was WRONG -- frame_fetch holds the decoder in
+            // reset for the WHOLE SD read (dlv_streamer.v:747 set, :779 cleared only after every
+            // sector is in), so dec_idle reads 1 (idle) for ~40-100 ms of the frame's life and a seek
+            // landing there left the in-flight frame untagged => it published = the "one spare frame"
+            // (HW 2026-07-25). dec_reset_w = reset|frame_fetch|wd_rst covers the fetch phase.
+            // Residual hole: frame_fetch drops at :779 but dec_idle stays 1 until img_start_i (JPEG
+            // header parse, ~10-50 us = ~0.1% of a 41.8 ms frame). Revert = restore the line below.
+            // fb_wr_stale  <= ~dec_idle;         // only tag a frame that is ACTUALLY mid-decode
+            fb_wr_stale  <= ~dec_idle | dec_reset_w;   // tag anything IN FLIGHT: fetching or decoding
             fb_seek_hold <= 1'b1;
             fb_prime_cnt <= 3'd0;
             if (!fb_seek_hold) fb_seek_tmr <= 26'd0;
