@@ -18,7 +18,7 @@ module DragonsLair
     input                clk_sys,
 
     // Player inputs (active HIGH)
-    input          [7:0] p1,          // {3'b0, btn1, right, left, down, up}
+    input          [7:0] p1,          // {skill3,skill2,skill1, btn1, right, left, down, up}
     input          [3:0] cab,         // {coin2, coin1, start2, start1}
 
     // Option switches: dsw[7:0]=DSW1 (AY port A), dsw[15:8]=DSW2 (AY port B)

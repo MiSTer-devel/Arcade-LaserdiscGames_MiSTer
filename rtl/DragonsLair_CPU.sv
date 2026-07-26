@@ -43,7 +43,7 @@ module DragonsLair_CPU
     input         clk_sys,           // 40 MHz master clock (CLK_40M from PLL)
 
     // Player inputs (active HIGH; inverted to active-low bus internally)
-    input   [7:0] p1,                // {3'b0, btn1, right, left, down, up}
+    input   [7:0] p1,                // {skill3,skill2,skill1, btn1, right, left, down, up}
     input   [3:0] cab,               // {coin2, coin1, start2, start1}
 
     // Option switches, read through the AY I/O ports:
@@ -143,7 +143,9 @@ wire [7:0] rom_D;
 wire [7:0] workram_D;
 wire [7:0] ay_dout;
 
-// P1 (0xC008): active-low, bits 5-7 unused (pulled high)
+// P1 (0xC008): active-low. Daphne calls this the "joystick/spaceace skill query" (lair.cpp:771).
+// SKILL-BUTTONS-2026-07-25: b5/b6/b7 are NOT unused -- they are Space Ace's Cadet/Captain/Space Ace
+// skill-level buttons (daughter board; lair.cpp:1055-1063). Dragon's Lair just never reads them.
 wire [7:0] p1_bus = ~p1;
 
 // SYSTEM (0xC010): b0 START1, b1 START2, b2 COIN1, b3 COIN2 (active-low),

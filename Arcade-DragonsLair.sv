@@ -408,7 +408,14 @@ wire m_down1    = btn_down      | joystick_0[2];
 wire m_left1    = btn_left      | joystick_0[1];
 wire m_right1   = btn_right     | joystick_0[0];
 wire m_action1  = btn_fire      | joystick_0[4];
-// Cadet, Captain, Space Ace buttons 5-7
+// SKILL-BUTTONS-2026-07-25: Space Ace's skill-level daughter board. Authority = Daphne
+// game/lair.cpp:1055-1063 (SWITCH_SKILL1/2/3 clear joyskill bits 5/6/7); port $C008 is the
+// "joystick/spaceace skill query" (lair.cpp:771). Active-low at the port via p1_bus = ~p1.
+// MRA button order (Fire,Cadet,Captain,SpaceAce,...) = joystick_0[4],[5],[6],[7].
+// Unused by Dragon's Lair, which simply never reads these bits.
+wire m_skill1   = joystick_0[5];   // Cadet      -> p1[5]
+wire m_skill2   = joystick_0[6];   // Captain    -> p1[6]
+wire m_skill3   = joystick_0[7];   // Space Ace  -> p1[7]
 
 //Start/Coin
 wire m_start1   = btn_1p_start  | joystick_0[9];
@@ -543,7 +550,9 @@ DragonsLair dl_inst
 	.clk_sys(CLK_40M),   // 40 MHz: Z80=/10=4MHz, AY=/20=2MHz, pixel=/8=5MHz (real-hardware speed)
 
 	// P1 (0xC008): {3'b0, action, right, left, down, up} active-high (inverted to active-low bus inside)
-	.p1({3'b000, m_action1, m_right1, m_left1, m_down1, m_up1}),
+	// SKILL-BUTTONS-2026-07-25: original was `{3'b000, m_action1, ...}` -- bits 7:5 tied off, so
+	// Space Ace's Cadet/Captain/Space Ace buttons could never be pressed. Restore to revert.
+	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
 	// SYSTEM (0xC010) cabinet bits: {coin2, coin1, start2, start1} active-high
 	.cab({m_coin2, m_coin1, m_start2, m_start1}),
 	// dsw[7:0] = DSW1 (AY port A), dsw[15:8] = DSW2 (AY port B)
