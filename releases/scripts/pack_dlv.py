@@ -88,17 +88,27 @@ to a low frame) fine.  Exactly the reported symptom.
 
 Q16 fixed point fixes it exactly, and costs the FPGA nothing -- it REPLACES a runtime
 32-bit divider with a header field, and the multiply fits one Cyclone V DSP:
-    samp_per_frame_q16 = round(total_samples * 65536 / frame_count)
-    (Dragon's Lair: 120,734,867 -- 27 bits)
     aud_target_lba = aud_lba_start + ((disc_rel * samp_per_frame_q16) >> 23)
 Residual error: 267 ms -> 0.015 ms.
+
+*** HOW samp_per_frame_q16 IS DERIVED -- FILM-RATE-SPF-2026-07-24, READ THIS ***
+    samp_per_frame_q16 = round(SRATE * fps_den / fps_num * 65536)     <- FILM RATE
+    (24000/1001 -> 1839.3375 samp/frame -> 120,542,822.  Same for DL, SA and TQ.)
+It is NOT round(total_samples * 65536 / frame_count).  That earlier formula assumed the
+audio track spans the whole video; it does for DL and TQ, but Space Ace's ace.ogg
+(1422.7 s) covers only 34,107 of ace.m2v's 58,643 frames, so SA got 1069.91 samp/frame
+= an impossible 41.218 fps, which starved the RTL's frame-lock audio credit to 58% (a
+23.9 Hz stutter + 0.42 s of lag per second) and stretched the audio<->video map 1.72x.
+Daphne paces the ogg in real time against the m2v's own fps and never uses a
+frames<->samples ratio, so a container Daphne plays perfectly broke only in OUR packer.
+total_samples / asize still describe how much audio EXISTS; this field is the RATE.
 
 BACKWARD COMPATIBILITY: v1 files have zero at offset 96.  The RTL treats an
 out-of-range value as "absent" and falls back to the old computed divide, so an
 un-repacked .dlv keeps working exactly as it does today.  No flag day.
 ===============================================================================
 """
-import os, re, sys, struct, shutil, argparse, subprocess
+import os, re, sys, mmap, struct, shutil, argparse, subprocess, tempfile
 from multiprocessing import Pool, cpu_count
 
 SECTOR    = 512
@@ -107,6 +117,34 @@ SRATE     = 44100
 CHANS     = 2
 MAGIC     = b"DLV1"
 VER       = 2
+
+
+# ----------------------------------------------------------------------------
+# FILM-RATE-SPF-2026-07-24
+# ----------------------------------------------------------------------------
+def probe_fps(m2v_path):
+    """-> (num, den) frame rate from the m2v's own MPEG-2 sequence header.
+
+    This is the FILM rate and the ONLY trustworthy source for samples-per-frame.
+    DL / Space Ace / Thayer's Quest all report exactly 24000/1001 (23.976 fps).
+    See FILM-RATE-SPF-2026-07-24 in main() for why the old audio-length-derived
+    value was wrong.
+    """
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                          "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0",
+                          m2v_path],
+                         stdout=subprocess.PIPE, check=True).stdout.decode()
+    # PARSE-FIX-2026-07-24: `-of csv=p=0` emits a TRAILING COMMA ("24000/1001,"), so a bare
+    # split("/") hands int() the string "1001," and dies. Take the first CSV field, and accept a
+    # bare integer rate as well as num/den.
+    tok = out.strip().split(",")[0].strip()
+    try:
+        num, den = ((int(x) for x in tok.split("/")) if "/" in tok else (int(tok), 1))
+    except ValueError:
+        raise SystemExit(f"{m2v_path}: could not parse frame rate {out.strip()!r}")
+    if den == 0 or not (10.0 <= num / den <= 60.0):
+        raise SystemExit(f"{m2v_path}: implausible frame rate {out}")
+    return num, den
 
 
 # ----------------------------------------------------------------------------
@@ -212,6 +250,26 @@ def split_jpegs(buf):
     return frames
 
 
+def split_bounds(buf, n):
+    """Frame (start, end) OFFSETS only -- MEMORY-STREAM-2026-07-24.
+
+    Same walk as split_jpegs, but it never materialises a single frame.  Space Ace is
+    58,643 frames / 1.27 GB at 512x480: split_jpegs turned that into 58,643 separate bytes
+    objects (a second full copy plus ~2 MB of per-object overhead) on top of the whole file
+    already being read into the heap, and Pool.map then pickled EVERY task up-front for a
+    third copy -- MemoryError while merely sending work.  Offsets are ~1 MB of ints instead,
+    and main() slices frames out of an mmap in bounded batches.
+    """
+    bounds, i = [], 0
+    while i < n:
+        end, _ = scan_jpeg(buf, i)
+        bounds.append((i, end))
+        i = end
+        while i < n and buf[i] == 0x00:           # tolerate trailing pad
+            i += 1
+    return bounds
+
+
 def check_frame_compat(jpg, want_w, want_h, where, strict_dht=True):
     """Assert one frame is something core_jpeg can actually decode.
 
@@ -241,9 +299,70 @@ def check_frame_compat(jpg, want_w, want_h, where, strict_dht=True):
 
 
 # ----------------------------------------------------------------------------
-def _jpegtran(fr):
-    return subprocess.run(["jpegtran"], input=fr, stdout=subprocess.PIPE,
-                          check=True).stdout
+def _jpegtran(arg):
+    """(idx, frame) -> (idx, bytes, status, err).  status: ok | unusable.
+
+    jpegtran normalises the DHT layout to 1-table-per-DHT, which core_jpeg REQUIRES
+    (SUPPORT_WRITABLE_DHT=0).  It is also the FIRST stage that actually entropy-decodes a
+    frame, so a frame ffmpeg wrote badly surfaces here and nowhere earlier: split_jpegs /
+    scan_jpeg validate MARKER structure only, never Huffman data.
+
+    JPEGTRAN-REPAIR-2026-07-24 -- why this is no longer a bare `check=True`:
+    one bad frame out of 58,643 (Space Ace frame 22044) aborted the entire multi-hour run with
+    a multiprocessing traceback that named NO frame index and DISCARDED jpegtran's stderr, so
+    there was nothing to act on and the whole encode had to be redone to learn anything. Now
+    the frame is reported by INDEX with the real stderr, and main() conceals it by HOLD-LAST.
+
+    HOLD-LAST-NOT-REENCODE-2026-07-24: the first attempt at this re-encoded the bad frame via
+    ffmpeg. **That produced garbage and was reverted after LOOKING at the result** -- SA frame
+    22044 came out 90% flat GREEN (only the top ~12% decoded, 10,001 B vs ~52 KB/~42 KB for its
+    neighbours), i.e. a one-frame green flash on screen. Obvious in hindsight: if jpegtran
+    cannot entropy-decode the frame, neither can ffmpeg, so a re-encode can only preserve the
+    corruption. Holding the previous good frame for one extra 1/24 s is genuinely invisible --
+    and 22043/22045 are different scenes, so this frame sits on a hard cut where an extra
+    duplicated frame is completely unremarkable.
+    ORIGINAL:
+        def _jpegtran(fr):
+            return subprocess.run(["jpegtran"], input=fr, stdout=subprocess.PIPE,
+                                  check=True).stdout
+
+    WINDOWS-TEMPFILE-2026-07-26 -- why this uses NAMED FILES and not a stdin->stdout pipe:
+    Windows libjpeg builds are compiled with TWO_FILE_COMMANDLINE, where jpegtran REQUIRES
+    an input and an output file. Invoked bare it prints "must name one input and one output
+    file" and exits 1, so on Windows EVERY frame came back unusable (reported 2026-07-26
+    against the pre-JPEGTRAN-REPAIR packer, which surfaced it as an opaque pool traceback).
+    Text-mode stdio on the pipe corrupts entropy data the same way. `jpegtran -outfile OUT IN`
+    is accepted by BOTH command-line styles, so this is the portable form, not a Windows
+    special case -- output bytes are identical to the piped version on Linux.
+    ORIGINAL (piped, Linux-only):
+        idx, fr = arg
+        try:
+            return (idx, subprocess.run(["jpegtran"], input=fr, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, check=True).stdout, "ok", "")
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b"").decode(errors="replace").strip().replace("\n", " ")
+            return (idx, b"", "unusable", err or f"jpegtran exit {e.returncode}")
+    """
+    idx, fr = arg
+    fd_i, pi = tempfile.mkstemp(suffix=".jpg")
+    fd_o, po = tempfile.mkstemp(suffix=".jpg")
+    try:
+        os.close(fd_o)                      # jpegtran writes it; mkstemp only reserved the name
+        with os.fdopen(fd_i, "wb") as f:
+            f.write(fr)
+        subprocess.run(["jpegtran", "-outfile", po, pi],
+                       stderr=subprocess.PIPE, check=True)
+        with open(po, "rb") as f:
+            return (idx, f.read(), "ok", "")
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or b"").decode(errors="replace").strip().replace("\n", " ")
+        return (idx, b"", "unusable", err or f"jpegtran exit {e.returncode}")
+    finally:
+        for p in (pi, po):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
 
 def run(cmd, what):
@@ -365,23 +484,85 @@ def main():
 
             intermediates.append(seg_mjpeg)
             print(f"[split] scanning {seg_mjpeg} ...")
-            with open(seg_mjpeg, "rb") as v:
-                frames = split_jpegs(v.read())
-            check_frame_compat(frames[0], W, H, f"{seg_mjpeg} frame 0 (pre-jpegtran)",
-                               strict_dht=False)
-            print(f"[jpegtran] {len(frames)} frames on {a.jobs} workers ...")
-            with Pool(a.jobs) as pool:
-                frames = pool.map(_jpegtran, frames, chunksize=64)
-            check_frame_compat(frames[0], W, H, f"{seg_mjpeg} frame 0 (post-jpegtran)")
 
-            ent = []
-            for fr in frames:
-                ent.append((vsize, len(fr)))
-                sizes_all.append(len(fr))
-                vb.write(fr)
-                vsize += len(fr)
+            # ---- MEMORY-STREAM-2026-07-24 ------------------------------------------------
+            # The mjpeg stays in an mmap (never on the heap), we keep only frame OFFSETS, and
+            # transcode in bounded BATCHES, writing each frame to tmp_vid as it comes back.
+            # Peak RSS is now ~BATCH*2 frames (~25 MB) instead of 3 full copies of the stream.
+            # Pool.imap is NOT used: its task feeder races ahead of the workers with an
+            # unbounded queue, which is the same MemoryError by another route. Explicit
+            # batches give real backpressure. Batches are sequential and Pool.map preserves
+            # order within a batch, so global frame order -- which IS the index -- is exact.
+            BATCH = 512
+            ent, rep = [], []
+            # `rep` = frames concealed by hold-last (HOLD-LAST-NOT-REENCODE-2026-07-24)
+            first_out = None
+            with open(seg_mjpeg, "rb") as v:
+                mm = mmap.mmap(v.fileno(), 0, access=mmap.ACCESS_READ)
+                try:
+                    bounds = split_bounds(mm, mm.size())
+                    nfr = len(bounds)
+                    check_frame_compat(bytes(mm[bounds[0][0]:bounds[0][1]]), W, H,
+                                       f"{seg_mjpeg} frame 0 (pre-jpegtran)", strict_dht=False)
+                    print(f"[jpegtran] {nfr} frames on {a.jobs} workers, "
+                          f"batches of {BATCH} ...")
+                    # JPEGTRAN-REPAIR-2026-07-24: index every frame so a failure can NAME it,
+                    # and aggregate in the parent so one bad frame cannot kill the run.
+                    with Pool(a.jobs) as pool:
+                        for b0 in range(0, nfr, BATCH):
+                            batch = [(k, bytes(mm[s:e])) for k, (s, e) in
+                                     enumerate(bounds[b0:b0 + BATCH], start=b0)]
+                            for i, d, st, err in pool.map(_jpegtran, batch, chunksize=8):
+                                if st == "unusable":
+                                    # HOLD-LAST-NOT-REENCODE-2026-07-24: conceal by repeating
+                                    # the previous good frame -- write NO new bytes, just point
+                                    # this index entry at the previous frame's blob extent. The
+                                    # .dlv index already has these semantics (pack's hold-last
+                                    # across uncaptured disc frames), and the RTL just decodes
+                                    # the same JPEG twice. Invisible for one 1/24 s frame.
+                                    if not ent:
+                                        vb.close()
+                                        os.remove(tmp_vid)
+                                        sys.exit(
+                                            f"[fatal] frame 0 of {seg_mjpeg} is unusable and "
+                                            f"there is no previous frame to hold: {err}\n"
+                                            f"        Aborted WITHOUT writing {out}.")
+                                    rep.append((i, err))
+                                    ent.append(ent[-1])          # duplicate = hold-last
+                                    sizes_all.append(ent[-1][1])
+                                    continue
+                                if i == 0:
+                                    first_out = d
+                                ent.append((vsize, len(d)))
+                                sizes_all.append(len(d))
+                                vb.write(d)
+                                vsize += len(d)
+                            del batch
+                            if b0 % (BATCH * 20) == 0 and b0:
+                                print(f"\r  {b0}/{nfr}", end="", flush=True)
+                    print(f"\r  {nfr}/{nfr} done")
+                finally:
+                    mm.close()
+
+            if rep:
+                print(f"[hold-last] {len(rep)} frame(s) had entropy data jpegtran cannot "
+                      f"transcode and were CONCEALED by repeating the previous frame: "
+                      f"{[i for i, _ in rep][:20]}{' ...' if len(rep) > 20 else ''}")
+                print(f"[hold-last]   first: {rep[0][1]}")
+                print(f"[hold-last]   disc->video is 1:1, so frame N here = disc frame N+{off}")
+                if len(rep) * 200 > nfr:                # >0.5% is not "a bad frame"
+                    vb.close()
+                    os.remove(tmp_vid)
+                    sys.exit(f"[fatal] {len(rep)} of {nfr} frames were unusable "
+                             f"({100.0*len(rep)/nfr:.2f}%). That is a systematic encode "
+                             f"or split problem, not isolated bad frames, and concealing that "
+                             f"many would visibly stutter -- refusing to write a file this "
+                             f"rough. Aborted WITHOUT writing {out}.")
+            check_frame_compat(first_out, W, H, f"{seg_mjpeg} frame 0 (post-jpegtran)")
             seg_info.append((off, ent))
-            del frames
+            # MEMORY-STREAM-2026-07-24: no `del frames` -- there is no whole-segment frame
+            # list any more; each frame is written to tmp_vid as it leaves the pool.
+            del bounds, first_out
 
     # -- size guard -----------------------------------------------------------
     # Without this an oversized frame is SILENTLY corrupted on hardware: dlv_streamer
@@ -449,11 +630,38 @@ def main():
     spf = (os.path.getsize(seg_pcm[0]) // (CHANS * 2)) / n0
     asize = round(frame_count * spf) * CHANS * 2
     total_samples = asize // (CHANS * 2)
-    spf_q16 = round(total_samples * 65536 / frame_count)
+    # ---- FILM-RATE-SPF-2026-07-24 ----------------------------------------------------------
+    # samples-per-disc-frame MUST come from the FILM RATE, never from total_samples/frame_count.
+    # That ratio silently assumes "the audio track spans the whole video" -- true for Dragon's
+    # Lair and Thayer's Quest, FALSE for Space Ace, whose ace.ogg (1422.7 s) covers only 34,107
+    # of ace.m2v's 58,643 frames. It therefore wrote spf = 1069.91, an "impossible" 41.218 fps.
+    # In the RTL that value IS the frame-lock credit rate (dlv_streamer.v FRAME-LOCK-2026-07-20):
+    # audio supply = film_fps * spf must equal 44100, so SA ran at 58.1% of drain -- ~1070 samples
+    # drain, then the drain gates off and pcm holds the last sample for ~17.5 ms of every 41.774 ms
+    # frame = a 23.9 Hz stutter plus 0.42 s of lag per second played -- AND a 1.72x stretched
+    # audio<->video map (aud_target_lba error 17.4 ms per disc frame, linear, re-applied at every
+    # SEARCH). Daphne never derives a rate this way: it paces the ogg in real time against the
+    # m2v's own fps, which is why a container Daphne plays perfectly was unpackable by this script.
+    # The blob geometry (asize / total_samples) is deliberately UNCHANGED -- those describe how much
+    # audio exists; spf_q16 describes the RATE. They are independent fields.
+    # ORIGINAL: spf_q16 = round(total_samples * 65536 / frame_count)
+    fps_num, fps_den = probe_fps(find_src(segs[0][1]))
+    spf_film  = SRATE * fps_den / fps_num              # 1839.3375 @ 24000/1001
+    spf_q16   = round(spf_film * 65536)                # 120542822 for all three games
+    spf_ratio = total_samples / frame_count            # the OLD value -- now only a sanity check
+    print(f"[fps] {segs[0][1]}: {fps_num}/{fps_den} = {fps_num/fps_den:.5f} fps "
+          f"-> samp/frame {spf_film:.4f}")
+    if abs(spf_ratio - spf_film) / spf_film > 0.01:
+        print(f"[warn] AUDIO DOES NOT SPAN THE VIDEO: ratio-derived samp/frame {spf_ratio:.3f} vs "
+              f"film-rate {spf_film:.3f} ({100.0*spf_ratio/spf_film:.1f}%).\n"
+              f"       Using the FILM RATE (correct). The audio covers about "
+              f"{total_samples/spf_film:.0f} of {frame_count} disc frames; past that the RTL wraps "
+              f"aud_lba back to the blob start (dlv_streamer.v:751), so late scenes would replay "
+              f"early-show audio. Harmless if the game never seeks that far.")
     if not (1 << 20) <= spf_q16 < (1 << 27):
         os.remove(tmp_vid)
         sys.exit(f"[fatal] samp_per_frame_q16 = {spf_q16} outside the range the RTL "
-                 f"accepts (2^20..2^27); audio/video lengths look inconsistent.")
+                 f"accepts (2^20..2^27); frame rate {fps_num}/{fps_den} looks wrong.")
 
     idx_off = SECTOR
     idx_len = len(index_blob)
