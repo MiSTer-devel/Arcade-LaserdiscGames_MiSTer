@@ -35,6 +35,7 @@ module DragonsLair
     input          [7:0] ioctl_index,
 
     input                pause,
+    input                disc_hold,   // LD-HOLD-SYNC-2026-08-13: video path priming -> freeze disc motion
 
     output        [63:0] led_digits_o,
     output               dbg_led,
@@ -69,6 +70,7 @@ DragonsLair_CPU cpu_board
     .ioctl_wr(ioctl_wr),
 
     .pause(pause),
+    .disc_hold(disc_hold),   // LD-HOLD-SYNC-2026-08-13
 
     .led_digits_o(led_digits_o),
     .dbg_led(dbg_led),

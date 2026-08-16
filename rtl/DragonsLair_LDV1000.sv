@@ -80,6 +80,9 @@ module DragonsLair_LDV1000
     output reg        search_cmd_o,
     output reg [16:0] curr_frame,     // current disc frame (0..54000) for the video path
     input             pause,          // HLE-DRIVE-2026-07-04: freeze disc motion + strobes during pause
+    // LD-HOLD-SYNC-2026-08-13: high while the video path is still priming after a seek (the top's
+    // fb_seek_hold).  Freezes ONLY disc motion -- NOT the strobes, which the Z80 polls.
+    input             disc_hold,
     output            playing         // AUDIO-GATE-2026-07-05: mode==M_PLAY, speed==1x, AND both AUDIO1/2
                                        // channels enabled (AUDIO-CMD-2026-07-05) -- gates the .dlv audio ring
 );
@@ -233,6 +236,11 @@ module DragonsLair_LDV1000
             // the other modes are untouched.  M_SEARCH's busy countdown deliberately stays on
             // frame_tick -- it is a ~0.5s wall-clock timer, not disc motion.  M_SCAN also stays:
             // it models head slew (SCAN_PERIOD), which is not film playback either.
+            // LD-HOLD-SYNC-2026-08-13: this block briefly ALSO carried `&& !disc_hold` as a
+            // backstop.  REMOVED 2026-08-13 as redundant: the search-completion hold below keeps
+            // the LD reporting busy until the video path is primed, so the Z80 cannot issue
+            // CMD_PLAY -- and therefore cannot reach M_PLAY -- while disc_hold is asserted.
+            // Guarding an unreachable path only adds a way to be surprised later.
             if (film_tick && (mode == M_PLAY)) begin
                 curr_frame <= curr_frame + {14'd0, speed_adv};
                 speed_acc  <= speed_rem;
@@ -278,10 +286,22 @@ module DragonsLair_LDV1000
                     // M_SEARCH entry and then holds -- ld_curr_frame makes exactly ONE jump.  Doing it
                     // here (rather than at each command) covers every M_SEARCH entry point uniformly:
                     // CMD_SEARCH, CMD_AUTOSTOP's search-back path, and the CMD_SKIP_FWD_* group.
+                    // LD-HOLD-SYNC-2026-08-13: completion now ALSO waits for the video path.
+                    // We used to report ST_SEARCH_FIN (0xd0) as soon as the DISC had landed, but the
+                    // picture is not up yet -- the top holds the framebuffer until the audio ring is
+                    // filled and SEEK_PRIME frames are banked.  The Z80 took 0xd0 as "go", issued
+                    // PLAY, and ran the segment while the screen was still frozen.  Staying busy
+                    // parks it in the poll loop it ALREADY has for a slow search, which is exactly
+                    // what a real LD-V1000 does -- and the black pause during a seek is authentic to
+                    // the machine.  curr_frame is landed on line 293 regardless and is idempotent,
+                    // so the streamer fetches and primes DURING this wait; it is not a deadlock.
+                    // fb_seek_hold's own SEEK_TMO (~1 s) is the backstop if priming never completes.
+                    // ORIGINAL: if (search_delay != 5'd0) begin
                     M_SEARCH: begin
                         curr_frame <= search_frame;              // atomic land (Daphne: pre_search)
-                        if (search_delay != 5'd0) begin
-                            search_delay <= search_delay - 5'd1; // still "busy": status stays ST_SEARCH (0x50)
+                        if (search_delay != 5'd0 || disc_hold) begin
+                            if (search_delay != 5'd0)
+                                search_delay <= search_delay - 5'd1; // still "busy": status stays ST_SEARCH (0x50)
                         end else begin
                             mode <= M_STOP; status <= ST_SEARCH_FIN;   // 0xd0 (ready) -- Daphne's "search succeeded d0"
                         end
@@ -412,15 +432,28 @@ module DragonsLair_LDV1000
                             mode <= M_STOP; status <= ST_STOP | ST_READY;
                             number <= 17'd0;
                         end
+                        // AUTOSTOP-DAPHNE-2026-08-13: unconditional, matching Daphne exactly.
+                        // Daphne ldp-in/ldv1000.cpp:263-274 has NO conditional:
+                        //     autostop_frame = get_buffered_frame(); clear(); pre_play();
+                        //     output = 0x54;                       // autostop active
+                        // It ALWAYS arms the boundary and ALWAYS plays.  Our `number < curr_frame`
+                        // search-back branch was an invention (the old comment "else search back"
+                        // documented the invention, not the hardware).  On that branch we armed
+                        // NOTHING -- no stop_frame, no stop_valid -- so the segment had no end
+                        // boundary and played on unbounded; it also never pulsed search_cmd_o, so
+                        // the video pipeline never learned a seek had happened (no stale-frame
+                        // drop, no audio re-point).  Two defects on one path.
+                        // ORIGINAL:
+                        //   if (number < curr_frame) begin
+                        //       search_frame <= number; mode <= M_SEARCH;
+                        //       status <= ST_SEARCH;
+                        //   end else begin
+                        //       stop_frame <= number; stop_valid <= 1'b1;
+                        //       mode <= M_PLAY; status <= ST_PLAY;
+                        //   end
                         CMD_AUTOSTOP: begin
-                            // stop when play reaches `number` (ahead); else search back
-                            if (number < curr_frame) begin
-                                search_frame <= number; mode <= M_SEARCH;
-                                status <= ST_SEARCH;
-                            end else begin
-                                stop_frame <= number; stop_valid <= 1'b1;
-                                mode <= M_PLAY; status <= ST_PLAY;
-                            end
+                            stop_frame <= number; stop_valid <= 1'b1;
+                            mode <= M_PLAY; status <= ST_PLAY;
                             number <= 17'd0;
                         end
                         CMD_AUDIO1: begin   // AUDIO-CMD-2026-07-05: no digit -> toggle, digit N -> set to N&1

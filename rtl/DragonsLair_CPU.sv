@@ -61,6 +61,7 @@ module DragonsLair_CPU
     input         ioctl_wr,
 
     input         pause,
+    input         disc_hold,      // LD-HOLD-SYNC-2026-08-13: video path priming -> freeze disc motion
 
     // LED score/status digits (16 x 4-bit, flattened) for the top-level FB compositor
     output [63:0] led_digits_o,
@@ -340,6 +341,7 @@ DragonsLair_LDV1000 u_ldv1000 (
     .search_cmd_o   (search_cmd_o),     // SEEK-HOLD-2026-07-20
     .curr_frame     (ld_curr_frame),
     .pause          (pause),            // HLE-DRIVE-2026-07-04: freeze disc motion during pause
+    .disc_hold      (disc_hold),        // LD-HOLD-SYNC-2026-08-13: video path still priming
     .playing        (ld_playing_w)      // AUDIO-GATE-2026-07-05
 );
 

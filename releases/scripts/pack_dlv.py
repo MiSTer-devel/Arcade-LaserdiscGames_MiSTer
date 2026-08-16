@@ -365,6 +365,41 @@ def _jpegtran(arg):
                 pass
 
 
+# ----------------------------------------------------------------------------
+# FFMPEG-N9-FPSMODE-2026-08-14
+# ----------------------------------------------------------------------------
+_FPS_FLAGS = None
+
+
+def ffmpeg_fps_flags():
+    """-> the flag pair that forces 1-in/1-out frame handling on THIS ffmpeg.
+
+    This script used to pass a bare `-vsync 0`.  ffmpeg 9.0 REMOVED that option
+    outright -- it exits 8 with "Unrecognized option 'vsync'" while merely splitting
+    the argument list, so on a current toolchain the packer died before encoding a
+    single frame.  Found 2026-08-14 on Manjaro (rolling) when building the ROBOTS
+    .dlv; the last successful pack here was ace.dlv on 2026-07-26, before the
+    upgrade, which is why nothing surfaced it earlier.  `-fps_mode passthrough` is
+    the documented replacement and is identical in effect.
+
+    PROBED, not hardcoded, because this flag is LOAD-BEARING (see the comment at the
+    encode call): one duplicated or dropped frame shifts EVERY subsequent index entry
+    and silently breaks the disc->video map.  Probing keeps this script working
+    unchanged on older ffmpeg, so there is no flag day.  Cached: runs once.
+    """
+    global _FPS_FLAGS
+    if _FPS_FLAGS is None:
+        try:
+            h = subprocess.run(["ffmpeg", "-hide_banner", "-h", "full"],
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL).stdout.decode(errors="replace")
+            _FPS_FLAGS = ["-fps_mode", "passthrough"] if "-fps_mode" in h else ["-vsync", "0"]
+        except OSError:
+            _FPS_FLAGS = ["-vsync", "0"]
+        print(f"[ffmpeg] frame-pacing flag: {' '.join(_FPS_FLAGS)}")
+    return _FPS_FLAGS
+
+
 def run(cmd, what):
     print(f"[{what}] {' '.join(str(c) for c in cmd[:6])} ...")
     subprocess.run(cmd, check=True)
@@ -477,8 +512,14 @@ def main():
                 print(f"[mjpeg] reusing {seg_mjpeg}")
             else:
                 vf = ("yadif," if a.deint else "") + f"scale={W}:{H}:flags=lanczos"
+                # FFMPEG-N9-FPSMODE-2026-08-14: the literal "-vsync","0" below became
+                # *ffmpeg_fps_flags() -- ffmpeg 9.0 removed -vsync. ORIGINAL:
+                #     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                #          "-i", find_src(m2v_name), "-an", "-threads", "1", "-vsync", "0",
+                #          "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", str(a.quality),
+                #          "-huffman", "default", "-f", "mjpeg", seg_mjpeg], f"mjpeg {m2v_name}")
                 run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                     "-i", find_src(m2v_name), "-an", "-threads", "1", "-vsync", "0",
+                     "-i", find_src(m2v_name), "-an", "-threads", "1", *ffmpeg_fps_flags(),
                      "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", str(a.quality),
                      "-huffman", "default", "-f", "mjpeg", seg_mjpeg], f"mjpeg {m2v_name}")
 

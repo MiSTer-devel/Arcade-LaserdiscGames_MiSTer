@@ -567,6 +567,10 @@ DragonsLair dl_inst
 	.ioctl_index(ioctl_index),
 
 	.pause(pause_cpu),
+	// LD-HOLD-SYNC-2026-08-13: the seek hold now freezes the DISC as well as the picture, so the
+	// game cannot execute frames it has not shown yet. fb_seek_hold is already in this CLK_40M
+	// domain (SEEK_TMO is counted at 40 MHz), so no CDC is needed.
+	.disc_hold(fb_seek_hold),
 
 	.led_digits_o(led_digits_flat),
 	.dbg_led(dbg_led),
