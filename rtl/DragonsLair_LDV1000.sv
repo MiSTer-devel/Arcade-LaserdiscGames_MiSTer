@@ -65,8 +65,13 @@
 //     into the same default as a truly-unrecognized byte.
 //============================================================================
 module DragonsLair_LDV1000
+#(
+    // CLOCK-80M-2026-08-15: core clock rate, threaded down from CORE_CLK_HZ in
+    // Arcade-DragonsLair.sv.  FILM_PERIOD derives from it -- never re-hardcode 40e6.
+    parameter [31:0] CLK_HZ = 32'd80_000_000
+)
 (
-    input             clk,            // 40 MHz clk_sys
+    input             clk,            // clk_sys (80 MHz as of CLOCK-80M-2026-08-15; was 40 MHz)
     input             reset_n,        // active-low (core `reset`)
     input             cmd_stb,        // 1-cyc: a data/command byte was strobed out
     input      [7:0]  cmd_byte,       // that byte (0xE020 latch)
@@ -144,16 +149,27 @@ module DragonsLair_LDV1000
     // active ~33.37 ms = 1/29.97 s so the game sees one strobe per disc frame.
     // SCAN modes tick at ~2000 fps per MAME's comment ("moves the optical head at
     // the rate of approximately 2000 frames per second") -- OPCODE-SWEEP-2026-07-05.
-    localparam [20:0] PARK_PERIOD = 21'd840000;    // 21 ms    @ 40 MHz
-    localparam [20:0] PLAY_PERIOD = 21'd1334667;   // 33.367 ms = 1/29.97 s  (VSYNC/strobe rate)
-    localparam [20:0] SCAN_PERIOD = 21'd20000;     // 500 us = 1/2000 s
-    localparam [20:0] STAT_LOW    = 21'd1040;      // 26 us status-strobe low
-    localparam [20:0] CMD_LO_S    = 21'd2160;      // 54 us command-strobe start
-    localparam [20:0] CMD_LO_E    = 21'd3160;      // 79 us command-strobe end (25 us)
-    wire [20:0] period = (mode==M_PARK) ? PARK_PERIOD :
+    // CLOCK-80M-2026-08-15: this ENTIRE block is wall-clock time (ms/us), so every constant scales
+    // with the core clock.  It is NOT in the upgrade recipe's table -- found by sweeping for "@ 40 MHz".
+    // 🚨 PLAY_PERIOD is the dangerous one: 1334667*2 = 2669334 needs 22 bits, and [20:0] tops out at
+    // 2097151, so it would have SILENTLY truncated to 572182 -- a 33.37 ms strobe becoming 7.15 ms,
+    // i.e. the LD-V1000 status/command handshake running ~4.7x too fast.  Clean lint, dead core.
+    // All widened [20:0] -> [21:0] and expressed as "the known-good 40 MHz literal, scaled by CLK_HZ".
+    // That form is EXACT at both points: it reproduces each old literal bit-for-bit at 40 MHz and
+    // gives the doubled value at 80 MHz, so nothing but the clock changes.  64-bit literals force
+    // 64-bit constant arithmetic -- 1334667*80e6 overflows 32 bits and would wrap.
+    // ORIGINALS: PARK 21'd840000, PLAY 21'd1334667, SCAN 21'd20000, STAT_LOW 21'd1040,
+    //            CMD_LO_S 21'd2160, CMD_LO_E 21'd3160, all `wire/reg [20:0]`.
+    localparam [21:0] PARK_PERIOD = (64'd840000  * CLK_HZ) / 64'd40_000_000;  // 21 ms
+    localparam [21:0] PLAY_PERIOD = (64'd1334667 * CLK_HZ) / 64'd40_000_000;  // 33.367 ms = 1/29.97 s (VSYNC/strobe rate)
+    localparam [21:0] SCAN_PERIOD = (64'd20000   * CLK_HZ) / 64'd40_000_000;  // 500 us = 1/2000 s
+    localparam [21:0] STAT_LOW    = (64'd1040    * CLK_HZ) / 64'd40_000_000;  // 26 us status-strobe low
+    localparam [21:0] CMD_LO_S    = (64'd2160    * CLK_HZ) / 64'd40_000_000;  // 54 us command-strobe start
+    localparam [21:0] CMD_LO_E    = (64'd3160    * CLK_HZ) / 64'd40_000_000;  // 79 us command-strobe end (25 us)
+    wire [21:0] period = (mode==M_PARK) ? PARK_PERIOD :
                          ((mode==M_SCAN_FWD || mode==M_SCAN_REV) ? SCAN_PERIOD : PLAY_PERIOD);
-    reg  [20:0] fcnt;
-    wire        frame_tick = (fcnt >= period - 21'd1);   // strobe/vsync tick -- UNCHANGED (29.97)
+    reg  [21:0] fcnt;
+    wire        frame_tick = (fcnt >= period - 22'd1);   // strobe/vsync tick -- UNCHANGED (29.97)
 
     //------------------------------------------------------------------------
     // FILM-RATE-FIX-2026-07-16: advance the DISC FRAME at the FILM's rate, not the vsync rate.
@@ -191,9 +207,12 @@ module DragonsLair_LDV1000
     // by autostop on curr_frame) gets ~25% LONGER.  The user previously measured the attract loop as
     // matching MAME within ~1s at 29.97 -- if the loop now runs visibly long, that measurement and
     // this fix are in conflict and BOTH need re-examining.  Do not dismiss it if it shows up.
-    localparam [20:0] FILM_PERIOD = 21'd1670983;   // 41.774 ms = 1/23.938 s @ 40 MHz
-    reg  [20:0] vcnt;
-    wire        film_tick = (vcnt >= FILM_PERIOD - 21'd1);
+    // CLOCK-80M-2026-08-15: was `localparam [20:0] FILM_PERIOD = 21'd1670983;` / `reg [20:0] vcnt;`.
+    // Same scale-the-known-good-literal form as the strobe block above: exact 1670983 at 40 MHz,
+    // exact 3341966 at 80 MHz.  3341966 needs 22 bits, so FILM_PERIOD and vcnt widen [20:0]->[21:0].
+    localparam [21:0] FILM_PERIOD = (64'd1670983 * CLK_HZ) / 64'd40_000_000;  // 41.774 ms = 1/23.938 s
+    reg  [21:0] vcnt;
+    wire        film_tick = (vcnt >= FILM_PERIOD - 22'd1);
 
     wire [3:0]  dig = digit_of(cmd_byte);
 
@@ -213,21 +232,21 @@ module DragonsLair_LDV1000
         if (!reset_n) begin
             mode <= M_PARK; status <= ST_PARK | ST_READY;   // 0xFC
             number <= 17'd0; search_frame <= 17'd0; stop_frame <= 17'd0;
-            stop_valid <= 1'b0; curr_frame <= 17'd0; fcnt <= 21'd0;
+            stop_valid <= 1'b0; curr_frame <= 17'd0; fcnt <= 22'd0;   // CLOCK-80M-2026-08-15: fcnt/vcnt widened 21->22
             search_delay <= 5'd0;   // DAPHNE-ATOMIC-SEEK-2026-07-16
-            vcnt <= 21'd0;          // FILM-RATE-FIX-2026-07-16
+            vcnt <= 22'd0;          // FILM-RATE-FIX-2026-07-16
             status_strobe <= 1'b1; command_strobe <= 1'b1;
             audio_en1 <= 1'b1; audio_en2 <= 1'b1; has_digit <= 1'b0;   // AUDIO-CMD-2026-07-05
             play_speed_q4 <= 5'd4; speed_acc <= 2'd0;                  // OPCODE-SWEEP-2026-07-05
         end else if (!pause) begin     // HLE-DRIVE-2026-07-04: paused -> hold all state (disc frozen, in sync)
             // ---- strobe generator (idle high, assert low) ----
-            if (frame_tick) fcnt <= 21'd0; else fcnt <= fcnt + 21'd1;
+            if (frame_tick) fcnt <= 22'd0; else fcnt <= fcnt + 22'd1;
             status_strobe  <= ~(fcnt < STAT_LOW);
             command_strobe <= ~((fcnt >= CMD_LO_S) & (fcnt < CMD_LO_E));
 
             // FILM-RATE-FIX-2026-07-16: free-running film-rate tick (23.938 fps), independent of
             // the strobe/vsync counter above.  Drives PLAY's disc-frame advance only.
-            if (film_tick) vcnt <= 21'd0; else vcnt <= vcnt + 21'd1;
+            if (film_tick) vcnt <= 22'd0; else vcnt <= vcnt + 22'd1;
 
             // FILM-RATE-FIX-2026-07-16: PLAY's disc-frame advance, on the FILM tick (23.938), NOT
             // the strobe/vsync tick (29.97).  This is the whole fix: with the 1:1 disc->video map,

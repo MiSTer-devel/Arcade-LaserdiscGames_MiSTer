@@ -29,18 +29,25 @@
 //  Interrupt: single periodic IRQ0 @ ~30.5 Hz (hold), cleared on Z80 INTA
 //  (M1 + IORQ).  AY needs a 1 T-state WAIT when addressed.
 //
-//  CLOCK (fixed 2026-07-03): the core runs in the 40 MHz domain (CLK_40M from
-//  the PLL).  Z80 = 40/10 = 4.00 MHz, AY = 40/20 = 2.00 MHz — both
-//  real-hardware-correct (previously ran on CLK_10M at 62.5% speed).
+//  CLOCK (fixed 2026-07-03; re-based 2026-08-15): the core runs in the single
+//  CLK_CORE domain from the PLL, whose rate arrives as the CLK_HZ parameter
+//  (CORE_CLK_HZ in Arcade-DragonsLair.sv, 80 MHz today; was 40 MHz).  The Z80
+//  and AY rates are REAL-HARDWARE constants and never change — only the
+//  dividers do: Z80 = 4.00 MHz, AY = 2.00 MHz, both derived from CLK_HZ below.
 //  Real-time signals (IRQ ~30.5 Hz, LD strobes) are counted in absolute
-//  40 MHz cycles so they stay wall-clock accurate.
+//  CLK_CORE cycles, scaled from CLK_HZ, so they stay wall-clock accurate.
 //
 //============================================================================
 
 module DragonsLair_CPU
+#(
+    // CLOCK-80M-2026-08-15: core clock rate, threaded down from CORE_CLK_HZ in
+    // Arcade-DragonsLair.sv.  The Z80/AY clock enables derive from it -- never re-hardcode 40e6.
+    parameter [31:0] CLK_HZ = 32'd80_000_000
+)
 (
     input         reset,             // active LOW (fed to RESET_n)
-    input         clk_sys,           // 40 MHz master clock (CLK_40M from PLL)
+    input         clk_sys,           // master clock (80 MHz as of CLOCK-80M-2026-08-15; was 40 MHz)
 
     // Player inputs (active HIGH; inverted to active-low bus internally)
     input   [7:0] p1,                // {skill3,skill2,skill1, btn1, right, left, down, up}
@@ -79,12 +86,23 @@ module DragonsLair_CPU
 
 //------------------------------------------------------- Clock Enables -------------------------------------------------------//
 
-// 40 MHz master -> cen_4m (Z80, /10 = 4 MHz), cen_2m (AY, /20 = 2 MHz).
-// One mod-20 counter yields both the Z80 tick (at 0 and 10) and the AY tick (at 0, coincident with a Z80 tick).
-reg [4:0] cdiv = 5'd0;
-always_ff @(posedge clk_sys) cdiv <= (cdiv == 5'd19) ? 5'd0 : cdiv + 5'd1;
-wire cen_4m = (cdiv == 5'd0) | (cdiv == 5'd10);   // 40/10 = 4.00 MHz  (Z80)
-wire cen_2m = (cdiv == 5'd0);                      // 40/20 = 2.00 MHz  (AY)
+// clk_sys -> cen_4m (Z80, 4 MHz), cen_2m (AY, 2 MHz).  The Z80 and AY rates are REAL-HARDWARE
+// speeds and do not change with the core clock -- only the divider does.
+// One mod-CDIV_MOD counter yields both the Z80 tick (at 0 and the half point) and the AY tick (at 0).
+//
+// CLOCK-80M-2026-08-15: was a hardcoded mod-20 in a `reg [4:0]` (max 31):
+//   reg [4:0] cdiv = 5'd0;
+//   always_ff @(posedge clk_sys) cdiv <= (cdiv == 5'd19) ? 5'd0 : cdiv + 5'd1;
+//   wire cen_4m = (cdiv == 5'd0) | (cdiv == 5'd10);   // 40/10 = 4.00 MHz  (Z80)
+//   wire cen_2m = (cdiv == 5'd0);                      // 40/20 = 2.00 MHz  (AY)
+// At 80 MHz this needs mod-40 with the Z80 tick at 0 and 20, and 39 does NOT fit in [4:0] --
+// widened to [5:0].  Derived form reproduces 20/10 exactly at 40 MHz.
+localparam [5:0] CDIV_MOD  = CLK_HZ / 32'd2_000_000;   // 40 @ 80 MHz -> AY  = 2 MHz
+localparam [5:0] CDIV_HALF = CLK_HZ / 32'd4_000_000;   // 20 @ 80 MHz -> Z80 = 4 MHz
+reg [5:0] cdiv = 6'd0;
+always_ff @(posedge clk_sys) cdiv <= (cdiv == CDIV_MOD - 6'd1) ? 6'd0 : cdiv + 6'd1;
+wire cen_4m = (cdiv == 6'd0) | (cdiv == CDIV_HALF);   // 4.00 MHz  (Z80)
+wire cen_2m = (cdiv == 6'd0);                          // 2.00 MHz  (AY)
 
 //------------------------------------------------------------ CPU -------------------------------------------------------------//
 
@@ -330,7 +348,7 @@ wire        ld_status_strobe, ld_command_strobe;
 wire [16:0] ld_curr_frame;   // routed to the video path via ld_frame_o below (disc->film map, dlv_streamer.v)
 wire        ld_playing_w;    // AUDIO-GATE-2026-07-05: mode==M_PLAY, for the streamer's audio ring gate
 
-DragonsLair_LDV1000 u_ldv1000 (
+DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // CLOCK-80M-2026-08-15: thread the core clock down
     .clk            (clk_sys),
     .reset_n        (reset),          // core reset is active-low
     .cmd_stb        (ld_cmd_stb),
@@ -410,24 +428,31 @@ assign led_digits_o = {led_digits[15], led_digits[14], led_digits[13], led_digit
 // (M1 + IORQ).  MAME: set_periodic_int(irq0_line_hold, MASTER_CLOCK_US/8/16^4)
 // = 16 MHz/8/65536 = 30.517 Hz.  The Operation Manual: RTC ~33 ms square wave,
 // held until INTA (M1- + IORQ- together) removes it — required to keep the Z80
-// in sync with the videodisc.  Counted in absolute 40 MHz cycles (wall-clock),
+// in sync with the videodisc.  Counted in absolute clk_sys cycles (wall-clock),
 // matching the (real-time) LD-stub strobes.
-localparam [20:0] IRQ_PERIOD = 21'd1310720;  // 40 MHz / 30.518 Hz
+//
+// 🚨 CLOCK-80M-2026-08-15: was `localparam [20:0] IRQ_PERIOD = 21'd1310720;` / `reg [20:0] irq_cnt;`.
+// NOT in the upgrade recipe's table -- found by sweeping for "40 MHz" in comments.  This is the
+// MAIN Z80 periodic IRQ, the thing that keeps the CPU in sync with the videodisc.  At 80 MHz it
+// must be 2621440, which needs 22 bits; [20:0] tops out at 2097151, so it would have SILENTLY
+// truncated to 524288 -- IRQ firing 5x too fast, clean lint, game desynced from the disc.
+// Widened to [21:0] and derived; the form reproduces 1310720 exactly at 40 MHz.
+localparam [21:0] IRQ_PERIOD = (64'd1310720 * CLK_HZ) / 64'd40_000_000;  // clk_sys / 30.518 Hz
 
 reg n_irq = 1'b1;
-reg [20:0] irq_cnt = 21'd0;
+reg [21:0] irq_cnt = 22'd0;
 always_ff @(posedge clk_sys) begin
     if (!reset) begin
         n_irq   <= 1'b1;
-        irq_cnt <= 21'd0;
+        irq_cnt <= 22'd0;
     end
     else begin
-        if (irq_cnt >= IRQ_PERIOD - 21'd1) begin
-            irq_cnt <= 21'd0;
+        if (irq_cnt >= IRQ_PERIOD - 22'd1) begin
+            irq_cnt <= 22'd0;
             n_irq   <= 1'b0;              // assert (hold)
         end
         else begin
-            irq_cnt <= irq_cnt + 21'd1;
+            irq_cnt <= irq_cnt + 22'd1;
         end
         if (~n_m1 & ~n_iorq) n_irq <= 1'b1;  // INTA clears the hold
     end

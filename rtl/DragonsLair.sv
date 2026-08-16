@@ -13,6 +13,11 @@
 //============================================================================
 
 module DragonsLair
+#(
+    // CLOCK-80M-2026-08-15: core clock rate, from CORE_CLK_HZ in Arcade-DragonsLair.sv.
+    // Passed straight through to DragonsLair_CPU -> DragonsLair_LDV1000.
+    parameter [31:0] CLK_HZ = 32'd80_000_000
+)
 (
     input                reset,       // active LOW
     input                clk_sys,
@@ -53,7 +58,7 @@ wire rom_cs = (ioctl_index == 8'd0);
 
 wire signed [15:0] snd;
 
-DragonsLair_CPU cpu_board
+DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // CLOCK-80M-2026-08-15: thread the core clock down
 (
     .reset(reset),
     .clk_sys(clk_sys),

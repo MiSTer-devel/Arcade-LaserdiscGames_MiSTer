@@ -301,7 +301,7 @@ assign dlv_sd_buff_din[0] = 8'd0;   // never write back
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
-	.clk_sys(CLK_40M),   // CLOCK-UNIFY-2026-07-04: was CLK_10M (Kangaroo leftover); core is single-clock 40M now
+	.clk_sys(CLK_CORE),   // CLOCK-UNIFY-2026-07-04: was CLK_10M (Kangaroo leftover); core is single-clock now
 	.HPS_BUS(HPS_BUS),
 	.EXT_BUS(),
 	.gamma_bus(gamma_bus),
@@ -327,7 +327,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.joystick_1(joystick_1),
 	.ps2_key(ps2_key),
 
-	// LD-VIDEO-2026-07-04: .dlv block-mount (slot 0) -> dlv_streamer (all CLK_40M, no CDC)
+	// LD-VIDEO-2026-07-04: .dlv block-mount (slot 0) -> dlv_streamer (all CLK_CORE, no CDC)
 	.img_mounted(dlv_img_mounted),
 	.img_readonly(),
 	.img_size(dlv_img_size),
@@ -343,20 +343,61 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 );
 
 ////////////////////   CLOCKS   ///////////////////
-wire CLK_40M;
-wire CLK_10M;
+
+// ============================================================================
+// CLOCK-80M-2026-08-15 -- CORE CLOCK RAISED 40 MHz -> 80 MHz.  HW-TESTED, KEPT AS BASELINE.
+//
+// WHY IT WAS DONE: sys/sys_top.sdc:5 constrains the HPS memory bridge (h2f_user0_clk) at
+// 100 MHz, but DDRAM_CLK below was tied to the 40 MHz core clock -- the memory path was
+// running at 40% of the rate its own timing constraints are written for.  The same change
+// removed ALL dropouts/sync loss/segment glitches on VCR-Robots the same day.
+//
+// ✅ HW RESULT (user, 2026-08-15): picture is BRIGHTER and SHARPER.  Kept.
+// ❌ BUT THE LAG IS UNCHANGED: "still have the same issues with some lag/spurious frames".
+//    So the 40 MHz memory-bandwidth ceiling was NOT the cause of the gameplay lag, and the
+//    "gameplay lags / attract mode is perfect" split is NOT explained by starved DDR bandwidth.
+//    ⛔ DO NOT re-propose raising the clock (e.g. to 100 MHz) as the lag fix -- that hypothesis
+//    has been tested on hardware and did not hold.  Look elsewhere.
+//
+// WHY 80 AND NOT 100: at 80 MHz with CE_DIV_LOG2 3 the pixel clock is 80/8 = 10 MHz, identical
+// to the old 40/4, so V_TOTAL stays 725 and V_BP stays 213 -- video timing is BYTE-IDENTICAL
+// to the 40 MHz build, with 2x the memory bandwidth and zero geometry risk.  100 MHz would
+// force pixel 12.5 MHz -> V_TOTAL 906 -> 45% vertical blanking; on Robots 65% blanking made
+// the picture BOUNCE (unstable scaler lock).
+//
+// 🔑 EVERY clock-coupled constant DERIVES from CORE_CLK_HZ.  Do not re-hardcode 40e6/80e6.
+//    They fail SILENTLY when wrong: lint stays clean and a too-wide literal assigned to a
+//    narrow register is perfectly legal Verilog.  Three of the overflow sites were NOT in the
+//    upgrade recipe and were found by sweeping for "40 MHz"/"40e6": DragonsLair_CPU.sv
+//    IRQ_PERIOD, DragonsLair_LDV1000.sv PLAY_PERIOD, dlv_streamer.v FRAME_DIV -- all three
+//    would have truncated in a [20:0] register.  See also cdiv, FILM_PERIOD, the LDV1000
+//    strobe block, WD_LIMIT, ACC_MOD, and SEEK_TMO below.
+//    Every derived form is written as "the known-good 40 MHz literal, scaled by CLK_HZ", so
+//    setting CORE_CLK_HZ back to 40e6 reproduces the old constants bit-for-bit (verified).
+//
+// TO REVERT: set CORE_CLK_HZ back to 40_000_000, set CE_DIV_LOG2 back to 3'd2, and restore
+// rtl/pll/pll_0002.v's .c_cnt_hi_div0/.c_cnt_lo_div0 to 10/10 (+ the frequency string to
+// "40.000000 MHz").  Everything else follows automatically from CORE_CLK_HZ.
+// ============================================================================
+localparam [31:0] CORE_CLK_HZ = 32'd80_000_000;   // single source of truth for the core clock
+
+// NAMING: deliberately frequency-AGNOSTIC.  This wire was called CLK_40M through the 2026-08-15
+// upgrade, which made it a lie the moment the PLL changed.  Never name it after a frequency
+// again -- CORE_CLK_HZ above is the one place the number appears.
+wire CLK_CORE;                  // the core clock: CORE_CLK_HZ (80 MHz), = DDRAM_CLK = CLK_VIDEO
+wire CLK_10M;                   // PLL outclk_1, genuinely 10 MHz, UNUSED by the core (Kangaroo leftover)
 wire locked;
 
 pll pll
 (
     .refclk(CLK_50M),
     .rst(0),
-    .outclk_0(CLK_40M),
+    .outclk_0(CLK_CORE),
     .outclk_1(CLK_10M),
     .locked(locked)
 );
 
-assign CLK_VIDEO = CLK_40M;   // HDMI needs the 40 MHz reference
+assign CLK_VIDEO = CLK_CORE;   // scaler reference clock (paired with ce_pix from CE_DIV_LOG2)
 
 wire reset = RESET | status[0] | buttons[1] | ioctl_download;
 
@@ -377,7 +418,7 @@ reg btn_service  = 0;
 
 wire pressed = ~ps2_key[9];
 wire [7:0] code = ps2_key[7:0];
-always @(posedge CLK_40M) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M
+always @(posedge CLK_CORE) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M
 	reg old_state;
 	old_state <= ps2_key[10];
 	if(old_state != ps2_key[10]) begin
@@ -433,10 +474,12 @@ wire [23:0] rgb_out;
 // below) -- the dim-after-10s-paused feature has been non-functional since the FB-PIVOT-
 // 2026-07-04 rewiring, predating this session. Left as-is (pre-existing, separate gap) rather
 // than silently also wiring it in -- that's a real display-behavior change, not a compile fix.
-pause #(8,8,8,10) pause
+// CLOCK-80M-2026-08-15: CLKSPD (4th param, "main clock speed in MHz") was a hardcoded 10 --
+// already wrong before this change, since the core was 40 MHz.  Derived now.
+pause #(8,8,8,CORE_CLK_HZ/32'd1_000_000) pause
 (
 	.*,
-	.clk_sys(CLK_40M),   // CLOCK-UNIFY-2026-07-04: was CLK_10M
+	.clk_sys(CLK_CORE),   // CLOCK-UNIFY-2026-07-04: was CLK_10M
 	.user_button(m_pause),
 	.pause_request(1'b0),   // hiscore removed 2026-07-04
 	.options(~status[26:25]),
@@ -497,7 +540,7 @@ arcade_video #(512,24) arcade_video
 (
 	.*,
 
-	.clk_video(CLK_40M),
+	.clk_video(CLK_CORE),
 	.ce_pix(rr_ce_pix),
 
 	.RGB_in({comp_r, comp_g, comp_b}),
@@ -513,7 +556,7 @@ arcade_video #(512,24) arcade_video
 // download). The MRA <switches> writes DSW1 -> byte 0, DSW2 -> byte 1.
 // dsw[7:0] = DSW1 (AY port A), dsw[15:8] = DSW2 (AY port B).
 reg [7:0] dip_sw[8] = '{8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00};
-always @(posedge CLK_40M) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M (ioctl now same-domain 40M)
+always @(posedge CLK_CORE) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M (ioctl now same-domain)
 	if (ioctl_wr && (ioctl_index == 8'd254) && !ioctl_addr[24:3])
 		dip_sw[ioctl_addr[2:0]] <= ioctl_dout;
 end
@@ -543,11 +586,11 @@ reg        fb_seek_hold;       // driven in the framebuffer block below
 wire        ld_playing_top;      // AUDIO-GATE-2026-07-05: LD mode==PLAY from DragonsLair -> dlv_streamer
 
 //Instantiate Dragon's Lair top-level game module
-DragonsLair dl_inst
+DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst   // CLOCK-80M-2026-08-15: thread the core clock down
 (
 	.reset(~reset),       // MiSTer reset is active-high; invert for active-low game modules
 
-	.clk_sys(CLK_40M),   // 40 MHz: Z80=/10=4MHz, AY=/20=2MHz, pixel=/8=5MHz (real-hardware speed)
+	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)
 
 	// P1 (0xC008): {3'b0, action, right, left, down, up} active-high (inverted to active-low bus inside)
 	// SKILL-BUTTONS-2026-07-25: original was `{3'b000, m_action1, ...}` -- bits 7:5 tied off, so
@@ -568,8 +611,8 @@ DragonsLair dl_inst
 
 	.pause(pause_cpu),
 	// LD-HOLD-SYNC-2026-08-13: the seek hold now freezes the DISC as well as the picture, so the
-	// game cannot execute frames it has not shown yet. fb_seek_hold is already in this CLK_40M
-	// domain (SEEK_TMO is counted at 40 MHz), so no CDC is needed.
+	// game cannot execute frames it has not shown yet. fb_seek_hold is already in this CLK_CORE
+	// domain (SEEK_TMO is counted at the core clock), so no CDC is needed.
 	.disc_hold(fb_seek_hold),
 
 	.led_digits_o(led_digits_flat),
@@ -593,7 +636,7 @@ assign ioctl_upload_req = 1'b0;
 // NOTE: while FB_EN=1 the scaler shows the framebuffer, so the LED-band /
 // arcade_video output is NOT displayed during this checkpoint.
 // TO REVERT to the LED-band display: set FB_EN back to 1'b0 (the DDR block below
-// is then harmless/idle).  All of this runs in the CLK_40M domain (= DDRAM_CLK),
+// is then harmless/idle).  All of this runs in the CLK_CORE domain (= DDRAM_CLK),
 // so there is no hps_io/CDC involved yet.
 //============================================================================
 // FB-PIVOT-2026-07-04: MISTER_FB DISPLAY DISABLED.  It bypasses the core-video/
@@ -608,7 +651,7 @@ assign FB_HEIGHT = 12'd240;
 assign FB_BASE   = 32'h30000000;  // must match ddram.sv region base
 assign FB_STRIDE = 14'd640;       // 320 px * 2 B (tight 16bpp)
 
-assign DDRAM_CLK = CLK_40M;
+assign DDRAM_CLK = CLK_CORE;
 
 wire [27:1] fb_wraddr;
 wire [15:0] fb_din;
@@ -623,12 +666,12 @@ wire  [7:0] tp_r, tp_g, tp_b;
 // DIAG-REVERT-2026-07-04: the proven test-pattern source is kept commented for a 1-uncomment
 // fallback (also restore fb_writer's px_* to tp_* below if you re-enable it).
 // fb_testpattern tp_gen (
-//     .clk(CLK_40M), .reset(reset),
+//     .clk(CLK_CORE), .reset(reset),
 //     .ready(tp_ready), .we(tp_we),
 //     .x(tp_x), .y(tp_y), .r(tp_r), .g(tp_g), .b(tp_b)
 // );
 
-// ---- .dlv block streamer (hps_io slot 0) — all CLK_40M, single-clock, no CDC ----
+// ---- .dlv block streamer (hps_io slot 0) — all CLK_CORE, single-clock, no CDC ----
 wire  [7:0] strm_byte;
 wire        strm_valid, strm_ready, strm_last;
 wire        dec_reset_w;                // STREAMING-2026-07-04: per-frame decoder reset (decoder only)
@@ -637,8 +680,8 @@ wire signed [15:0] pcm_l, pcm_r;        // STREAMING-2026-07-04: .dlv PCM -> aud
 // STREAMING-2026-07-04: continuous video+audio streamer.  Free-runs film frames from START_FRAME
 // (paced ~30 fps), and keeps a 44.1 kHz PCM ring topped up (audio has SD priority).  The one-shot
 // frame fetch (ld_req_*/STAGE1_FRAME) is removed — this is the real streaming path.
-dlv_streamer #(.START_FRAME(17'd1000)) dlv_strm (
-    .clk(CLK_40M), .reset(reset),
+dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (   // CLOCK-80M-2026-08-15
+    .clk(CLK_CORE), .reset(reset),
     .img_mounted(dlv_img_mounted), .img_size(dlv_img_size),
     .sd_lba(dlv_sd_lba[0]), .sd_blk_cnt(dlv_sd_blk_cnt[0]),
     .sd_rd(dlv_sd_rd), .sd_ack(dlv_sd_ack),
@@ -658,7 +701,7 @@ wire  [7:0] dec_px_r, dec_px_g, dec_px_b;
 wire        dec_frame_done, dec_idle;
 
 jpeg_frame_decoder dec (
-    .clk(CLK_40M), .rst(dec_reset_w),   // STREAMING-2026-07-04: per-frame reset (NOT global); fb_writer stays on global reset
+    .clk(CLK_CORE), .rst(dec_reset_w),   // STREAMING-2026-07-04: per-frame reset (NOT global); fb_writer stays on global reset
     .in_byte(strm_byte), .in_valid(strm_valid), .in_ready(strm_ready), .in_last(strm_last),
     .px_ready(dec_px_ready), .px_we(dec_px_we),
     .px_x(dec_px_x), .px_y(dec_px_y), .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
@@ -701,7 +744,7 @@ jpeg_frame_decoder dec (
 // localparam [26:0] FB_BUF0_HW = 27'd0;
 // localparam [26:0] FB_BUF1_HW = 27'd76800;   // 320*240 halfwords past buf0
 // reg fb_buf_sel;
-// always @(posedge CLK_40M) begin
+// always @(posedge CLK_CORE) begin
 //     if (reset) fb_buf_sel <= 1'b0;
 //     else if (dec_frame_done) fb_buf_sel <= ~fb_buf_sel;
 // end
@@ -729,9 +772,14 @@ reg        fb_have_new;    // a completed frame is waiting for the next vblank
 
 // ---- SEEK-HOLD-2026-07-20 state (see the note above the dlv_streamer instance) ---------------
 localparam [2:0]  SEEK_PRIME = 3'd3;          // post-seek frames to bank before resuming
-localparam [25:0] SEEK_TMO   = 26'd40000000;  // ~1 s @40 MHz -- SAFETY, see below
+// 🚨 CLOCK-80M-2026-08-15: was `localparam [25:0] SEEK_TMO = 26'd40000000;` / `reg [25:0] fb_seek_tmr;`.
+// 80,000,000 needs 27 bits and [25:0] tops out at 67,108,863, so BOTH would have silently
+// truncated.  This is failure mode #1 from the Robots upgrade: if fb_seek_tmr is too narrow,
+// `fb_seek_tmr >= SEEK_TMO` can NEVER be true, the seek-hold never releases, the framebuffer
+// adopt stays inhibited => BLANK SCREEN with audio muted.  Both widened to [27:0].
+localparam [27:0] SEEK_TMO   = CORE_CLK_HZ;   // ~1 s at the core clock -- SAFETY, see below
 reg  [2:0]  fb_prime_cnt;
-reg  [25:0] fb_seek_tmr;
+reg  [27:0] fb_seek_tmr;
 reg         fb_wr_stale;   // frame decoding when the seek hit -> finish it, but never publish it
 // ⚠️ SAFETY TIMEOUT IS NON-NEGOTIABLE. An unbounded "wait until buffers fill" is a brand-new
 // hard-lock source -- exactly the class of bug removed from this core (fill_idle/ddram). The
@@ -750,7 +798,7 @@ wire [1:0] fb_next_disp = fb_adopt ? fb_ready_idx : fb_disp_idx;
 // the one index that is neither a nor b (0+1+2=3; valid because the invariant keeps them distinct)
 wire [1:0] fb_free_idx  = 2'd3 - fb_wr_idx - fb_next_disp;
 
-always @(posedge CLK_40M) begin
+always @(posedge CLK_CORE) begin
     rr_vblank_q <= rr_vblank;
     if (reset) begin
         fb_wr_idx    <= 2'd0;
@@ -761,7 +809,7 @@ always @(posedge CLK_40M) begin
         fb_seek_q    <= 1'b0;
         fb_seek_hold <= 1'b0;      // SEEK-HOLD-2026-07-20
         fb_prime_cnt <= 3'd0;
-        fb_seek_tmr  <= 26'd0;
+        fb_seek_tmr  <= 28'd0;   // CLOCK-80M-2026-08-15: widened 26->28
         fb_wr_stale  <= 1'b0;
     end else begin
         fb_seek_q <= fb_seek_pulse;   // SEEK-HOLD-2026-07-20
@@ -786,7 +834,7 @@ always @(posedge CLK_40M) begin
         end
         // SEEK-HOLD: run the safety timer and release once primed (or on timeout)
         if (fb_seek_hold) begin
-            if (fb_seek_tmr < SEEK_TMO) fb_seek_tmr <= fb_seek_tmr + 26'd1;
+            if (fb_seek_tmr < SEEK_TMO) fb_seek_tmr <= fb_seek_tmr + 28'd1;
             if (fb_seek_release)        fb_seek_hold <= 1'b0;
         end
         // SEEK-HOLD: arm. LAST so it wins any coincidence -- a frame completing on the same cycle
@@ -816,7 +864,7 @@ always @(posedge CLK_40M) begin
             fb_wr_stale  <= ~dec_idle | dec_reset_w;   // tag anything IN FLIGHT: fetching or decoding
             fb_seek_hold <= 1'b1;
             fb_prime_cnt <= 3'd0;
-            if (!fb_seek_hold) fb_seek_tmr <= 26'd0;
+            if (!fb_seek_hold) fb_seek_tmr <= 28'd0;
         end
     end
 end
@@ -835,7 +883,7 @@ fb_writer #(
     .FB_ROWS   (FB_ROWS_HW),
     .CLEAR_ROWS(FB_ROWS_HW)
 ) fb_wr (
-    .clk(CLK_40M), .reset(reset),
+    .clk(CLK_CORE), .reset(reset),
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
     .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
     .px_ready(dec_px_ready),
@@ -847,7 +895,7 @@ fb_writer #(
 );
 
 ddram ddram_fb (
-    .DDRAM_CLK(CLK_40M),
+    .DDRAM_CLK(CLK_CORE),
     .DDRAM_BUSY(DDRAM_BUSY),
     .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
     .DDRAM_ADDR(DDRAM_ADDR),
@@ -893,15 +941,25 @@ fb_raster_reader #(
     // purely the per-LINE deadline.
     // clk/4 -> 576*4 = 2304 cyc/line = 18 cycles per request, and 33.4 Hz is still above the
     // 23.938 fps content rate. Also halves DDR read traffic (5.57 M/s -> 3.52 M/s).
-    .CE_DIV_LOG2(3'd2),
+    // 🔑 CLOCK-80M-2026-08-15: was 3'd2 (clk/4 @ 40 MHz).  Bumped to 3'd3 (clk/8) so that at the
+    // new 80 MHz core clock the pixel rate stays 80/8 = 10 MHz -- EXACTLY the old 40/4.  Every
+    // number in the two comment blocks around this line is therefore UNCHANGED in wall-clock
+    // terms: V_TOTAL 725, 8*576*725 = 3,340,800 cyc @ 80 MHz = 23.9464 Hz, still 1:1 against the
+    // 23.938 Hz film tick, and V_BP stays 213.  The per-LINE deadline actually IMPROVES: 576*8 =
+    // 4608 cycles per line against 128 DDR requests = 36 cycles/request, vs 18 before.
+    // ⚠️ CE_DIV_LOG2 and CORE_CLK_HZ must move TOGETHER -- changing one alone changes video timing.
+    .CE_DIV_LOG2(3'd3),
 
     // ---- CADENCE-FIX-2026-07-24 ------------------------------------------------------------
     // SYMPTOM this addresses (user, on Space Ace): "the graphics are very jumpy" -- specifically
     // a LURCHING CADENCE of otherwise-correct footage (not corrupt frames, not wrong scenes).
     //
     // A new film frame can only become visible at the start of a display scan, so what matters is
-    // refresh / film_rate.  refresh = 40e6 / (2^CE_DIV_LOG2 * H_TOTAL * V_TOTAL), where
-    // H_TOTAL = H_ACT+H_FP+H_SYNC+H_BP and V_TOTAL = V_ACT+V_BAND+V_FP+V_SYNC+V_BP:
+    // refresh / film_rate.  refresh = CORE_CLK_HZ / (2^CE_DIV_LOG2 * H_TOTAL * V_TOTAL), where
+    // H_TOTAL = H_ACT+H_FP+H_SYNC+H_BP and V_TOTAL = V_ACT+V_BAND+V_FP+V_SYNC+V_BP.
+    // ⚠️ The clk/N divider names in the BEFORE/AFTER lines below are at the OLD 40 MHz clock.
+    // Post CLOCK-80M-2026-08-15 the core is 80 MHz and CE_DIV_LOG2 is 3, so today's clk/8 is
+    // the SAME pixel rate (10 MHz) as the "clk/4" described below.  The Hz figures still stand:
     //   BEFORE (320x240, BAND_H=12, clk/8): 384*280  -> 46.503 Hz = 1.9427x  =~ 2  -> every film
     //       frame got exactly TWO refreshes; even cadence, one mild hitch every ~17 frames. SMOOTH.
     //   AFTER  (512x480, BAND_H=20, clk/4): 576*528  -> 32.881 Hz = 1.3736x -> 41.774 ms of content
@@ -931,7 +989,7 @@ fb_raster_reader #(
     // ORIGINAL: V_BP defaulted to 16'd16 (V_TOTAL 528 -> 32.881 Hz). Delete this line to revert.
     .V_BP       (16'd213)
 ) rr (
-    .clk(CLK_40M), .reset(reset),
+    .clk(CLK_CORE), .reset(reset),
     .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),   // READ-COALESCE-2026-07-20
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),

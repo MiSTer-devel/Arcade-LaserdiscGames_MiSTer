@@ -24,9 +24,12 @@
 // video+audio (user directive — build the real streaming path, drop the hack).
 //============================================================================
 module dlv_streamer #(
-    parameter [16:0] START_FRAME = 17'd1000   // first film frame (skip black leader); free-runs from here
+    parameter [16:0] START_FRAME = 17'd1000,  // first film frame (skip black leader); free-runs from here
+    // CLOCK-80M-2026-08-15: core clock rate, driven from CORE_CLK_HZ in Arcade-DragonsLair.sv.
+    // Every clock-coupled constant below DERIVES from this -- do not re-hardcode 40e6.
+    parameter [31:0] CLK_HZ      = 32'd80_000_000
 )(
-    input             clk,               // = CLK_40M
+    input             clk,               // = CLK_CORE (rate given by the CLK_HZ parameter above)
     input             reset,             // active-high
 
     // --- HPS block/disk interface (-> hps_io sd_*[0], img_*) ---
@@ -215,8 +218,12 @@ module dlv_streamer #(
     // the LED band; that needs led_digits_flat, which currently carries the real
     // score/lives, so it is the user's call.  Until then Quartus will strip these three
     // and report them unused -- expected, not a mistake.  The FIX above works regardless.
-    localparam [21:0] WD_LIMIT = 22'd2000000;   // 50 ms @ 40 MHz
-    reg  [21:0] wd_cnt;
+    // CLOCK-80M-2026-08-15: was `localparam [21:0] WD_LIMIT = 22'd2000000;` / `reg [21:0] wd_cnt;`
+    // DERIVED, not hardcoded: at 2x clock a fixed 2,000,000 would fire at 25 ms -- SHORTER than a
+    // film frame -- aborting every legitimate fetch so no frame ever completes (one of the two
+    // width/derivation bugs that blanked VCR-Robots).  Widened to [23:0] with headroom.
+    localparam [23:0] WD_LIMIT = CLK_HZ / 32'd20;   // 50 ms at CLK_HZ (= 4,000,000 @ 80 MHz)
+    reg  [23:0] wd_cnt;
     reg  [3:0]  wd_rst_cnt;                     // holds dec_reset for 16 clk after an abort
     reg  [3:0]  wd_state;                       // state that timed out
     reg  [16:0] wd_frame;                       // ld_curr_frame at the wedge
@@ -244,8 +251,13 @@ module dlv_streamer #(
     //------------------------------------------------------------------------
     // 30 fps frame pacer + pending latch (single-driver on frame_pending)
     //------------------------------------------------------------------------
-    localparam [20:0] FRAME_DIV = 21'd1333333;   // 40e6/30
-    reg [20:0] frame_cnt;
+    // 🚨 CLOCK-80M-2026-08-15: was `localparam [20:0] FRAME_DIV = 21'd1333333;` / `reg [20:0] frame_cnt;`.
+    // NOT in the upgrade recipe's table -- found by sweeping for "40e6".  At 80 MHz this is
+    // 2666666, which needs 22 bits; [20:0] tops out at 2097151 so it would have SILENTLY truncated
+    // to 569514 -- the 30 Hz pacer free-running at ~140 Hz, i.e. the watchdog re-fetch/re-mount
+    // safety net hammering the fetch path.  Widened to [21:0]; form is exact at 40 MHz too.
+    localparam [21:0] FRAME_DIV = (64'd1333333 * CLK_HZ) / 64'd40_000_000;   // CLK_HZ/30
+    reg [21:0] frame_cnt;
     reg        frame_tick;
     reg        frame_pending;
     // FETCH-PHASE-LOCK-2026-07-25: content-change detect, driven below (after vid_target is
@@ -268,7 +280,7 @@ module dlv_streamer #(
     always @(posedge clk) begin
         frame_tick <= 1'b0;
         if (reset) frame_cnt <= FRAME_DIV;
-        else if (frame_cnt == 21'd0) begin frame_cnt <= FRAME_DIV; frame_tick <= 1'b1; end
+        else if (frame_cnt == 22'd0) begin frame_cnt <= FRAME_DIV; frame_tick <= 1'b1; end
         else frame_cnt <= frame_cnt - 1'b1;
     end
 
@@ -290,13 +302,16 @@ module dlv_streamer #(
     //------------------------------------------------------------------------
     // 44.1 kHz sample tick (fractional accumulator: exact average rate)
     //------------------------------------------------------------------------
-    localparam [25:0] ACC_INC = 26'd44100;
-    localparam [25:0] ACC_MOD = 26'd40000000;
-    reg [25:0] samp_acc;
+    // CLOCK-80M-2026-08-15: was [25:0] ACC_INC/ACC_MOD/samp_acc with ACC_MOD = 26'd40000000.
+    // 80,000,000 needs 27 bits and [25:0] tops out at 67,108,863 -- it would have silently
+    // truncated (legal Verilog, clean lint) and destroyed the sample rate.  Widened to [27:0].
+    localparam [27:0] ACC_INC = 28'd44100;
+    localparam [27:0] ACC_MOD = CLK_HZ;              // one 44.1 kHz tick per CLK_HZ clocks
+    reg [27:0] samp_acc;
     reg        samp_tick;
     always @(posedge clk) begin
         samp_tick <= 1'b0;
-        if (reset) samp_acc <= 26'd0;
+        if (reset) samp_acc <= 28'd0;
         else if (!pause) begin                       // HLE-DRIVE-2026-07-04: freeze audio position on pause
             if (samp_acc + ACC_INC >= ACC_MOD) begin
                 samp_acc  <= samp_acc + ACC_INC - ACC_MOD;
@@ -682,13 +697,13 @@ module dlv_streamer #(
             // compute to 0 at boot.
             last_fetched_frame <= {17{1'b1}};
             // WEDGE-WATCHDOG-2026-07-24
-            wd_cnt <= 22'd0; wd_rst_cnt <= 4'd0;
+            wd_cnt <= 24'd0; wd_rst_cnt <= 4'd0;   // CLOCK-80M-2026-08-15: wd_cnt widened 22->24
             wd_state <= 4'd0; wd_frame <= 17'd0; wd_trips <= 16'd0;
         end else begin
             // WEDGE-WATCHDOG-2026-07-24: run the timer BEFORE the case, so a state change or a
             // progress event inside the case re-arms it on the NEXT cycle rather than this one.
-            if (!wd_arm || wd_prog)     wd_cnt <= 22'd0;
-            else if (wd_cnt != WD_LIMIT) wd_cnt <= wd_cnt + 22'd1;
+            if (!wd_arm || wd_prog)     wd_cnt <= 24'd0;
+            else if (wd_cnt != WD_LIMIT) wd_cnt <= wd_cnt + 24'd1;
             if (wd_rst_cnt != 4'd0)      wd_rst_cnt <= wd_rst_cnt - 4'd1;
 
             case (state)
@@ -909,7 +924,7 @@ module dlv_streamer #(
                 wd_state  <= state;
                 wd_frame  <= ld_curr_frame;
                 wd_trips  <= wd_trips + 16'd1;
-                wd_cnt    <= 22'd0;
+                wd_cnt    <= 24'd0;
                 wd_rst_cnt<= 4'd15;
                 sd_rd     <= 1'b0;
                 out_valid <= 1'b0;

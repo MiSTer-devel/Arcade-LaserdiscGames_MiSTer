@@ -49,7 +49,7 @@ module fb_raster_reader #(
     // the read load before touching anything structural.
     parameter [2:0]  CE_DIV_LOG2 = 3'd3
 )(
-    input             clk,            // CLK_40M (= DDRAM_CLK)
+    input             clk,            // CLK_CORE (= DDRAM_CLK); 80 MHz as of CLOCK-80M-2026-08-15
     input             reset,          // active-high
     input      [26:0] frame_base_hw,  // DDR halfword base of the frame to display
 
