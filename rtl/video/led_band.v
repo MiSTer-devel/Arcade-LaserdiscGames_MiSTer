@@ -20,7 +20,16 @@ module led_band #(
     // ORIGINAL: parameter [15:0] X_START = 16'd61;  (no SCALE_LOG2)
     parameter [15:0] X_START = 16'd61,   // (320 - N_SLOT*PITCH)/2, centred
     parameter [1:0]  SCALE_LOG2 = 2'd0,  // glyph magnification = 2^SCALE_LOG2
-    parameter [15:0] BAND_Y0 = 16'd2
+    parameter [15:0] BAND_Y0 = 16'd2,
+    // DIAG-REVERT-2026-08-15: 0 = stock (code 15 blank, as DL has always been).
+    // 1 = code 15 renders 'F', so hex frame values display -- needed by the segment-boundary
+    // probe in DragonsLair_CPU.sv.  Blank moves to code 31 (see the slot decode default below),
+    // which is why this is a switch and not a bare font addition: the band's EMPTY slots are
+    // drawn with the blank code, so flipping 15 without moving them fills the band with F's.
+    // DIAG_HEX_F: 1 = render code 15 as 'F' (diagnostic only), 0 = blank (HARDWARE-CORRECT).
+    // Default is 0.  MAME dlair.cpp:177 led_map[15] = 0x00 -- all segments off.  Codes 10-14 are
+    // A b C d E and are NOT affected by this switch; only 15 is.
+    parameter        DIAG_HEX_F = 1'b0
 )(
     input      [15:0] hc,
     input      [15:0] vc,
@@ -47,6 +56,11 @@ module led_band #(
             5'd12: glyph = 35'b01110_10001_10000_10000_10000_10001_01110; // C
             5'd13: glyph = 35'b11110_10001_10001_10001_10001_10001_11110; // D
             5'd14: glyph = 35'b11111_10000_10000_11110_10000_10000_11111; // E
+            // DIAG-REVERT-2026-08-15: was absent (15 fell through to default = blank).
+            // Glyph lifted verbatim from VCR-Robots' led_band.v:67.
+            5'd15: glyph = DIAG_HEX_F
+                         ? 35'b11111_10000_10000_11110_10000_10000_10000    // F
+                         : 35'd0;                                          // stock: blank
             5'd16: glyph = 35'b11110_10001_10001_11110_10000_10000_10000; // P
             5'd17: glyph = 35'b10000_10000_10000_10000_10000_10000_11111; // L
             5'd18: glyph = 35'b11110_10001_10001_11110_10100_10010_10001; // R
@@ -82,7 +96,10 @@ module led_band #(
         6'd25: ch = {1'b0, led_digits[ 7*4 +: 4]};                                                  // P2 lives
         6'd28: ch = 5'd12;                             6'd29: ch = 5'd18;                           // "CR"
         6'd31: ch = {1'b0, led_digits[14*4 +: 4]};     6'd32: ch = {1'b0, led_digits[15*4 +: 4]};   // credits 14,15
-        default: ch = 5'd15;                                                                        // blank
+        // DIAG-REVERT-2026-08-15: was `default: ch = 5'd15;`.  Code 15 is now 'F' when
+        // DIAG_HEX_F=1, so the band's empty slots move to 31, which has no glyph entry and
+        // therefore hits the font's own `default: glyph = 35'd0` = blank, in BOTH modes.
+        default: ch = 5'd31;                                                                        // blank
     endcase
 
     wire [34:0] gbits = glyph(ch);

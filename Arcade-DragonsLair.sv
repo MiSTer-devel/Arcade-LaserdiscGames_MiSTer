@@ -576,6 +576,9 @@ wire [16:0] ld_curr_frame_top;   // HLE-DRIVE-2026-07-04: LD disc frame from Dra
 // Declared here (above the dlv_streamer instance) because the instance uses them; the rest of the
 // state machine lives with the framebuffer logic further down.
 wire       fb_seek_pulse;      // = the Z80's CMD_SEARCH, straight from the LDV1000
+// PLAY-END-FLUSH-2026-08-16: 1-cycle pulse when playback STOPS (any mechanism). Mirrors
+// fb_seek_edge, but for the END of a segment instead of the start.
+wire       fb_play_end;
 reg        fb_seek_q;          // SEEK-HOLD-2026-07-20: edge-detect the arm. Belt-and-braces --
 wire       fb_seek_edge = fb_seek_pulse & ~fb_seek_q;   // if the source ever stuck HIGH, a
                                // LEVEL-triggered arm would re-arm every cycle and the hold could
@@ -618,6 +621,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst   // CLOCK-80M-2026-08-15: thread th
 	.led_digits_o(led_digits_flat),
 	.dbg_led(dbg_led),
 	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE / SEEK-HOLD-2026-07-20
+	.ld_play_end_o(fb_play_end),                                       // PLAY-END-FLUSH-2026-08-16
 	.ld_playing_o(ld_playing_top)     // AUDIO-GATE-2026-07-05
 );
 
@@ -771,7 +775,20 @@ reg  [1:0] fb_ready_idx;   // most recently COMPLETED frame, waiting to be displ
 reg        fb_have_new;    // a completed frame is waiting for the next vblank
 
 // ---- SEEK-HOLD-2026-07-20 state (see the note above the dlv_streamer instance) ---------------
-localparam [2:0]  SEEK_PRIME = 3'd3;          // post-seek frames to bank before resuming
+// ⭐ DIAG-REVERT-2026-08-16 -- SINGLE-BUFFER MODE SWITCH.  Set TRIPLE_BUF back to 1'b1 to restore.
+// Nothing is deleted: every index, the stale tagging and the adopt logic all still run exactly as
+// before.  The switch only (a) points the write and display bases at the SAME buffer, so a frame is
+// visible as it is decoded rather than at the next vblank swap, and (b) drops the post-seek bank-
+// ahead to a single frame, because priming 3 frames into 1 buffer just overwrites the same memory
+// three times and would hold the segment for three fetches to no purpose.
+//
+// WHY (user, 2026-08-16): the 2026-07-20 prime hold and the 2026-08-16 clock-skew fix are two
+// fixes for the SAME problem -- "don't start the segment before the picture is up".  The skew fix
+// (disc + Z80 + IRQ frozen together) solved it properly; banking 3 frames is the older, cruder
+// attempt still sitting underneath, and it costs 120-300 ms of fetch time at every single seek.
+localparam        TRIPLE_BUF = 1'b1;          // DIAG: 1'b0 = single buffer, 1'b1 = original
+// ORIGINAL: localparam [2:0]  SEEK_PRIME = 3'd3;
+localparam [2:0]  SEEK_PRIME = TRIPLE_BUF ? 3'd3 : 3'd1;   // post-seek frames to bank before resuming
 // 🚨 CLOCK-80M-2026-08-15: was `localparam [25:0] SEEK_TMO = 26'd40000000;` / `reg [25:0] fb_seek_tmr;`.
 // 80,000,000 needs 27 bits and [25:0] tops out at 67,108,863, so BOTH would have silently
 // truncated.  This is failure mode #1 from the Robots upgrade: if fb_seek_tmr is too narrow,
@@ -837,6 +854,30 @@ always @(posedge CLK_CORE) begin
             if (fb_seek_tmr < SEEK_TMO) fb_seek_tmr <= fb_seek_tmr + 28'd1;
             if (fb_seek_release)        fb_seek_hold <= 1'b0;
         end
+        // ⭐ PLAY-END-FLUSH-2026-08-16 -- the END-side mirror of the seek flush below.
+        // At a SEEK we already drop the queued frame and tag in-flight decodes stale. At a STOP
+        // we did NOT, so the decode/framebuffer pipeline kept DRAINING onto the screen after the
+        // game had ended the segment -- the 1-3 frame end-of-segment overshoot, and the "spurious
+        // frames that shouldn't show".  The disc stops, but frames already fetched/decoded/queued
+        // were still adopted at the following vblanks.
+        //
+        // Deliberately does NOT assert fb_seek_hold: nothing needs re-priming here, we only need
+        // to stop publishing frames that are AHEAD of where the disc actually stopped.
+        //
+        // ⚠️ Known tradeoff: if the segment's genuine last frame was still in flight when the stop
+        // arrived, this drops it too and the still lands one frame EARLY rather than 1-3 late.
+        // That is the correct direction to err (a frame the game meant to show beats frames it
+        // never meant to show), but if stills now appear one frame short, this is why.
+        // ⛔ PLAY-END-FLUSH DISABLED 2026-08-16 -- HW-tested INERT for the end overshoot, and its
+        // only possible action is to DISCARD frames.  It fires on any drop of
+        // seg_playing = (mode==M_PLAY) && (play_speed_q4 != 0), so a transient mid-segment throws
+        // away good frames.  It was built for a CMD_STOP path DL never uses -- the Daphne log of a
+        // full playthrough contains ZERO stop commands; every segment ends with a fresh SEARCH.
+        // The play_end_o pulse is left plumbed; only the action is disabled.  Uncomment to restore.
+        // if (fb_play_end) begin
+        //     fb_have_new <= 1'b0;                        // never publish a frame past the stop
+        //     fb_wr_stale <= ~dec_idle | dec_reset_w;     // and disown anything mid-flight
+        // end
         // SEEK-HOLD: arm. LAST so it wins any coincidence -- a frame completing on the same cycle
         // as a seek was decoded BEFORE it, so it is stale too. Note fb_seek_tmr is only zeroed
         // when NOT already holding (see the safety note above).
@@ -869,9 +910,18 @@ always @(posedge CLK_CORE) begin
     end
 end
 
-wire [26:0] fb_wr_base = (fb_wr_idx   == 2'd0) ? FB_BUF0_HW :
+// DIAG-REVERT-2026-08-16: single-buffer mode collapses both bases onto FB_BUF0 so the decoder
+// writes into the buffer the raster is reading.  ORIGINALS commented below; restoring them (or
+// just setting TRIPLE_BUF = 1'b1) reverts.
+// wire [26:0] fb_wr_base = (fb_wr_idx   == 2'd0) ? FB_BUF0_HW :
+//                          (fb_wr_idx   == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
+// wire [26:0] fb_rd_base = (fb_disp_idx == 2'd0) ? FB_BUF0_HW :
+//                          (fb_disp_idx == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
+wire [26:0] fb_wr_base = !TRIPLE_BUF          ? FB_BUF0_HW :
+                         (fb_wr_idx   == 2'd0) ? FB_BUF0_HW :
                          (fb_wr_idx   == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
-wire [26:0] fb_rd_base = (fb_disp_idx == 2'd0) ? FB_BUF0_HW :
+wire [26:0] fb_rd_base = !TRIPLE_BUF          ? FB_BUF0_HW :
+                         (fb_disp_idx == 2'd0) ? FB_BUF0_HW :
                          (fb_disp_idx == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
 
 // RES-512x480-2026-07-24: geometry now passed explicitly instead of relying on the module's

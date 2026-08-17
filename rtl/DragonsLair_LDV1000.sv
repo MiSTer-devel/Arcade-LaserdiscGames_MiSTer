@@ -83,13 +83,33 @@ module DragonsLair_LDV1000
     // movement (a frame-delta threshold) and NOT a mode transition. A delta heuristic both guesses
     // and misses: a seek shorter than its threshold would never register.
     output reg        search_cmd_o,
+    // PLAY-END-FLUSH-2026-08-16: 1-cycle pulse when playback STOPS (leaves M_PLAY at non-zero
+    // speed) by any mechanism -- CMD_STOP, CMD_REJECT, play-at-0X, or the next SEARCH.
+    // The top uses it to drop frames still in flight, mirroring what fb_seek_edge already does
+    // at the START of a segment. Without it the decode/framebuffer pipeline DRAINS onto the
+    // screen after the game has ended the segment = the 1-3 frame end-of-segment overshoot.
+    output reg        play_end_o,
     output reg [16:0] curr_frame,     // current disc frame (0..54000) for the video path
     input             pause,          // HLE-DRIVE-2026-07-04: freeze disc motion + strobes during pause
     // LD-HOLD-SYNC-2026-08-13: high while the video path is still priming after a seek (the top's
     // fb_seek_hold).  Freezes ONLY disc motion -- NOT the strobes, which the Z80 polls.
     input             disc_hold,
-    output            playing         // AUDIO-GATE-2026-07-05: mode==M_PLAY, speed==1x, AND both AUDIO1/2
+    output            playing,        // AUDIO-GATE-2026-07-05: mode==M_PLAY, speed==1x, AND both AUDIO1/2
                                        // channels enabled (AUDIO-CMD-2026-07-05) -- gates the .dlv audio ring
+
+    // DIAG-REVERT-2026-08-15: segment-boundary frame probe (user-requested).
+    //   dbg_seek_frame = frame a SEARCH actually LANDED on  (segment START -> P1 score)
+    //   dbg_end_frame  = curr_frame when AUTOSTOP fired     (segment END   -> P2 score)
+    // Each latches ONCE per segment and HOLDS until the next one, so a single still photo is
+    // readable.  Deliberately NOT latched by holds/stills/CMD_STOP -- only the two seek-bounded
+    // events, per the request to ignore hold frames.
+    output reg [16:0] dbg_seek_frame,
+    output     [19:0] dbg_end_frame,      // DIAG-REVERT-2026-08-16: REPURPOSED -> raw SEARCH digits (5 nibbles)
+    // DIAG-REVERT-2026-08-15: sticky autostop telemetry, shown in P1's leading digit.
+    //   bit0 = CMD_AUTOSTOP has armed stop_valid at least once
+    //   bit1 = the autostop compare has actually FIRED at least once
+    // Reads as: 0 = autostop never armed, 1 = armed but never fired, 3 = working.
+    output      [3:0] dbg_flags
 );
     // ---- status codes (ldv1000hle.h) ----
     localparam [7:0] ST_PARK=8'h7c, ST_PLAY=8'h64, ST_STOP=8'h65,
@@ -139,6 +159,9 @@ module DragonsLair_LDV1000
     reg         stop_valid;
     reg         audio_en1, audio_en2;   // AUDIO-CMD-2026-07-05: per-channel enable, MAME default = both on
     reg         has_digit;              // distinguishes "no digits typed" (toggle) from "digit typed" (explicit set)
+    // DIAG-REVERT-2026-08-16: raw SEARCH digit capture (5 nibbles, newest in the low 4 bits)
+    reg  [19:0] dig_sr;                 // shifts in every digit opcode as received
+    reg  [19:0] dig_latched;            // frozen at CMD_SEARCH -> P2
     reg  [4:0]  play_speed_q4;          // OPCODE-SWEEP-2026-07-05: fixed-point x4 (4=1x), CMD_FWD_X*
     reg  [1:0]  speed_acc;              // fractional remainder for sub/multi-1x frame advance
 
@@ -199,9 +222,11 @@ module DragonsLair_LDV1000
     // it and wreck the command channel DL polls.  So: strobes stay on frame_tick (29.97), the disc
     // frame moves to film_tick (23.938).
     //
-    // ⚠️ DL-SPECIFIC CONSTANT -- must become header-derived (round(SRATE*frame_count/total_samples),
-    // both already in the .dlv header @32/@16/@40) before Space Ace / Thayer's Quest, whose films
-    // differ and whose containers are separately known-bad (see pack_dlv.py mpeg_fpks note in vault).
+    // ⛔ 2026-08-16: the "must become header-derived (SRATE*frame_count/total_samples)" note below is
+    // WITHDRAWN -- that formula is what produced the wrong 23.938 in the first place.  It measures
+    // the audio blob, not the film.  Per-game rate must come from the GAME's stated disc fps
+    // (Daphne game/<name>.cpp m_disc_fps), which for Space Ace / Thayer's Quest must be read from
+    // their own drivers, NOT recomputed from their containers.
     //
     // ⚠️ WATCH ON HW: this makes the disc advance 25% slower, so DL's own scene/attract timing (paced
     // by autostop on curr_frame) gets ~25% LONGER.  The user previously measured the attract loop as
@@ -210,9 +235,107 @@ module DragonsLair_LDV1000
     // CLOCK-80M-2026-08-15: was `localparam [20:0] FILM_PERIOD = 21'd1670983;` / `reg [20:0] vcnt;`.
     // Same scale-the-known-good-literal form as the strobe block above: exact 1670983 at 40 MHz,
     // exact 3341966 at 80 MHz.  3341966 needs 22 bits, so FILM_PERIOD and vcnt widen [20:0]->[21:0].
-    localparam [21:0] FILM_PERIOD = (64'd1670983 * CLK_HZ) / 64'd40_000_000;  // 41.774 ms = 1/23.938 s
+    // ⭐ FILM-RATE-DAPHNE-2026-08-16: rate is 23.976, NOT 23.938.
+    // ORIGINAL: localparam [21:0] FILM_PERIOD = (64'd1670983 * CLK_HZ) / 64'd40_000_000;  // 23.938
+    //
+    // The 23.938 above was DERIVED BY ME from the container: total_samples/frame_count =
+    // 81343495/44154 = 1842.27 samples/frame -> 44100/1842.27 = 23.938.  That is a measurement of
+    // the AUDIO BLOB's size, not of the film.  The authoritative disc rate is a stated constant in
+    // Daphne's own DL driver:
+    //     Useful Stuff/daphne/game/lair.cpp:86   ->   m_disc_fps = 23.976;
+    // which pre_init() turns into m_uDiscFPKS = 23976 (game.cpp:162), and 23976 is ALSO exactly the
+    // m2v's own rate (ffprobe r_frame_rate = 24000/1001).  Because those two are EQUAL, Daphne's
+    // fps rescale at ldp-vldp.cpp:546-556 never fires and the disc<->film map is a pure 1:1 offset.
+    //
+    // We were running the disc 0.16% SLOW (23.938 vs 23.976) -- always in the "we fall behind"
+    // direction, accumulating ~14 frames over 9000.  Exact rational form, no derived decimal:
+    //     FILM_PERIOD = CLK_HZ * 1001 / 24000     (23.976 fps = 24000/1001)
+    // 80 MHz -> 3,336,666 (was 3,341,966).  Still fits [21:0].
+    localparam [21:0] FILM_PERIOD = (64'd1001 * CLK_HZ) / 64'd24000;   // 41.708 ms = 1001/24000 s
     reg  [21:0] vcnt;
     wire        film_tick = (vcnt >= FILM_PERIOD - 22'd1);
+
+    // VCNT-PHASE-2026-08-16 (rev 2): "the disc is actually moving" -- written as the SAME
+    // expression as the advance gate below so the two cannot drift apart if either is edited.
+    // motion_rise is the one-shot that re-zeros the film phase; see the block below.
+    wire        disc_moving = (mode == M_PLAY) && !disc_hold;
+    reg         disc_moving_q;
+    wire        motion_rise = disc_moving && !disc_moving_q;
+
+    //------------------------------------------------------------------------
+    // DIAG-REVERT-2026-08-15 (rev 2) -- SEGMENT-BOUNDARY FRAME PROBE
+    //
+    // rev 1 was WRONG on both halves and is deleted, not commented, because it was never
+    // right in the first place:
+    //   * P1 latched at the SEARCH atomic land, so EVERY seek moved it -- including the
+    //     still-frame seeks (SEARCH lands, mode goes M_STOP, disc never plays). The request
+    //     was explicitly "ignore hold frames, only segment seeks."
+    //   * P2 latched in the autostop branch, which needs stop_valid armed by CMD_AUTOSTOP.
+    //     That branch never fires in DL, so P2 sat at 00000. Betting on ONE termination
+    //     path was the mistake: segments also end via CMD_STOP and via a fresh SEARCH.
+    //
+    // rev 2 is mechanism-agnostic: it watches whether the disc is ACTUALLY PLAYING and
+    // latches the frame at the two edges. A still-frame seek never enters this state, so it
+    // can never disturb either value; and the segment end is caught no matter which command
+    // ended it (autostop, CMD_STOP, or the next SEARCH).
+    //
+    // seg_playing excludes play_speed_q4==0 (CMD_FWD_X0 = a "play" that does not advance,
+    // i.e. another still) so only real motion counts as a segment.
+    // Both values HOLD until their next edge, so one still photo reads both ends.
+    // rev 3 fixes the remaining hole in rev 2: latching on ANY playback stop meant a frame
+    // HOLD (a short play burst that immediately stops) overwrote the values and destroyed the
+    // reading. Worse, P1 latched at play START and P2 at play END independently, so after a
+    // hold they could describe two DIFFERENT segments.
+    //
+    // rev 3: the start frame goes to a PENDING register and NOTHING is displayed until a
+    // playback ENDS **and qualifies as a segment** -- it must have advanced at least
+    // MIN_SEG_FRAMES. A hold advances ~0 frames and is therefore incapable of touching either
+    // value. Both commit in the SAME cycle, so P1 and P2 are always the two ends of ONE
+    // segment, which is what makes the chart meaningful.
+    //
+    // MIN_SEG_FRAMES = 12 (~0.5 s at 23.938). Stills/holds advance 0-2; the shortest real
+    // gameplay clip is comfortably above this. Raise it if holds still slip through.
+    localparam [16:0] MIN_SEG_FRAMES = 17'd12;
+
+    wire seg_playing = (mode == M_PLAY) && (play_speed_q4 != 5'd0);
+    reg  seg_playing_q;
+    reg  [16:0] seg_start_frame;                        // PENDING -- not displayed
+    wire [16:0] seg_len = curr_frame - seg_start_frame; // only meaningful when it ran forward
+
+    always_ff @(posedge clk) begin
+        play_end_o <= 1'b0;   // PLAY-END-FLUSH-2026-08-16: default low -> always a 1-cycle pulse
+        if (!reset_n) begin
+            seg_playing_q   <= 1'b0;
+            seg_start_frame <= 17'd0;
+            dbg_seek_frame  <= 17'd0;
+        end else begin
+            seg_playing_q <= seg_playing;
+            // PLAY-END-FLUSH-2026-08-16: playback just stopped, by whatever mechanism.
+            if (!seg_playing && seg_playing_q) play_end_o <= 1'b1;
+
+            // P1: playback STARTED -> show the first frame IMMEDIATELY, while it plays.
+            // This is live on purpose: the user watches P1 latch at the start of a segment,
+            // then watches P2 land when it ends, pausing between segments to read them.
+            // Still-frame SEEKs never reach here (they park in M_STOP, never M_PLAY), which
+            // was the original complaint.
+            if (seg_playing && !seg_playing_q) begin
+                seg_start_frame <= curr_frame;
+                // DIAG-REVERT-2026-08-16: P1 now shows what the Z80 ASKED FOR, not where we
+                // happened to be when play started. search_frame holds the last SEARCH target
+                // until the next SEARCH, so it is still valid here.
+                dbg_seek_frame  <= search_frame;
+            end
+
+            // P2: playback ENDED -> only latch if this was a real SEGMENT, never a hold.
+            // A hold advances ~0 frames and so cannot wipe the value you are still reading.
+            if (!seg_playing && seg_playing_q) begin
+                ; // DIAG-REVERT-2026-08-16: P2 no longer shows segment end -- it shows raw digits
+            end
+        end
+    end
+
+    assign dbg_end_frame = dig_latched;   // DIAG-REVERT-2026-08-16: raw digits -> P2
+    assign dbg_flags     = 4'd0;          // P1 leading digit: unused, reads 0
 
     wire [3:0]  dig = digit_of(cmd_byte);
 
@@ -235,18 +358,77 @@ module DragonsLair_LDV1000
             stop_valid <= 1'b0; curr_frame <= 17'd0; fcnt <= 22'd0;   // CLOCK-80M-2026-08-15: fcnt/vcnt widened 21->22
             search_delay <= 5'd0;   // DAPHNE-ATOMIC-SEEK-2026-07-16
             vcnt <= 22'd0;          // FILM-RATE-FIX-2026-07-16
+            disc_moving_q <= 1'b0;  // VCNT-PHASE-2026-08-16 (rev 2)
             status_strobe <= 1'b1; command_strobe <= 1'b1;
             audio_en1 <= 1'b1; audio_en2 <= 1'b1; has_digit <= 1'b0;   // AUDIO-CMD-2026-07-05
+            dig_sr <= 20'd0; dig_latched <= 20'd0;   // DIAG-REVERT-2026-08-16
             play_speed_q4 <= 5'd4; speed_acc <= 2'd0;                  // OPCODE-SWEEP-2026-07-05
         end else if (!pause) begin     // HLE-DRIVE-2026-07-04: paused -> hold all state (disc frozen, in sync)
             // ---- strobe generator (idle high, assert low) ----
+            // ⭐ STROBE-HOLD-2026-08-16 -- END-OF-SEGMENT OVERSHOOT FIX.
+            // ORIGINAL: ungated (the three lines below ran every cycle).
+            //
+            // The strobes ARE the Z80's clock for sequencing: it polls SYSTEM b6/b7 and emits one
+            // command byte per strobe. Before Z80-HOLD-2026-08-16 that was fine -- the CPU ran
+            // continuously, so it saw every strobe.
+            //
+            // But now the Z80 is FROZEN during disc_hold while this generator kept free-running.
+            // Every strobe that elapses during the freeze is one the CPU can never observe: it is
+            // simply gone. The prime hold is SEEK_PRIME = 3 film frames ~= 125 ms, and the strobe
+            // period is 33.37 ms, so roughly 3-4 strobes are LOST on every seek. The Z80 resumes
+            // that many vsyncs behind its own schedule and ends the segment correspondingly late.
+            // 1-3 lost strobes = the exact 1-3 frame overshoot measured (+1 / +3 / +3).
+            //
+            // 🔑 The rule this violated: if you freeze the consumer, you must freeze the producer
+            // of anything it COUNTS. Z80-HOLD froze game time but left the tick the game counts
+            // running -- the same "half a fix" mistake as freezing the disc but not the CPU.
+            //
+            // Freezing fcnt also holds status_strobe/command_strobe at their current levels, so a
+            // strobe that is mid-assertion when the hold begins resumes mid-assertion. Nothing is
+            // truncated and nothing is duplicated -- the whole handshake just pauses.
+            // ⛔ STROBE-HOLD REMOVED 2026-08-16 -- it was HW-tested INERT for the end overshoot,
+            // and it was the direct cause of the seek deadlock (it froze fcnt, which gates
+            // frame_tick, which gated the atomic land -- see SEARCH-LAND-UNGATE above).  A hold
+            // must never freeze the clock that satisfies its own release condition.
+            // To restore it, delete the three live lines and uncomment this block:
+            // if (!disc_hold) begin
+            //     if (frame_tick) fcnt <= 22'd0; else fcnt <= fcnt + 22'd1;
+            //     status_strobe  <= ~(fcnt < STAT_LOW);
+            //     command_strobe <= ~((fcnt >= CMD_LO_S) & (fcnt < CMD_LO_E));
+            // end
             if (frame_tick) fcnt <= 22'd0; else fcnt <= fcnt + 22'd1;
             status_strobe  <= ~(fcnt < STAT_LOW);
             command_strobe <= ~((fcnt >= CMD_LO_S) & (fcnt < CMD_LO_E));
 
-            // FILM-RATE-FIX-2026-07-16: free-running film-rate tick (23.938 fps), independent of
-            // the strobe/vsync counter above.  Drives PLAY's disc-frame advance only.
-            if (film_tick) vcnt <= 22'd0; else vcnt <= vcnt + 22'd1;
+            // FILM-RATE-FIX-2026-07-16: free-running film-rate tick, independent of the
+            // strobe/vsync counter above.  Drives PLAY's disc-frame advance only.
+            //
+            // ⭐ VCNT-PHASE-2026-08-16 (rev 2) -- zero the film phase ONCE, at the start of motion.
+            // DIAG-REVERT-2026-08-16: ORIGINAL commented out, restore this one line to revert:
+            // if (film_tick) vcnt <= 22'd0; else vcnt <= vcnt + 22'd1;
+            //
+            // AUTHORITY = Daphne/VLDP: it re-zeros its frame clock ON THE EVENT of a seek/play
+            // (vldp_internal.c:272 `s_timer = uMsTimer`, :715 on play; ldp-vldp.cpp:1010/1039/1068
+            // `uMsTimer = m_uElapsedMsSincePlay = m_uBlockedMsSincePlay = 0`) and then paces from
+            // that origin (video_out_null.c:65-72).  It never SUSPENDS the clock.
+            //
+            // ⛔ rev 1 (2026-08-16, HW-tested, REVERTED) held vcnt at 0 for the whole duration of
+            // every non-moving state: `else if (!((mode==M_PLAY) && !disc_hold)) vcnt <= 22'd0;`.
+            // That suppressed film_tick ENTIRELY whenever the disc was stopped or held -- a global
+            // tick change, not a phase change -- and produced a ~1 s stall after a segment had
+            // already started playing (user, 2026-08-16: "it just STOPS, and then resumes").
+            // Lesson: an event-triggered reset and a level-held reset are not the same fix.
+            //
+            // rev 2 restores the original free-running counter verbatim and adds ONE extra reset,
+            // on the rising edge of motion.  film_tick therefore fires during holds and stills
+            // exactly as it always did; the only behavioural delta is the phase at the instant the
+            // disc starts moving, which was the entire point.
+            // ⚠️ UNPROVEN as a fix for the 1-3 frame end overshoot: phase error is bounded at ONE
+            // frame.  It removes a term that is wrong-by-construction vs Daphne, nothing more.
+            if (film_tick)        vcnt <= 22'd0;
+            else if (motion_rise) vcnt <= 22'd0;   // Daphne: s_timer = uMsTimer at play/seek
+            else                  vcnt <= vcnt + 22'd1;
+            disc_moving_q <= disc_moving;          // VCNT-PHASE-2026-08-16 (rev 2)
 
             // FILM-RATE-FIX-2026-07-16: PLAY's disc-frame advance, on the FILM tick (23.938), NOT
             // the strobe/vsync tick (29.97).  This is the whole fix: with the 1:1 disc->video map,
@@ -255,12 +437,28 @@ module DragonsLair_LDV1000
             // the other modes are untouched.  M_SEARCH's busy countdown deliberately stays on
             // frame_tick -- it is a ~0.5s wall-clock timer, not disc motion.  M_SCAN also stays:
             // it models head slew (SCAN_PERIOD), which is not film playback either.
-            // LD-HOLD-SYNC-2026-08-13: this block briefly ALSO carried `&& !disc_hold` as a
-            // backstop.  REMOVED 2026-08-13 as redundant: the search-completion hold below keeps
-            // the LD reporting busy until the video path is primed, so the Z80 cannot issue
-            // CMD_PLAY -- and therefore cannot reach M_PLAY -- while disc_hold is asserted.
-            // Guarding an unreachable path only adds a way to be surprised later.
-            if (film_tick && (mode == M_PLAY)) begin
+            // ⭐ DISC-HOLD-GUARD-RESTORED-2026-08-16 -- THE FIX.
+            // ORIGINAL (2026-08-13, now restored): `if (film_tick && (mode == M_PLAY) && !disc_hold)`
+            // It was removed on 2026-08-13 with this justification:
+            //     "REMOVED as redundant: the search-completion hold below keeps the LD reporting
+            //      busy until the video path is primed, so the Z80 cannot issue CMD_PLAY -- and
+            //      therefore cannot reach M_PLAY -- while disc_hold is asserted.
+            //      Guarding an unreachable path only adds a way to be surprised later."
+            // That justification was an ASSUMPTION about the Z80's behaviour, never measured, and
+            // it is the classic shape of the bugs on this core.  If the Z80 CAN reach M_PLAY while
+            // disc_hold is high, then curr_frame advances while the video path is still priming:
+            // the DISC RUNS AHEAD OF THE PICTURE, and the segment appears to start late by exactly
+            // the prime time.  That is the reported symptom -- "starts way too late, lags into
+            // death scenes" -- and it is invisible in attract (one seek, then 43 s of linear play)
+            // while it eats the entire reaction window on a short gameplay clip.
+            //
+            // Verified 2026-08-16 that the seek TARGET is correct: Daphne's own log shows
+            // "Search to 9181 received - [ b] Closing Wall, Sequence 0", byte-identical to our
+            // probe, and Daphne resolves it to mpeg frame 9030 exactly as we do.  So position is
+            // right and only the picture is late -- which is a hold/prime problem, not a map one.
+            // Daphne holds the picture for a full -min_seek_delay (1000 ms in the user's config)
+            // and only then starts showing; we must likewise not advance the disc until primed.
+            if (film_tick && (mode == M_PLAY) && !disc_hold) begin
                 curr_frame <= curr_frame + {14'd0, speed_adv};
                 speed_acc  <= speed_rem;
                 if (stop_valid && ((curr_frame + {14'd0, speed_adv}) >= stop_frame)) begin
@@ -268,6 +466,32 @@ module DragonsLair_LDV1000
                     stop_valid <= 1'b0;
                 end
             end
+
+            // ⭐ SEARCH-LAND-UNGATE-2026-08-16 -- LAND THE DISC POSITION OUTSIDE THE frame_tick GATE.
+            //
+            // THE DEADLOCK THIS BREAKS (found 2026-08-16, user's question: "why doesn't the
+            // buffering hit at the same time as the latency fix?"):
+            //   1. SEARCH asserts fb_seek_hold -> disc_hold.
+            //   2. STROBE-HOLD-2026-08-16 freezes fcnt while disc_hold is high (:381).
+            //   3. frame_tick is derived from fcnt alone (:195), so it can never fire during a hold.
+            //   4. The land lived inside `if (frame_tick)`, so curr_frame NEVER reached the new
+            //      position; the streamer never re-pointed; fb_prime_cnt never advanced; and
+            //      fb_seek_release could only ever fire via its SEEK_TMO backstop -- ~1 SECOND,
+            //      on every single seek.  That is the "heavy lag at the start of each segment".
+            // The hold was waiting for frames from the new position while holding the clock that
+            // reaches it.  The comment below (":505 ... it is not a deadlock") predates STROBE-HOLD
+            // and was true when written.
+            //
+            // ⚠️ The identical hazard is documented in DragonsLair_CPU.sv:48-51 as the reason the
+            // Z80 hold is NOT routed through `pause` -- "the LD must stay live to land the seek".
+            // STROBE-HOLD reintroduced it by another route.  Any future hold must be checked
+            // against this: DOES IT FREEZE THE CLOCK THAT SATISFIES ITS OWN RELEASE CONDITION?
+            //
+            // AUTHORITY: Daphne lands atomically and instantly at the command (pre_search) and only
+            // REPORTS busy -- ldv1000.cpp holds 0x50 until g_ldv1000_cycles_per_search elapses.
+            // Position is instant; the delay is a STATUS fiction.  Landing every clock while in
+            // M_SEARCH is idempotent (search_frame is stable), so this is a pure ungating.
+            if (mode == M_SEARCH) curr_frame <= search_frame;
 
             // ---- per-frame disc motion, locked to the strobe the game reads ----
             if (frame_tick) begin
@@ -317,7 +541,10 @@ module DragonsLair_LDV1000
                     // fb_seek_hold's own SEEK_TMO (~1 s) is the backstop if priming never completes.
                     // ORIGINAL: if (search_delay != 5'd0) begin
                     M_SEARCH: begin
-                        curr_frame <= search_frame;              // atomic land (Daphne: pre_search)
+                        // DIAG-REVERT-2026-08-16 (SEARCH-LAND-UNGATE): the land moved OUT of this
+                        // frame_tick-gated block -- see the ungated copy above.  Restore this line
+                        // and delete that one to revert.
+                        // curr_frame <= search_frame;              // atomic land (Daphne: pre_search)
                         if (search_delay != 5'd0 || disc_hold) begin
                             if (search_delay != 5'd0)
                                 search_delay <= search_delay - 5'd1; // still "busy": status stays ST_SEARCH (0x50)
@@ -409,6 +636,10 @@ module DragonsLair_LDV1000
                     status <= status & 8'h7f;                     // Daphne line 176: consumed => not ready
                     number <= (number * 17'd10) + {13'd0, dig};   // decimal accumulate
                     has_digit <= 1'b1;                            // AUDIO-CMD-2026-07-05
+                    // DIAG-REVERT-2026-08-16: capture the RAW digit nibbles as received, BEFORE
+                    // accumulation, so P2 shows what the Z80 actually sent rather than what we
+                    // decoded it into. Shift-in keeps the last 5 digits; a SEARCH latches them.
+                    dig_sr <= {dig_sr[15:0], dig};
                 end else begin
                     status <= status & 8'h7f;   // Daphne line 176 (case below may override, as it does there)
                     has_digit <= 1'b0;   // AUDIO-CMD-2026-07-05: every action opcode consumes the accumulator
@@ -435,8 +666,10 @@ module DragonsLair_LDV1000
                     // stuck one; the gate means that can't happen anyway.
                     if (mode != M_SEARCH) search_delay <= SEARCH_TICKS;
                     case (cmd_byte)
-                        CMD_CLEAR:   number <= 17'd0;
+                        CMD_CLEAR:   begin number <= 17'd0; dig_sr <= 20'd0; end   // DIAG-REVERT-2026-08-16: restart digit capture
                         CMD_SEARCH: begin
+                            dig_latched <= dig_sr;   // DIAG-REVERT-2026-08-16: freeze what the Z80 SENT
+                            dig_sr      <= 20'd0;
                             search_frame <= number; mode <= M_SEARCH;
                             status <= ST_SEARCH;              // 0x50 busy
                             stop_valid <= 1'b0; number <= 17'd0;

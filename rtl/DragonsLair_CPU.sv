@@ -78,6 +78,7 @@ module DragonsLair_CPU
 
     // HLE-DRIVE-2026-07-04: LDV1000 HLE current disc frame -> streamer video/audio position
     output        search_cmd_o,   // SEEK-HOLD-2026-07-20: Z80's CMD_SEARCH accepted (1-cycle)
+    output        play_end_o,     // PLAY-END-FLUSH-2026-08-16: playback stopped (1-cycle)
     output [16:0] ld_frame_o,
 
     // AUDIO-GATE-2026-07-05: LDV1000 HLE playing flag -> streamer audio ring gate
@@ -114,7 +115,26 @@ T80s #(.Mode(0), .T2Write(1), .IOWait(1)) main_cpu
 (
     .RESET_n(reset),
     .CLK(clk_sys),
-    .CEN(cen_4m & ~pause),
+    // ⭐ Z80-HOLD-2026-08-16 -- freeze GAME TIME while the video path primes after a seek.
+    // ORIGINAL: .CEN(cen_4m & ~pause),
+    //
+    // WHY: the Z80 runs on a real-time ~30.5 Hz IRQ that nothing we do slows down. If the picture
+    // and audio are held to prime the ring/framebuffers but the CPU keeps counting, game-time
+    // advances while picture-time does not. The Z80 then opens and closes the input window, and
+    // schedules the segment end, from a moment the player has not seen yet -- so on a reaction
+    // scene the usable reaction time is the window MINUS the hold. It compounds per seek, which is
+    // why gameplay broke while attract (one seek per 43 s) looked perfect.
+    //
+    // ⚠️ Deliberately NOT routed through `pause`. `pause` also freezes the LD-V1000's command
+    // processing and strobes, and fb_seek_hold is asserted ON the SEARCH command -- so pausing the
+    // LD would stop it performing the atomic land (curr_frame <= search_frame). The streamer primes
+    // against ld_curr_frame, so it would prime the OLD position and the hold would never satisfy
+    // correctly. The LD must stay live to land the seek; only the Z80 freezes.
+    //
+    // Companion to DISC-HOLD-GUARD-RESTORED-2026-08-16 in DragonsLair_LDV1000.sv, which stops the
+    // DISC advancing during the same window. Disc guard alone flips the skew's sign (disc frozen,
+    // CPU still counting => segment ends slightly SHORT); this cancels the remaining term.
+    .CEN(cen_4m & ~pause & ~disc_hold),
     .WAIT_n(cpu_wait_n),
     .INT_n(n_irq),
     .NMI_n(1'b1),
@@ -347,6 +367,9 @@ wire  [7:0] ld_status;
 wire        ld_status_strobe, ld_command_strobe;
 wire [16:0] ld_curr_frame;   // routed to the video path via ld_frame_o below (disc->film map, dlv_streamer.v)
 wire        ld_playing_w;    // AUDIO-GATE-2026-07-05: mode==M_PLAY, for the streamer's audio ring gate
+wire [16:0] dbg_seek_frame_w;
+wire [19:0] dbg_end_frame_w;   // DIAG-REVERT-2026-08-16: raw SEARCH digits (5 nibbles)   // DIAG-REVERT-2026-08-15: segment start/end frame probe
+wire  [3:0] dbg_flags_w;                         // DIAG-REVERT-2026-08-15: sticky autostop telemetry
 
 DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // CLOCK-80M-2026-08-15: thread the core clock down
     .clk            (clk_sys),
@@ -357,10 +380,14 @@ DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // CLOCK-80M-2026-08-15: th
     .status_strobe  (ld_status_strobe),
     .command_strobe (ld_command_strobe),
     .search_cmd_o   (search_cmd_o),     // SEEK-HOLD-2026-07-20
+    .play_end_o     (play_end_o),       // PLAY-END-FLUSH-2026-08-16
     .curr_frame     (ld_curr_frame),
     .pause          (pause),            // HLE-DRIVE-2026-07-04: freeze disc motion during pause
     .disc_hold      (disc_hold),        // LD-HOLD-SYNC-2026-08-13: video path still priming
-    .playing        (ld_playing_w)      // AUDIO-GATE-2026-07-05
+    .playing        (ld_playing_w),     // AUDIO-GATE-2026-07-05
+    .dbg_seek_frame (dbg_seek_frame_w), // DIAG-REVERT-2026-08-15: segment START frame
+    .dbg_end_frame  (dbg_end_frame_w), // DIAG-REVERT-2026-08-15: segment END frame
+    .dbg_flags      (dbg_flags_w)      // DIAG-REVERT-2026-08-15: autostop armed/fired
 );
 
 // HLE-DRIVE-2026-07-04: expose disc frame to the top (streamer maps -> mjpeg frame + audio sample)
@@ -417,10 +444,31 @@ end
 
 // Expose the 16 digits (flattened) to the top-level FB compositor (led_band).
 // led_digits_o[i*4 +: 4] = led_digits[i]  (digit 0 in the low nibble).
+// ⭐ SCOREBOARD RESTORED 2026-08-16 -- real Z80 score/lives/credits on all 16 digits.
+// The segment-boundary frame probe below is commented out for a public build.  To re-enable it,
+// comment this assign and uncomment the DIAG block underneath (dbg_*_w and the two LDV1000 ports
+// are deliberately left in place and simply go unused, so re-enabling is one uncomment).
 assign led_digits_o = {led_digits[15], led_digits[14], led_digits[13], led_digits[12],
                        led_digits[11], led_digits[10], led_digits[ 9], led_digits[ 8],
                        led_digits[ 7], led_digits[ 6], led_digits[ 5], led_digits[ 4],
                        led_digits[ 3], led_digits[ 2], led_digits[ 1], led_digits[ 0]};
+
+// DIAG-REVERT-2026-08-15: segment-boundary frame probe, displayed as 5 HEX digits per score field.
+//   P1 score (digits 0-5, slot 3..8  , digit 0 = LEFTMOST) = frame the SEARCH landed on
+//   P2 score (digits 8-13, slot 17..22, digit 8 = LEFTMOST) = segment END frame
+// Leading digit is forced to 0 so all five nibbles of the 17-bit frame are visible without
+// needing a 6th glyph.  Lives (6,7) and credits (14,15) are left on the real Z80 values.
+// wire [19:0] dbg_p1_hex = {3'd0, dbg_seek_frame_w};   // 17-bit frame -> 5 nibbles
+// wire [19:0] dbg_p2_hex = dbg_end_frame_w;   // DIAG-REVERT-2026-08-16: raw digits, already 5 nibbles
+//
+// assign led_digits_o = {led_digits[15], led_digits[14],                 // credits (real)
+//                        dbg_p2_hex[ 3:0], dbg_p2_hex[ 7:4],             // digits 13,12
+//                        dbg_p2_hex[11:8], dbg_p2_hex[15:12],            // digits 11,10
+//                        dbg_p2_hex[19:16], 4'd0,                        // digits  9, 8 (8 = leftmost)
+//                        led_digits[ 7], led_digits[ 6],                 // lives (real)
+//                        dbg_p1_hex[ 3:0], dbg_p1_hex[ 7:4],             // digits  5, 4
+//                        dbg_p1_hex[11:8], dbg_p1_hex[15:12],            // digits  3, 2
+//                        dbg_p1_hex[19:16], dbg_flags_w};                // digits  1, 0
 
 //------------------------------------------------------ Periodic IRQ0 ---------------------------------------------------------//
 //
@@ -446,13 +494,21 @@ always_ff @(posedge clk_sys) begin
         n_irq   <= 1'b1;
         irq_cnt <= 22'd0;
     end
+    // Z80-HOLD-2026-08-16: the IRQ counter IS game-time -- it must freeze with the CPU, or the
+    // interrupt phase walks by the hold duration on every seek even though the Z80 is stopped.
+    // ORIGINAL: `else begin` (ungated).
     else begin
-        if (irq_cnt >= IRQ_PERIOD - 22'd1) begin
-            irq_cnt <= 22'd0;
-            n_irq   <= 1'b0;              // assert (hold)
-        end
-        else begin
-            irq_cnt <= irq_cnt + 22'd1;
+        // Only the TIMER freezes. The INTA clear below stays ungated: if the hold happened to
+        // assert during an interrupt-acknowledge cycle, gating it would drop the clear and the
+        // Z80 would re-enter the ISR on resume.
+        if (!disc_hold) begin
+            if (irq_cnt >= IRQ_PERIOD - 22'd1) begin
+                irq_cnt <= 22'd0;
+                n_irq   <= 1'b0;              // assert (hold)
+            end
+            else begin
+                irq_cnt <= irq_cnt + 22'd1;
+            end
         end
         if (~n_m1 & ~n_iorq) n_irq <= 1'b1;  // INTA clears the hold
     end

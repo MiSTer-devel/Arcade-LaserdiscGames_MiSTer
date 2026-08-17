@@ -45,6 +45,7 @@ module DragonsLair
     output        [63:0] led_digits_o,
     output               dbg_led,
     output               ld_search_cmd_o, // SEEK-HOLD-2026-07-20: Z80's CMD_SEARCH accepted (1-cyc)
+    output               ld_play_end_o,   // PLAY-END-FLUSH-2026-08-16: playback stopped (1-cyc)
     output        [16:0] ld_frame_o,   // HLE-DRIVE-2026-07-04: LD disc frame -> streamer
     output               ld_playing_o  // AUDIO-GATE-2026-07-05: LD playing flag -> streamer audio gate
 );
@@ -80,6 +81,7 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // CLOCK-80M-2026-08-15: thread t
     .led_digits_o(led_digits_o),
     .dbg_led(dbg_led),
     .search_cmd_o(ld_search_cmd_o),   // SEEK-HOLD-2026-07-20
+    .play_end_o(ld_play_end_o),       // PLAY-END-FLUSH-2026-08-16
     .ld_frame_o(ld_frame_o),
     .ld_playing_o(ld_playing_o)
 );
