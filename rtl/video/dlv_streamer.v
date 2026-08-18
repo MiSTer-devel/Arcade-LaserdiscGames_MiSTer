@@ -384,7 +384,8 @@ module dlv_streamer #(
     // so this stays correct even if the CMD_SEARCH flush pulse is mistimed.
     reg  [16:0] aud_prev_frame;
     reg  [13:0] aud_credit;                       // samples the disc position currently permits
-    localparam [13:0] AUD_CREDIT_MAX = 14'd7368;  // 4 frames -- anti-burst cap on catch-up
+    // FABLE-B4-2026-08-17 (coupled): 4 * SAMP_PER_TICK.  ORIGINAL: 14'd7368 (= 4 * 1842).
+    localparam [13:0] AUD_CREDIT_MAX = 14'd7356;  // 4 frames -- anti-burst cap on catch-up
     wire [16:0] aud_fadv  = ld_curr_frame - aud_prev_frame;    // unsigned; a large value = a jump
     wire        aud_jump  = (aud_fadv > 17'd2);                // >2 frames/cycle = seek, not 1x play
     wire        aud_muted = hold_play || !ld_playing || on_leader || !header_valid;
@@ -419,7 +420,17 @@ module dlv_streamer #(
     // FILM_PERIOD the TRUE 23.976 fps -- do NOT do that now: it would also shift the display
     // cadence ratio and the CADENCE-FIX-2026-07-24 refresh change is HW-CONFIRMED GOOD.
     // ⚠️ If FILM_PERIOD is ever changed, THIS CONSTANT MUST CHANGE WITH IT (= 44100/film_fps).
-    localparam [13:0] SAMP_PER_TICK = 14'd1842;
+    // ⭐ FABLE-B4-2026-08-17 -- FILM_PERIOD DID CHANGE AND THIS DID NOT.  The guard above was
+    // written for exactly this and then not honoured by FILM-RATE-DAPHNE-2026-08-16 (23.938 ->
+    // 23.976), so credit is over-supplied: 23.976 * 1842 = 44,164/s against a 44,100/s drain.
+    // +64 samples/s pegs aud_credit at AUD_CREDIT_MAX in ~2 min of continuous play, after which
+    // FRAME-LOCK-2026-07-20 silently degrades to free-run with ~167 ms of slack -- i.e. the
+    // audio/video lock quietly stops existing partway into a long scene.
+    //   44100 / 23.976 = 1839.34 -> 1839.  Supply 23.976*1839 = 44,092/s = 99.98% of drain.
+    // AUD_CREDIT_MAX scales with it to keep meaning "4 frames" (4*1839 = 7356).
+    // MEASUREMENT IF IT LOOKS WRONG: aud_credit sits pegged at max TODAY.
+    // ORIGINAL: localparam [13:0] SAMP_PER_TICK = 14'd1842;   // 44100/23.938
+    localparam [13:0] SAMP_PER_TICK = 14'd1839;   // 44100/23.976
     // ORIGINAL (credit came from the container ratio -- the regression):
     // wire [14:0] aud_add   = (aud_jump)          ? 15'd0 :
     //                         (aud_fadv == 17'd1) ? {1'b0, samp_per_frame} :
@@ -675,6 +686,23 @@ module dlv_streamer #(
         end
     end
 
+    // ⭐ FABLE-B3-2026-08-17 -- THE SEEK RE-POINT LOST THE TARGET SECTOR, EVERY SEEK.
+    // In the consume cycle S_READY re-points aud_lba (:731, NONBLOCKING) while the fall-through
+    // audio-fill branch (:769) issues its read from the OLD aud_lba in that SAME cycle -- and it
+    // always does, because seek_flush just emptied the ring so aud_level = 0 fails the video
+    // branch's FILL_LOW test.  S_AUD_DONE (:825) then advances the NEW pointer to target+1, so the
+    // target sector is NEVER READ: ring position 0 holds ~3 ms of pre-seek audio and the whole
+    // segment plays one sector (2.9 ms) off.  Deterministic; a regression from lifting the
+    // re-point out of the else-if chain in FRAME-TICK-SWALLOW-FIX-2026-07-24.
+    // FIX: the fill uses the value aud_lba is BECOMING this cycle.  aud_lba_eff == aud_lba on
+    // every other cycle, so nothing outside the consume cycle changes.
+    // NOT FIXED HERE (deliberate, needs a forward reference this .v file can't take): the sector
+    // read between the SEARCH byte and the atomic land still lands stale at the ring head, and
+    // seek_flush does not abort an in-flight capture (aud_word_we has no seek qualification).
+    // Both are ~3 ms at the head of a segment, not a whole-segment offset.
+    wire [31:0] aud_lba_tgt = (aud_target_lba >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_target_lba;
+    wire [31:0] aud_lba_eff = seek_consume ? aud_lba_tgt : aud_lba;
+
     //------------------------------------------------------------------------
     // Main SD/stream FSM
     //------------------------------------------------------------------------
@@ -727,8 +755,10 @@ module dlv_streamer #(
                 // chain: it now runs alongside, and the header-init branch below still overrides
                 // aud_lba on a coincident cycle (later assignment wins), as before.
                 // Original position: `end else if (seek_req) begin <this line> end else if (img_...`
+                // FABLE-B3-2026-08-17: same value, named once (see aud_lba_tgt above).
+                // ORIGINAL: aud_lba <= (aud_target_lba >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_target_lba;
                 if (header_valid && seek_req)
-                    aud_lba <= (aud_target_lba >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_target_lba;
+                    aud_lba <= aud_lba_tgt;
 
                 if (!header_valid) begin
                     // one-time init once the header sector has been latched
@@ -766,7 +796,9 @@ module dlv_streamer #(
                     end
                 end else if (aud_level < FILL_HIGH) begin
                     // ---- top up the audio ring: read one audio sector ----
-                    cur_sec  <= aud_lba;
+                    // FABLE-B3-2026-08-17: ORIGINAL was `cur_sec <= aud_lba;`, which read the
+                    // PRE-re-point sector on the consume cycle and skipped the seek target.
+                    cur_sec  <= aud_lba_eff;
                     cap_mode <= 2'd3; ret_state <= S_AUD_DONE;
                     state <= S_RD_ISSUE;
                 end

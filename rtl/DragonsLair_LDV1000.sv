@@ -153,7 +153,11 @@ module DragonsLair_LDV1000
     // DAPHNE-ATOMIC-SEEK-2026-07-16: busy-report countdown, in frame_ticks (~30Hz).  Daphne's
     // g_ldv1000_seconds_per_search = 0.5 => ~15 ticks.  This times the STATUS report only; the disc
     // POSITION lands atomically (see the M_SEARCH block).
-    localparam [4:0] SEARCH_TICKS = 5'd15;
+    // FABLE-D1-2026-08-17 (coupled constant): this counts frame_ticks, and FABLE-D1 doubled their
+    // rate, so it must double to keep Daphne's g_ldv1000_seconds_per_search = 0.5 s.
+    // 30 still fits [4:0] (max 31) -- if the rate ever changes again, WIDEN THIS FIRST.
+    // ORIGINAL: localparam [4:0] SEARCH_TICKS = 5'd15;   // 0.5 s at 29.97 Hz
+    localparam [4:0] SEARCH_TICKS = 5'd30;   // 0.5 s at 59.94 Hz
     reg  [4:0]  search_delay;
     reg  [16:0] stop_frame;
     reg         stop_valid;
@@ -183,8 +187,23 @@ module DragonsLair_LDV1000
     // 64-bit constant arithmetic -- 1334667*80e6 overflows 32 bits and would wrap.
     // ORIGINALS: PARK 21'd840000, PLAY 21'd1334667, SCAN 21'd20000, STAT_LOW 21'd1040,
     //            CMD_LO_S 21'd2160, CMD_LO_E 21'd3160, all `wire/reg [20:0]`.
-    localparam [21:0] PARK_PERIOD = (64'd840000  * CLK_HZ) / 64'd40_000_000;  // 21 ms
-    localparam [21:0] PLAY_PERIOD = (64'd1334667 * CLK_HZ) / 64'd40_000_000;  // 33.367 ms = 1/29.97 s (VSYNC/strobe rate)
+    // ⭐ FABLE-D1-2026-08-17 -- THE STROBE RATE WAS HALF DAPHNE'S.  1/29.97 s is the NTSC *frame*
+    // period; the LD-V1000 strobes once per *field*.  AUTHORITY (local tree, all three agree):
+    //   ldp-out/ldp.cpp:703   VBLANKS_PER_KILOSECOND = (29.97*2)*1000  -> 59.94 Hz
+    //   game/lair.cpp:1133    lair::OnVblank() -> ldv1000_report_vsync()
+    //   game/lair.cpp:75      cpu.nmi_period = 1000.0/60.0  "we use this to time the LD-V1000 strobes"
+    // COST OF THE BUG: the READY gate means ONE byte per strobe, and dl.dasm:$020F sends 0xFF +
+    // the byte = 2 strobe periods per command byte.  A 5-digit SEARCH = 12 periods = ~400 ms here
+    // vs ~200 ms in Daphne -- and mode stays M_PLAY until the final 0xF7, so the disc runs ~200 ms
+    // (~5 film frames) past the intended end of EVERY segment.  Matches the handoff's own
+    // 2026-08-16 conclusion after PLAY-END-FLUSH was tested inert: "the DISC is advancing 1-3
+    // frames too far before the stop takes effect -- look at command latency, not the display path."
+    // PARK is unified onto the same rate: Daphne strobes at vsync in every mode (the old 21 ms was
+    // inherited from the pre-HLE stub, not from Daphne).  Revert = restore the two ORIGINAL lines.
+    // ORIGINAL: localparam [21:0] PARK_PERIOD = (64'd840000  * CLK_HZ) / 64'd40_000_000;  // 21 ms
+    // ORIGINAL: localparam [21:0] PLAY_PERIOD = (64'd1334667 * CLK_HZ) / 64'd40_000_000;  // 33.367 ms = 1/29.97 s
+    localparam [21:0] PARK_PERIOD = (64'd1001 * CLK_HZ) / 64'd60000;          // FABLE-D1: 16.683 ms
+    localparam [21:0] PLAY_PERIOD = (64'd1001 * CLK_HZ) / 64'd60000;          // 16.683 ms = 1/59.94 s (Daphne vblank)
     localparam [21:0] SCAN_PERIOD = (64'd20000   * CLK_HZ) / 64'd40_000_000;  // 500 us = 1/2000 s
     localparam [21:0] STAT_LOW    = (64'd1040    * CLK_HZ) / 64'd40_000_000;  // 26 us status-strobe low
     localparam [21:0] CMD_LO_S    = (64'd2160    * CLK_HZ) / 64'd40_000_000;  // 54 us command-strobe start

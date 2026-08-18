@@ -72,6 +72,8 @@ module DragonsLair_CPU
 
     // LED score/status digits (16 x 4-bit, flattened) for the top-level FB compositor
     output [63:0] led_digits_o,
+    // SKILL-SNOOP-2026-08-17: Space Ace skill level, latched from the game's own scoreboard write
+    output  [1:0] skill_o,       // 0 = none yet, 1 = Cadet, 2 = Captain, 3 = Space Ace
 
     // Bring-up "core alive" heartbeat LED
     output        dbg_led,
@@ -448,6 +450,31 @@ end
 // The segment-boundary frame probe below is commented out for a public build.  To re-enable it,
 // comment this assign and uncomment the DIAG block underneath (dbg_*_w and the two LDV1000 ports
 // are deliberately left in place and simply go unused, so re-enabling is one uncomment).
+//------------------------------------------- SKILL-SNOOP-2026-08-17 (Space Ace) -----------------------------------------------//
+// Space Ace does NOT keep the chosen skill in a RAM variable -- it writes it to the SCOREBOARD.
+// spaceace.dasm $1FE3 reads $C008, masks $E0 (the three skill buttons) and maps the pressed one to
+// a ONE-HOT code 1/2/4; $2026 then does:
+//     ld hl,$E03F / ld (hl),$CC / neg / add a,l / ld l,a / ld (hl),$CC
+// i.e. 0xCC into digit 7 AND into digit (7 - code)  =>  digit 6 = Cadet, 5 = Captain, 3 = Space Ace.
+// We already decode exactly those writes as cs_led1_w ($E038-$E03F), so this needs NO new bus tap.
+// ⚠️ MUST LATCH: digits 6/7 are the LIVES field, so the game overwrites the marker the moment play
+// starts -- that is why the indicator only appears on the select screen.
+// Dragon's Lair never runs this routine, and is independently gated off by skill_en (the MRA mod
+// byte) at the top level, so this can never reach DL's band even if DL wrote the same pattern.
+reg [1:0] skill_lat;
+always @(posedge clk_sys) begin
+    if (!reset) skill_lat <= 2'd0;                       // reset is active LOW on this module
+    else if (cs_led1_w && (cpu_Dout == 8'hCC)) begin
+        case (cpu_A[2:0])
+            3'd6:    skill_lat <= 2'd1;                  // Cadet
+            3'd5:    skill_lat <= 2'd2;                  // Captain
+            3'd3:    skill_lat <= 2'd3;                  // Space Ace
+            default: ;                                   // digit 7 = the common marker, ignore
+        endcase
+    end
+end
+assign skill_o = skill_lat;
+
 assign led_digits_o = {led_digits[15], led_digits[14], led_digits[13], led_digits[12],
                        led_digits[11], led_digits[10], led_digits[ 9], led_digits[ 8],
                        led_digits[ 7], led_digits[ 6], led_digits[ 5], led_digits[ 4],

@@ -29,14 +29,22 @@ module led_band #(
     // DIAG_HEX_F: 1 = render code 15 as 'F' (diagnostic only), 0 = blank (HARDWARE-CORRECT).
     // Default is 0.  MAME dlair.cpp:177 led_map[15] = 0x00 -- all segments off.  Codes 10-14 are
     // A b C d E and are NOT affected by this switch; only 15 is.
-    parameter        DIAG_HEX_F = 1'b0
+    parameter        DIAG_HEX_F = 1'b0,
+    // SKILL-BAND-2026-08-17: X origin when the Space Ace skill field is shown. The band grows
+    // from 33 to 39 slots, so it is recentred: (512 - 39*6*2)/2 = 22.  Only used when skill_en=1.
+    parameter [15:0] X_START_SKILL = 16'd22
 )(
     input      [15:0] hc,
     input      [15:0] vc,
     input      [63:0] led_digits,        // 16 x 4-bit, digit i = [i*4 +: 4]
+    // SKILL-BAND-2026-08-17: Space Ace difficulty field. skill_en is the GAME ID (mod byte) and
+    // controls the band WIDTH; skill is the latched selection and controls the letters.
+    // Dragon's Lair drives skill_en=0 and is then bit-identical to the pre-2026-08-17 band.
+    input             skill_en,          // 1 = Space Ace: render "D CAD/CAP/ACE" at the far right
+    input       [1:0] skill,             // 0=none yet, 1=Cadet, 2=Captain, 3=Space Ace
     output            seg_lit
 );
-    localparam FH = 7, PITCH = 6, N_SLOT = 33;
+    localparam FH = 7, PITCH = 6, N_SLOT = 33, N_SLOT_SKILL = 39;
 
     // 5x7 font, packed 35 bits/glyph: row0(top)=[34:30] .. row6=[4:0], bit4=left.
     function [34:0] glyph(input [4:0] ch);
@@ -70,14 +78,29 @@ module led_band #(
 
     // RES-512x480-FIX-2026-07-24: >> SCALE_LOG2 magnifies by replicating source pixels; the
     // in_band extents grow by the same factor. SCALE_LOG2=0 reproduces the original exactly.
-    wire [15:0] hoff = hc - X_START;
+    // SKILL-BAND-2026-08-17: origin and width switch with the game, so DL's geometry is untouched.
+    wire [15:0] x_org   = skill_en ? X_START_SKILL : X_START;
+    wire [15:0] n_slots = skill_en ? N_SLOT_SKILL  : N_SLOT;
+
+    wire [15:0] hoff = hc - x_org;
     wire [15:0] voff = vc - BAND_Y0;
     wire [15:0] bx   = hoff >> SCALE_LOG2;
-    wire [5:0]  slot = bx / PITCH;                // 0..32
+    wire [5:0]  slot = bx / PITCH;                // 0..32 (0..38 with skill field)
     wire [2:0]  fx   = bx - slot*PITCH;           // 0..5 (5 = inter-char gap)
     wire [2:0]  fy   = voff >> SCALE_LOG2;        // 0..6 within the glyph
-    wire in_band = (hc >= X_START) && (hc < X_START + ((N_SLOT*PITCH) << SCALE_LOG2)) &&
+    wire in_band = (hc >= x_org) && (hc < x_org + ((n_slots*PITCH) << SCALE_LOG2)) &&
                    (vc >= BAND_Y0) && (vc < BAND_Y0 + (FH << SCALE_LOG2));
+
+    // SKILL-BAND-2026-08-17: the three letters. Font already had every glyph needed --
+    // C=12, A=10, D=13, P=16, E=14 -- so nothing was added to the table.
+    // Blank until a skill is latched, so the field does not show a lone "D" on the select screen.
+    reg [4:0] sk0, sk1, sk2;
+    always @* case (skill)
+        2'd1:    begin sk0 = 5'd12; sk1 = 5'd10; sk2 = 5'd13; end   // C A D  (Cadet)
+        2'd2:    begin sk0 = 5'd12; sk1 = 5'd10; sk2 = 5'd16; end   // C A P  (Captain)
+        2'd3:    begin sk0 = 5'd10; sk1 = 5'd12; sk2 = 5'd14; end   // A C E  (Space Ace)
+        default: begin sk0 = 5'd31; sk1 = 5'd31; sk2 = 5'd31; end   // not chosen yet -> blank
+    endcase
 
     // slot -> character (font code).  Dynamic slots pull led_digits[].
     reg [4:0] ch;
@@ -96,6 +119,11 @@ module led_band #(
         6'd25: ch = {1'b0, led_digits[ 7*4 +: 4]};                                                  // P2 lives
         6'd28: ch = 5'd12;                             6'd29: ch = 5'd18;                           // "CR"
         6'd31: ch = {1'b0, led_digits[14*4 +: 4]};     6'd32: ch = {1'b0, led_digits[15*4 +: 4]};   // credits 14,15
+        // SKILL-BAND-2026-08-17: Space Ace only (slots 33-38 exist only when skill_en=1).
+        // Slot 33 and 35 are gaps -> "D CAD".  Hidden entirely until a skill is latched.
+        6'd34: ch = (skill == 2'd0) ? 5'd31 : 5'd13;                                                // "D" label
+        6'd36: ch = sk0;                               6'd37: ch = sk1;
+        6'd38: ch = sk2;                                                                            // CAD/CAP/ACE
         // DIAG-REVERT-2026-08-15: was `default: ch = 5'd15;`.  Code 15 is now 'F' when
         // DIAG_HEX_F=1, so the band's empty slots move to 31, which has no glyph entry and
         // therefore hits the font's own `default: glyph = 35'd0` = blank, in BOTH modes.

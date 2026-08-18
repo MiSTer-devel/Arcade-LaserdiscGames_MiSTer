@@ -43,6 +43,7 @@ module DragonsLair
     input                disc_hold,   // LD-HOLD-SYNC-2026-08-13: video path priming -> freeze disc motion
 
     output        [63:0] led_digits_o,
+    output         [1:0] skill_o,     // SKILL-SNOOP-2026-08-17: Space Ace skill level for the LED band
     output               dbg_led,
     output               ld_search_cmd_o, // SEEK-HOLD-2026-07-20: Z80's CMD_SEARCH accepted (1-cyc)
     output               ld_play_end_o,   // PLAY-END-FLUSH-2026-08-16: playback stopped (1-cyc)
@@ -79,6 +80,7 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // CLOCK-80M-2026-08-15: thread t
     .disc_hold(disc_hold),   // LD-HOLD-SYNC-2026-08-13
 
     .led_digits_o(led_digits_o),
+    .skill_o(skill_o),                // SKILL-SNOOP-2026-08-17
     .dbg_led(dbg_led),
     .search_cmd_o(ld_search_cmd_o),   // SEEK-HOLD-2026-07-20
     .play_end_o(ld_play_end_o),       // PLAY-END-FLUSH-2026-08-16

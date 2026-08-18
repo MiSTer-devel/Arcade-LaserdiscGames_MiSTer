@@ -561,6 +561,16 @@ always @(posedge CLK_CORE) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M (ioctl
 		dip_sw[ioctl_addr[2:0]] <= ioctl_dout;
 end
 wire [15:0] dsw = {dip_sw[1], dip_sw[0]};
+
+// GAME-ID-2026-08-17: MRA <rom index="1"> mod byte. Absent (Dragon's Lair) => stays 0.
+// Space Ace's MRA writes 01. This is the ONLY thing that enables the skill field on the LED band,
+// so DL can never render it -- label or letters -- regardless of what the Z80 writes.
+reg [7:0] game_mod = 8'd0;
+always @(posedge CLK_CORE) begin
+    if (ioctl_wr && (ioctl_index == 8'd1)) game_mod <= ioctl_dout;
+end
+wire is_spaceace = (game_mod == 8'd1);
+wire [1:0] skill_level;   // SKILL-SNOOP-2026-08-17: from DragonsLair_CPU's scoreboard snoop
 wire [16:0] ld_curr_frame_top;   // HLE-DRIVE-2026-07-04: LD disc frame from DragonsLair -> dlv_streamer
 
 // ---- SEEK-HOLD-2026-07-20 (step 1: the delay mechanism) --------------------------------------
@@ -619,6 +629,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst   // CLOCK-80M-2026-08-15: thread th
 	.disc_hold(fb_seek_hold),
 
 	.led_digits_o(led_digits_flat),
+	.skill_o(skill_level),            // SKILL-SNOOP-2026-08-17
 	.dbg_led(dbg_led),
 	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE / SEEK-HOLD-2026-07-20
 	.ld_play_end_o(fb_play_end),                                       // PLAY-END-FLUSH-2026-08-16
@@ -787,8 +798,21 @@ reg        fb_have_new;    // a completed frame is waiting for the next vblank
 // (disc + Z80 + IRQ frozen together) solved it properly; banking 3 frames is the older, cruder
 // attempt still sitting underneath, and it costs 120-300 ms of fetch time at every single seek.
 localparam        TRIPLE_BUF = 1'b1;          // DIAG: 1'b0 = single buffer, 1'b1 = original
-// ORIGINAL: localparam [2:0]  SEEK_PRIME = 3'd3;
-localparam [2:0]  SEEK_PRIME = TRIPLE_BUF ? 3'd3 : 3'd1;   // post-seek frames to bank before resuming
+// ⭐ FABLE-B1-2026-08-17 -- THE 3-FRAME PRIME WAS UNREACHABLE: EVERY SEEK EXITED VIA SEEK_TMO.
+// Priming needs the disc to MOVE (each new curr_frame -> new vid_target -> one fetch), but the
+// hold FREEZES the disc: in M_SEARCH curr_frame is pinned at search_frame (LDV1000.sv:494) and
+// disc_hold also gates the M_PLAY advance.  vid_target is therefore CONSTANT for the whole hold,
+// so the streamer's dedup gate (dlv_streamer.v:760, vid_target != last_fetched_frame) fetches
+// EXACTLY ONE frame.  fb_prime_cnt tops out at 1, never reaches 3, and fb_seek_release below can
+// only fire via its 1.0 s SEEK_TMO backstop -- on every single seek, with the Z80 and the IRQ
+// counter frozen for the whole second (DragonsLair_CPU.sv:137/504).
+// The prime mechanism and the freeze are mutually exclusive, and both are enabled.
+// 1 is the only value the freeze can satisfy; the audio ring (fb_aud_primed) remains the real
+// gate, so the release still waits for BOTH streams.  Expect the seek stall to drop from a flat
+// 1000 ms to the ~0.5 s Daphne search fiction (LDV1000.sv:548 holds M_SEARCH until the hold ends).
+// MEASUREMENT IF IT LOOKS WRONG: fb_seek_tmr reads exactly SEEK_TMO at every release TODAY.
+// ORIGINAL: localparam [2:0]  SEEK_PRIME = TRIPLE_BUF ? 3'd3 : 3'd1;
+localparam [2:0]  SEEK_PRIME = 3'd1;   // post-seek frames to bank before resuming
 // 🚨 CLOCK-80M-2026-08-15: was `localparam [25:0] SEEK_TMO = 26'd40000000;` / `reg [25:0] fb_seek_tmr;`.
 // 80,000,000 needs 27 bits and [25:0] tops out at 67,108,863, so BOTH would have silently
 // truncated.  This is failure mode #1 from the Robots upgrade: if fb_seek_tmr is too narrow,
@@ -798,6 +822,11 @@ localparam [27:0] SEEK_TMO   = CORE_CLK_HZ;   // ~1 s at the core clock -- SAFET
 reg  [2:0]  fb_prime_cnt;
 reg  [27:0] fb_seek_tmr;
 reg         fb_wr_stale;   // frame decoding when the seek hit -> finish it, but never publish it
+// ⭐ TAIL-FRAME-2026-08-17 (rev 2): vblank-counted window in which the display may still adopt
+// PRE-seek frames after the seek arms -- the queued one AND the one that was in flight.
+// Counted in VBLANKS, not adoptions, so it is hard-bounded at 2 refresh periods (~83 ms) no matter
+// what completes, and can never extend the hold.  See the fb_seek_edge block for the reasoning.
+reg  [1:0]  fb_tail_adopt;
 // ⚠️ SAFETY TIMEOUT IS NON-NEGOTIABLE. An unbounded "wait until buffers fill" is a brand-new
 // hard-lock source -- exactly the class of bug removed from this core (fill_idle/ddram). The
 // timer is NOT re-zeroed by a further seek while already holding, so a burst of seeks cannot keep
@@ -810,7 +839,12 @@ wire       fb_vbl_rise = rr_vblank & ~rr_vblank_q;
 // Adoption and completion can land on the SAME cycle, so the free-buffer choice must be made
 // against the buffer that will be displayed AFTER this cycle -- not the current one. Using the
 // stale fb_disp_idx there would pick exactly the buffer vblank is about to start displaying.
-wire       fb_adopt    = fb_vbl_rise & fb_have_new & ~fb_seek_hold;   // SEEK-HOLD: freeze display
+// TAIL-FRAME-2026-08-17: ORIGINAL: `= fb_vbl_rise & fb_have_new & ~fb_seek_hold;`
+// The hold freezes the display, so ANY frame not yet adopted when the seek arrives is lost -- even
+// a fully decoded one.  fb_tail_adopt grants exactly one adoption through the hold, so the last
+// frame of the segment is presented and THEN the picture freezes on it, instead of freezing one
+// frame short.  It self-clears on that adoption, so the hold still blocks everything after it.
+wire       fb_adopt    = fb_vbl_rise & fb_have_new & (~fb_seek_hold | (fb_tail_adopt != 2'd0));
 wire [1:0] fb_next_disp = fb_adopt ? fb_ready_idx : fb_disp_idx;
 // the one index that is neither a nor b (0+1+2=3; valid because the invariant keeps them distinct)
 wire [1:0] fb_free_idx  = 2'd3 - fb_wr_idx - fb_next_disp;
@@ -828,12 +862,17 @@ always @(posedge CLK_CORE) begin
         fb_prime_cnt <= 3'd0;
         fb_seek_tmr  <= 28'd0;   // CLOCK-80M-2026-08-15: widened 26->28
         fb_wr_stale  <= 1'b0;
+        fb_tail_adopt<= 2'd0;    // TAIL-FRAME-2026-08-17
     end else begin
         fb_seek_q <= fb_seek_pulse;   // SEEK-HOLD-2026-07-20
+        // TAIL-FRAME-2026-08-17 (rev 2): the tail window burns down on VBLANKS, not on adoptions,
+        // so a frame that has not finished decoding yet still gets its chance, and a frame that
+        // never arrives cannot leave the window open.  The fb_seek_edge block below re-arms it.
+        if (fb_vbl_rise && (fb_tail_adopt != 2'd0)) fb_tail_adopt <= fb_tail_adopt - 2'd1;
         // start of vblank: adopt the newest completed frame, if any
         if (fb_adopt) begin
-            fb_disp_idx <= fb_ready_idx;
-            fb_have_new <= 1'b0;
+            fb_disp_idx   <= fb_ready_idx;
+            fb_have_new   <= 1'b0;
         end
         // decoder finished: publish it, move writing to the free buffer.
         // Ordered AFTER the adopt block so its fb_have_new<=1'b1 wins on a simultaneous cycle
@@ -841,9 +880,19 @@ always @(posedge CLK_CORE) begin
         if (dec_frame_done) begin
             fb_ready_idx <= fb_wr_idx;
             fb_wr_idx    <= fb_free_idx;   // != fb_next_disp by construction
-            // SEEK-HOLD: a frame that was mid-decode when the seek hit is from the OLD disc
-            // position -- let it finish into its buffer, but never publish it.
-            fb_have_new  <= ~fb_wr_stale;
+            // ⭐ TAIL-FRAME-2026-08-17 (rev 2) -- PUBLISH THE IN-FLIGHT FRAME TOO.
+            // ORIGINAL: fb_have_new <= ~fb_wr_stale;
+            // The stale tag was justified as "this frame is from the OLD disc position" -- true, but
+            // the old disc position IS the segment that just ended, and its fetch only started
+            // because vid_target reached it, i.e. the disc really did play it.  That discard made
+            // sense only while FABLE-D1 had the disc OVERRUNNING ~5 frames, when those frames were
+            // genuinely past the intended end.  With D1 fixed they are real content, and dropping
+            // them is the second half of the "segments end too short" report (HW 2026-08-17).
+            // ⚠️ fb_wr_stale is STILL COMPUTED and still gates fb_prime_cnt below -- the hold must
+            // keep waiting for a genuine POST-seek frame, or it releases before the picture is up
+            // (that is the LD-HOLD-SYNC-2026-08-13 bug).  Only the PUBLISH decision changes.
+            // ⚠️ If the 2026-07-25 "one spare frame" returns, this line is the revert.
+            fb_have_new  <= 1'b1;
             fb_wr_stale  <= 1'b0;
             // bank post-seek frames (a stale one does not count toward priming)
             if (fb_seek_hold && !fb_wr_stale && fb_prime_cnt < SEEK_PRIME)
@@ -882,7 +931,20 @@ always @(posedge CLK_CORE) begin
         // as a seek was decoded BEFORE it, so it is stale too. Note fb_seek_tmr is only zeroed
         // when NOT already holding (see the safety note above).
         if (fb_seek_edge) begin
-            fb_have_new  <= 1'b0;              // drop the frame waiting to be displayed
+            // ⭐ TAIL-FRAME-2026-08-17 -- WE WERE THROWING AWAY THE SEGMENT'S LAST FRAME.
+            // ORIGINAL: fb_have_new <= 1'b0;   // drop the frame waiting to be displayed
+            //
+            // fb_have_new at this instant is a frame that FINISHED DECODING and was waiting for the
+            // next vblank -- legitimate content of the segment that just ended, never shown.
+            // Dropping it was added 2026-07-25 against the "one spare frame" at segment ends, whose
+            // real cause was FABLE-D1 (the disc running ~200 ms long on every command). With that
+            // fixed, this discard is pure over-correction and costs a frame off every segment.
+            // (HW 2026-08-17, user: video and audio both "just a bit too short".)
+            // ⚠️ fb_wr_stale below is DELIBERATELY UNCHANGED -- tagging genuinely mid-flight decodes
+            // is the INFLIGHT-FIX-2026-07-25 result and reopening it is what brings the spare frame
+            // back. This grants ONE completed frame, nothing in flight.
+            // rev 2: 2 vblanks of grace covers BOTH the queued frame and the one still in flight.
+            fb_tail_adopt <= 2'd2;
             // STILL-FRAME-FIX-2026-07-25: original below, uncomment (and delete the line under it)
             // to restore.  BUG: fb_wr_stale was tagged UNCONDITIONALLY on every seek, whether or
             // not a decode was actually in flight.  It is cleared only by the next dec_frame_done,
@@ -1036,8 +1098,20 @@ fb_raster_reader #(
     // (V_BP back to the 16 default) and the only loss is that the lurch returns.
     // ⚠️ ALSO CHECK DRAGON'S LAIR IN THE SAME BUILD: DL and TQ share the 23.938 film tick, so they
     // were juddering too. If DL looked SMOOTH before this change, the analysis above is WRONG.
+    // ⭐ FABLE-B2-2026-08-17 -- THE CADENCE IS INVERTED: THE DISPLAY IS SLOWER THAN THE CONTENT.
+    // 213 was tuned to sit just ABOVE the old 23.938 film tick.  FILM-RATE-DAPHNE-2026-08-16 then
+    // raised the tick to 23.976 (LDV1000.sv FILM_PERIOD) and this was never retuned:
+    //   V_TOTAL 725 -> 8*576*725 = 3,340,800 cyc = 23.9464 Hz   <  film 3,336,666 cyc = 23.9760 Hz
+    // Content now outruns the display by 0.124%, so decode-to-vblank phase slides through a whole
+    // frame every ~32 s and fb_ready_idx is overwritten before adoption (:841) = one SILENTLY
+    // DROPPED frame per beat, plus a 0->41.7 ms sawtooth on display latency.
+    //   V_TOTAL 724 -> 8*576*724 = 3,336,192 cyc = 23.9795 Hz  -> back on the correct side.
+    // Phase now slips once per ~4.9 min and the artifact becomes a REPEATED frame, not a lost one.
+    // Per-LINE budget unchanged (blanking-only change), so this cannot bring back the 2026-07-24
+    // bottom-of-picture cut-off.  The 23.938 quoted in the comment block above is stale.
     // ORIGINAL: V_BP defaulted to 16'd16 (V_TOTAL 528 -> 32.881 Hz). Delete this line to revert.
-    .V_BP       (16'd213)
+    // ORIGINAL: .V_BP       (16'd213)     // 23.9464 Hz, tuned against the old 23.938 film tick
+    .V_BP       (16'd212)
 ) rr (
     .clk(CLK_CORE), .reset(reset),
     .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
@@ -1052,9 +1126,13 @@ fb_raster_reader #(
 
 // RES-512x480-FIX-2026-07-24: recentre for 512 wide and magnify 2x (see led_band.v).
 //   X_START = (512 - 33*6*2)/2 = 58.  ORIGINAL: led_band led_band_i (
-led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1)) led_band_i (
+// SKILL-BAND-2026-08-17: X_START_SKILL recentres the 39-slot Space Ace band; DL keeps X_START=58
+// and its exact 33-slot geometry because skill_en is 0 for it.
+led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
     .hc(rr_hpos), .vc(rr_vpos),
     .led_digits(led_digits_flat),   // real score/lives, restored 2026-07-15
+    .skill_en(is_spaceace),         // GAME-ID-2026-08-17: MRA mod byte, SA only
+    .skill(skill_level),
     .seg_lit(led_lit)
 );
 
