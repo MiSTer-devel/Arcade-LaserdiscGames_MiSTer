@@ -3,7 +3,7 @@
 //----------------------------------------------------------------------------
 // Replaces the constant "parked/ready" stub with a real command-processing
 // state machine, ported from MAME pioneer_ldv1000hle_device
-// (Useful Stuff/ldv1000hle.cpp).  It decodes the Z80's digit/SEARCH/PLAY/STOP/
+// (Useful Information/ldv1000hle.cpp).  It decodes the Z80's digit/SEARCH/PLAY/STOP/
 // AUTOSTOP stream, tracks the current disc frame, and reports real status codes
 // + a per-frame strobe back to the game — which is what the game waits on after
 // START (the stub could never seek/play, so a game could never begin).
@@ -261,7 +261,7 @@ module DragonsLair_LDV1000
     // 81343495/44154 = 1842.27 samples/frame -> 44100/1842.27 = 23.938.  That is a measurement of
     // the AUDIO BLOB's size, not of the film.  The authoritative disc rate is a stated constant in
     // Daphne's own DL driver:
-    //     Useful Stuff/daphne/game/lair.cpp:86   ->   m_disc_fps = 23.976;
+    //     Useful Information/daphne/game/lair.cpp:86   ->   m_disc_fps = 23.976;
     // which pre_init() turns into m_uDiscFPKS = 23976 (game.cpp:162), and 23976 is ALSO exactly the
     // m2v's own rate (ffprobe r_frame_rate = 24000/1001).  Because those two are EQUAL, Daphne's
     // fps rescale at ldp-vldp.cpp:546-556 never fires and the disc<->film map is a pure 1:1 offset.
@@ -600,7 +600,7 @@ module DragonsLair_LDV1000
             // accumulator was wiped between EVERY digit and CMD_SEARCH fired with number==0
             // => search_frame=0 => disc_rel clamps to 0 => video frame 0.
             //
-            // AUTHORITY = Daphne's own LD-V1000 sim (Useful Stuff/daphne/ldp-in/ldv1000.cpp:411-414),
+            // AUTHORITY = Daphne's own LD-V1000 sim (Useful Information/daphne/ldp-in/ldv1000.cpp:411-414),
             // NOT MAME -- our whole asset chain (m2v/ogg, framefile, ldoff=151) is Daphne-derived, and
             // per the user MAME's LDV1000 semantics differ around the vsync/frame-decode boundary and
             // will misbehave here.  Daphne, verbatim:

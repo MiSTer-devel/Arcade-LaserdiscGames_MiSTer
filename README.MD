@@ -3,7 +3,7 @@
   <img src="Useful Information/SpaceAce.png" width="800">
 </p>
 
-<h1 align="center">Dragon's Lair FPGA Core</h1>
+<h1 align="center">Laserdisc Games FPGA Core</h1>
 
 <p align="center">
   Arcade hardware implementation for MiSTer FPGA
@@ -13,7 +13,7 @@
 
 ## Overview
 
-FPGA implementation of **Dragon's Lair (1983)**, originally developed and released by Cinematronics.
+FPGA implementation of **Dragon's Lair (1983)** and **Space Ace (1983)**, originally developed and released by Cinematronics.
 
 This core targets MiSTer FPGA and aims for accurate gameplay behavior, video timing, and sound reproduction.
 
@@ -23,7 +23,7 @@ This core targets MiSTer FPGA and aims for accurate gameplay behavior, video tim
 
 | Field        | Value |
 |--------------|--------|
-| Core Name    | DragonsLair |
+| Core Name    | LaserdiscGames |
 | Year         | 1983 |
 | Developer    | Cinematronics |
 | Genre        | LaserDisc |
@@ -96,7 +96,8 @@ https://github.com/MiSTer-devel/Main_MiSTer/wiki/Arcade-Roms
 1. Copy the core `.rbf` file to your MiSTer `/_Arcade/cores` folder.
 2. Copy the '.mra' file to your MiSTer '/_Arcade' folder.
 3. Place the appropriate ROM `.zip` files in your `/games/mame` directory.
-4. Launch the core from the MiSTer Arcade menu.
+4. Place the appropriate DLV files in your /games/LaserdiscGames directory.
+5. Launch the core from the MiSTer Arcade menu.
 
 ---
 
