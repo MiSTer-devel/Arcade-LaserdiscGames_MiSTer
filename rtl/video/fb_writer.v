@@ -41,7 +41,7 @@ module fb_writer #(
 
     // FB-DOUBLEBUF-2026-07-15: halfword offset of the buffer to write, in the 0x30000000 region.
     // Was a fixed parameter; now a live input so the top level can ping-pong it per frame (see
-    // Arcade-DragonsLair.sv fb_buf_sel) instead of writing into the same buffer the raster reader
+    // Arcade-LaserdiscGames.sv fb_buf_sel) instead of writing into the same buffer the raster reader
     // is scanning out of.
     input      [26:0] base_hw,
 

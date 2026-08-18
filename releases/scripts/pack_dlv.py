@@ -37,7 +37,7 @@ Usage:
   own convention, lair.m2v -> lair.ogg), falling back to <name>.<ext>.
   --size WxH     output geometry (default 512x480 -- the NATIVE Daphne m2v size, so no
                  resampling happens at all. Must match FB_COLS_HW/FB_ROWS_HW in
-                 Arcade-DragonsLair.sv. 512 is fb_raster_reader's hard width ceiling.
+                 Arcade-LaserdiscGames.sv. 512 is fb_raster_reader's hard width ceiling.
   -q Q           ffmpeg mjpeg quality, 2..31, LOWER IS BETTER (default 3)
   --fbuf-aw N    dlv_streamer.v FBUF_AW; the pack FAILS if any frame does not fit
                  (default 17 = 128 KB, matching the RTL)

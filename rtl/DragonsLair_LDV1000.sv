@@ -67,7 +67,7 @@
 module DragonsLair_LDV1000
 #(
     // CLOCK-80M-2026-08-15: core clock rate, threaded down from CORE_CLK_HZ in
-    // Arcade-DragonsLair.sv.  FILM_PERIOD derives from it -- never re-hardcode 40e6.
+    // Arcade-LaserdiscGames.sv.  FILM_PERIOD derives from it -- never re-hardcode 40e6.
     parameter [31:0] CLK_HZ = 32'd80_000_000
 )
 (

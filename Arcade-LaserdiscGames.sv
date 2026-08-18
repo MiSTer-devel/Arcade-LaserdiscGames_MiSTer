@@ -243,7 +243,18 @@ assign VIDEO_ARY = horz ? ((!ar) ? 12'd500 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);  
 
 `include "build_id.v"
 localparam CONF_STR = {
-	"DRAGONSLAIR;;",
+	// ⛔ DO NOT put a directory in field 2 -- it does nothing.  Verified in Main_MiSTer source:
+	// user_io_read_core_name() (user_io.cpp:411) reads only confstr entry 0 (up to the FIRST ';');
+	// entry 1 is parsed as an OSD OPTION, not a path.
+	// 🔑 DLV-DIR-2026-08-17: THIS STRING IS THE .dlv FOLDER NAME.  The MRA's <setname> normally
+	// overrides it per game (mra_loader.cpp:1085 -> dlair / spaceace, separate folders), but both
+	// MRAs now carry <setname same_dir="1">, which makes user_io.cpp:183 fall back to THIS name --
+	// so DL, Space Ace and Thayer's Quest all share one folder.  findPrefixDir() (file_io.cpp:1022)
+	// resolves it as /media/fat/<name>, else /media/fat/games/<name>.
+	// ⚠️ It is also the OSD title.  Per-game .cfg/mount files stay keyed on <setname>, so renaming
+	// this does NOT orphan per-game settings.  The .rbf name comes from the MRA's <rbf>, not here.
+	// ORIGINAL: "DRAGONSLAIR;;",
+	"LaserdiscGames;;",
 	"S0,DLV,Load Disc;",   // LD-VIDEO-2026-07-04: mount slot 0 for the .dlv (name-match auto-mount: dlair.dlv/spaceace.dlv)
 	"ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	// "OC,Orientation,Vert,Horz;",  // ROT0-FIX-2026-07-03: removed — DL/SA horizontal-only, orientation hardcoded (see horz)
@@ -539,6 +550,16 @@ wire        rr_fill_idle;
 arcade_video #(512,24) arcade_video
 (
 	.*,
+
+	// ⭐ CLKVIDEO-DRIVER-2026-08-17 -- FIXES Quartus Error 12014 (CLK_CORE multiply driven).
+	// arcade_video.v:40 declares `output CLK_VIDEO`, and the `.*` above wires it onto emu's
+	// CLK_VIDEO net -- which line 411 ALSO drives (`assign CLK_VIDEO = CLK_CORE;`). Quartus
+	// collapses that assign, so CLK_CORE ends up fed by both pll.outclk_0 and arcade_video.
+	// Leaving the port explicitly unconnected keeps line 411 as the single driver, which is the
+	// value the working builds already had (arcade_video just passes clk_video through, so the
+	// net value is identical either way -- this changes nothing but the driver count).
+	// ⚠️ Invisible to grep: the conflicting connection is made by `.*`, not by any named line.
+	.CLK_VIDEO(),
 
 	.clk_video(CLK_CORE),
 	.ce_pix(rr_ce_pix),

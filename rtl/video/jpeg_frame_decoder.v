@@ -185,7 +185,7 @@ module jpeg_frame_decoder
     // and/or a few pipeline-settling cycles at end-of-frame -- each one re-satisfies this
     // condition, re-firing frame_done multiple times (confirmed on hardware: ~5-7x per real
     // decode, diagnosed by an external review after this project's own pacing-timer investigation
-    // came up clean). fb_buf_sel (Arcade-DragonsLair.sv) toggles the DDR front/back buffer on
+    // came up clean). fb_buf_sel (Arcade-LaserdiscGames.sv) toggles the DDR front/back buffer on
     // every frame_done pulse, so this was flipping buffers several times per actual decoded frame
     // instead of once -- root cause of the "moving content is a mess" bug chased through most of
     // 2026-07-15 (arbitration reorder, double-buffering, fill-stall, resync, redundant-redraw --

@@ -1,6 +1,6 @@
 set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 
-set_global_assignment -name SYSTEMVERILOG_FILE Arcade-DragonsLair.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Arcade-LaserdiscGames.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_CPU.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_LDV1000.sv

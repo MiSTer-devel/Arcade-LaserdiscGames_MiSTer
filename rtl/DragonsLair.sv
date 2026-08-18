@@ -14,7 +14,7 @@
 
 module DragonsLair
 #(
-    // CLOCK-80M-2026-08-15: core clock rate, from CORE_CLK_HZ in Arcade-DragonsLair.sv.
+    // CLOCK-80M-2026-08-15: core clock rate, from CORE_CLK_HZ in Arcade-LaserdiscGames.sv.
     // Passed straight through to DragonsLair_CPU -> DragonsLair_LDV1000.
     parameter [31:0] CLK_HZ = 32'd80_000_000
 )

@@ -157,7 +157,7 @@ module fb_raster_reader #(
 
     // FB-DOUBLEBUF-2026-07-15: latch the buffer base once per raster frame, tied to the same
     // resync_pending pulse above -- not the raw frame_base_hw port, which the top level toggles live
-    // as the decoder finishes frames (see Arcade-DragonsLair.sv fb_buf_sel). Without this latch,
+    // as the decoder finishes frames (see Arcade-LaserdiscGames.sv fb_buf_sel). Without this latch,
     // frame_base_hw could flip mid-scan and different lines of the SAME displayed frame would be
     // fetched from two different buffers -- root cause of the original black-line-comb bug:
     // fb_writer and this reader used to share one hardcoded buffer with no swap at all.

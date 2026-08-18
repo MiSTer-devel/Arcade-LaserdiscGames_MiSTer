@@ -31,7 +31,7 @@
 //
 //  CLOCK (fixed 2026-07-03; re-based 2026-08-15): the core runs in the single
 //  CLK_CORE domain from the PLL, whose rate arrives as the CLK_HZ parameter
-//  (CORE_CLK_HZ in Arcade-DragonsLair.sv, 80 MHz today; was 40 MHz).  The Z80
+//  (CORE_CLK_HZ in Arcade-LaserdiscGames.sv, 80 MHz today; was 40 MHz).  The Z80
 //  and AY rates are REAL-HARDWARE constants and never change — only the
 //  dividers do: Z80 = 4.00 MHz, AY = 2.00 MHz, both derived from CLK_HZ below.
 //  Real-time signals (IRQ ~30.5 Hz, LD strobes) are counted in absolute
@@ -42,7 +42,7 @@
 module DragonsLair_CPU
 #(
     // CLOCK-80M-2026-08-15: core clock rate, threaded down from CORE_CLK_HZ in
-    // Arcade-DragonsLair.sv.  The Z80/AY clock enables derive from it -- never re-hardcode 40e6.
+    // Arcade-LaserdiscGames.sv.  The Z80/AY clock enables derive from it -- never re-hardcode 40e6.
     parameter [31:0] CLK_HZ = 32'd80_000_000
 )
 (

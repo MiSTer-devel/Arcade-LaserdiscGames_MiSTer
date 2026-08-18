@@ -25,7 +25,7 @@
 //============================================================================
 module dlv_streamer #(
     parameter [16:0] START_FRAME = 17'd1000,  // first film frame (skip black leader); free-runs from here
-    // CLOCK-80M-2026-08-15: core clock rate, driven from CORE_CLK_HZ in Arcade-DragonsLair.sv.
+    // CLOCK-80M-2026-08-15: core clock rate, driven from CORE_CLK_HZ in Arcade-LaserdiscGames.sv.
     // Every clock-coupled constant below DERIVES from this -- do not re-hardcode 40e6.
     parameter [31:0] CLK_HZ      = 32'd80_000_000
 )(

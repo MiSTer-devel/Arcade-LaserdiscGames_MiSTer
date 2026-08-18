@@ -11,10 +11,10 @@
     <manufacturer>Cinematronics</manufacturer>
     <category>LaserDisc</category>
 
-    <setname>spaceace</setname>
+    <setname same_dir="1">spaceace</setname>
     <parent>spaceace</parent>
     <mameversion>0270</mameversion>
-    <rbf>DragonsLair</rbf>
+    <rbf>LaserdiscGames</rbf>
     <about></about>
 
     <resolution>15kHz</resolution>
