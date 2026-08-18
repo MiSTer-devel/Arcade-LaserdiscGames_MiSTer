@@ -1,20 +1,17 @@
 //============================================================================
-//
 //  Dragon's Lair / Space Ace (US set) top-level game module
 //  Copyright (C) 2026 Rodimus
 //  Based on MAME dlair.cpp
-//
 //  Thin wrapper around DragonsLair_CPU (which now contains the Z80, AY-3-8910,
 //  work RAM, program ROM, the LaserDisc HLE, the LED latches and the periodic
 //  IRQ0).  There is no separate sound board — the AY is driven directly from
 //  the main Z80 inside DragonsLair_CPU. No video output of its own — all game
 //  video is on the LaserDisc, decoded/composited in the top file (rtl/video/).
-//
 //============================================================================
 
 module DragonsLair
 #(
-    // CLOCK-80M-2026-08-15: core clock rate, from CORE_CLK_HZ in Arcade-LaserdiscGames.sv.
+    // core clock rate, from CORE_CLK_HZ in Arcade-LaserdiscGames.sv.
     // Passed straight through to DragonsLair_CPU -> DragonsLair_LDV1000.
     parameter [31:0] CLK_HZ = 32'd80_000_000
 )
@@ -40,15 +37,15 @@ module DragonsLair
     input          [7:0] ioctl_index,
 
     input                pause,
-    input                disc_hold,   // LD-HOLD-SYNC-2026-08-13: video path priming -> freeze disc motion
+    input                disc_hold,   // video path priming -> freeze disc motion
 
     output        [63:0] led_digits_o,
-    output         [1:0] skill_o,     // SKILL-SNOOP-2026-08-17: Space Ace skill level for the LED band
+    output         [1:0] skill_o,     // Space Ace skill level for the LED band
     output               dbg_led,
-    output               ld_search_cmd_o, // SEEK-HOLD-2026-07-20: Z80's CMD_SEARCH accepted (1-cyc)
-    output               ld_play_end_o,   // PLAY-END-FLUSH-2026-08-16: playback stopped (1-cyc)
-    output        [16:0] ld_frame_o,   // HLE-DRIVE-2026-07-04: LD disc frame -> streamer
-    output               ld_playing_o  // AUDIO-GATE-2026-07-05: LD playing flag -> streamer audio gate
+    output               ld_search_cmd_o, // Z80's CMD_SEARCH accepted (1-cyc)
+    output               ld_play_end_o,   // playback stopped (1-cyc)
+    output        [16:0] ld_frame_o,   // LD disc frame -> streamer
+    output               ld_playing_o  // LD playing flag -> streamer audio gate
 );
 
 //------------------------------------------------------- ROM Selector --------------------------------------------------------//
@@ -60,7 +57,7 @@ wire rom_cs = (ioctl_index == 8'd0);
 
 wire signed [15:0] snd;
 
-DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // CLOCK-80M-2026-08-15: thread the core clock down
+DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
 (
     .reset(reset),
     .clk_sys(clk_sys),
@@ -77,13 +74,13 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // CLOCK-80M-2026-08-15: thread t
     .ioctl_wr(ioctl_wr),
 
     .pause(pause),
-    .disc_hold(disc_hold),   // LD-HOLD-SYNC-2026-08-13
+    .disc_hold(disc_hold),
 
     .led_digits_o(led_digits_o),
-    .skill_o(skill_o),                // SKILL-SNOOP-2026-08-17
+    .skill_o(skill_o),
     .dbg_led(dbg_led),
-    .search_cmd_o(ld_search_cmd_o),   // SEEK-HOLD-2026-07-20
-    .play_end_o(ld_play_end_o),       // PLAY-END-FLUSH-2026-08-16
+    .search_cmd_o(ld_search_cmd_o),
+    .play_end_o(ld_play_end_o),
     .ld_frame_o(ld_frame_o),
     .ld_playing_o(ld_playing_o)
 );

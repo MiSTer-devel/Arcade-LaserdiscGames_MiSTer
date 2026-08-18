@@ -1,19 +1,15 @@
 //============================================================================
-//
 // Dragon's Lair / Space Ace (US set) for MiSTer
 // Copyright (C) 2026 Rodimus
 // Based on MAME dlair.cpp; converted in place from the Kangaroo core copy
-//
 //  Permission is hereby granted, free of charge, to any person obtaining a
 //  copy of this software and associated documentation files (the "Software"),
 //  to deal in the Software without restriction, including without limitation
 //  the rights to use, copy, modify, merge, publish, distribute, sublicense,
 //  and/or sell copies of the Software, and to permit persons to whom the
 //  Software is furnished to do so, subject to the following conditions:
-//
 //  The above copyright notice and this permission notice shall be included in
 //  all copies or substantial portions of the Software.
-//
 //  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 //  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 //  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -21,7 +17,6 @@
 //  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 //  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 //  DEALINGS IN THE SOFTWARE.
-//
 //============================================================================
 
 module emu
@@ -71,7 +66,6 @@ module emu
 	//    [2:0] : 011=8bpp(palette) 100=16bpp 101=24bpp 110=32bpp
 	//    [3]   : 0=16bits 565 1=16bits 1555
 	//    [4]   : 0=RGB  1=BGR (for 16/24/32 modes)
-	//
 	// FB_STRIDE either 0 (rounded to 256 bytes) or multiple of pixel size (in bytes)
 	output        FB_EN,
 	output  [4:0] FB_FORMAT,
@@ -196,17 +190,10 @@ assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
 wire signed [15:0] audio_l, audio_r;
-// STREAMING-2026-07-04: mux .dlv PCM (pcm_l/pcm_r from dlv_streamer, declared near the streamer) with
-// the AY, saturating.  pcm_* forward-referenced (same as pause_cpu below); driven by dlv_strm.
-// BEEPVOL-2026-08-18: OSD volume on the AY beeps only; the .dlv PCM is untouched.
-// status[19:18]: 0=Normal (1x), 1=Loud (1.5x), 2=Max (2x), 3=Off.
-// The AY arrives as ({ay_sum,5'd0} - 12288) (DragonsLair_CPU.sv:306) -- a 0..24480 swing biased
-// by -12288 -- so the gain is applied to the SWING and the bias re-applied unchanged.  Scaling
-// audio_l directly would scale the bias too and pin the idle level at -24576 (Loud) / -32768 (Max).
-// Saturated back to 16 bits BEFORE the PCM add so the 17-bit mix + saturation below stays valid.
-// Normal is arithmetically identical to the pre-BEEPVOL behaviour.
+// AY beeps mixed with the .dlv PCM, saturating.  The AY arrives biased by -12288, so gain is
+// applied to the SWING and the bias re-applied.
 wire [1:0]         beep_vol = status[19:18];
-wire signed [17:0] ay_l_w   = {{2{audio_l[15]}}, audio_l};   // explicit sign-extend (no implicit widen)
+wire signed [17:0] ay_l_w   = {{2{audio_l[15]}}, audio_l};
 wire signed [17:0] ay_r_w   = {{2{audio_r[15]}}, audio_r};
 wire signed [17:0] ay_l_ac  = ay_l_w + 18'sd12288;          // 0 .. 24480, silence = 0
 wire signed [17:0] ay_r_ac  = ay_r_w + 18'sd12288;
@@ -222,9 +209,6 @@ wire signed [15:0] ay_l_s   = (ay_l_g >  18'sd32767) ?  16'sd32767 :
                               (ay_l_g < -18'sd32768) ? -16'sd32768 : ay_l_g[15:0];
 wire signed [15:0] ay_r_s   = (ay_r_g >  18'sd32767) ?  16'sd32767 :
                               (ay_r_g < -18'sd32768) ? -16'sd32768 : ay_r_g[15:0];
-// ORIGINAL (pre-BEEPVOL-2026-08-18) -- uncomment these two and delete the block above to revert:
-// wire signed [16:0] mix_l = audio_l + pcm_l;
-// wire signed [16:0] mix_r = audio_r + pcm_r;
 wire signed [16:0] mix_l = ay_l_s + pcm_l;
 wire signed [16:0] mix_r = ay_r_s + pcm_r;
 wire signed [15:0] sat_l = (mix_l >  17'sd32767) ?  16'sd32767 :
@@ -242,70 +226,28 @@ wire dbg_led;
 assign LED_USER  = dbg_led;  // ~0.6 Hz "core alive" heartbeat from DragonsLair_CPU
 assign BUTTONS = 0;
 
-///////////////////////////////////////////////////
 
 wire [1:0] ar = status[14:13];
 
-// ROT0-FIX-2026-07-03: Dragon's Lair / Space Ace are HORIZONTAL-only.  This core was
-// inherited from Kangaroo (vertical, ROT90) and defaulted to Vert (status[12]=0), which
-// rotated the raster onto the right edge and used a portrait 3:4 aspect.  Force horizontal
-// orientation + 4:3 aspect everywhere status[12] was used, and drop the (now inert)
-// Orientation toggle from the OSD.  (Was: status[12] selected Vert/Horz.)
-wire horz = 1'b1;
+wire horz = 1'b1;   // DL/SA are horizontal-only
 
-// LAYOUT-2026-07-04 (Option B): active frame is 320 x (240 video + 12 band) = 320x252.  "Original"
-// AR is set to 320:252 (NOT 4:3) so pixels stay SQUARE and the 320x240 video sub-region renders
-// exact 4:3 — the LED band is proportional overscan above it, video undistorted / uncropped.
-// (This AR is HDMI/scaler-only; a real CRT ignores it.  If BAND_H changes, make this 240+BAND_H.)
-// RES-512x480-2026-07-24: 512x480 is ANAMORPHIC (non-square NTSC pixels), unlike 320x240 which was
-// already exact 4:3. So "Original" can no longer be the raw pixel count -- it must be the DISPLAY
-// ratio. The 480 video rows want 4:3, and BAND_H=12 rows are added on top, so:
-//     ARX:ARY = 4 : 3*(480+12)/480  ->  640 : 492
-// (the old 320:252 was the same construction for a 240-row 4:3 image plus the same 12-row band).
-// ORIGINAL:
-// assign VIDEO_ARX = horz ? ((!ar) ? 12'd320 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
-// assign VIDEO_ARY = horz ? ((!ar) ? 12'd252 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
+// "Original" AR is the DISPLAY ratio, not the pixel count: 512x480 is anamorphic, and the LED
+// band adds BAND_H rows above the 480 video rows.  ARX:ARY = 4 : 3*(480+BAND_H)/480.
 assign VIDEO_ARX = horz ? ((!ar) ? 12'd640 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
 assign VIDEO_ARY = horz ? ((!ar) ? 12'd500 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);  // 4 : 3*(480+BAND_H)/480
 
 `include "build_id.v"
 localparam CONF_STR = {
-	// ⛔ DO NOT put a directory in field 2 -- it does nothing.  Verified in Main_MiSTer source:
-	// user_io_read_core_name() (user_io.cpp:411) reads only confstr entry 0 (up to the FIRST ';');
-	// entry 1 is parsed as an OSD OPTION, not a path.
-	// 🔑 DLV-DIR-2026-08-17: THIS STRING IS THE .dlv FOLDER NAME.  The MRA's <setname> normally
-	// overrides it per game (mra_loader.cpp:1085 -> dlair / spaceace, separate folders), but both
-	// MRAs now carry <setname same_dir="1">, which makes user_io.cpp:183 fall back to THIS name --
-	// so DL, Space Ace and Thayer's Quest all share one folder.  findPrefixDir() (file_io.cpp:1022)
-	// resolves it as /media/fat/<name>, else /media/fat/games/<name>.
-	// ⚠️ It is also the OSD title.  Per-game .cfg/mount files stay keyed on <setname>, so renaming
-	// this does NOT orphan per-game settings.  The .rbf name comes from the MRA's <rbf>, not here.
-	// ORIGINAL: "DRAGONSLAIR;;",
+	// Entry 0 is the OSD title AND the .dlv folder name: both MRAs carry <setname same_dir="1">,
+	// so every game shares this one folder.  Entry 1 is an OSD option, never a path.
 	"LaserdiscGames;;",
-	// AUTOLOAD-SC0-2026-08-18: ORIGINAL: "S0,DLV,Load Disc;",
-	// The `C` flag is the ONLY documented per-core mount memory in Main_MiSTer, verified in source:
-	//   arm    menu.cpp:2201-2207  -- parsing `S`, `if (p[1]=='C') store_name = 1`
-	//   save   menu.cpp:2480-2484  -- on image select: FileSaveConfig("<core>.s<idx>", selPath)
-	//   load   user_io.cpp:915-919 -- at core start: FileLoadConfig("<core>.s<idx>") ...
-	//   mount  user_io.cpp:940-943 -- ... then user_io_set_index() + user_io_file_mount()
-	// PER GAME, and it survives <setname same_dir="1">: this path uses user_io_get_core_name(),
-	// which returns core_name, and user_io.cpp:415 sets core_name = the MRA <setname> override
-	// (support/arcade/mra_loader.cpp:1085).  The same_dir fallback lives in the OTHER accessor
-	// (user_io_get_core_name2(), user_io.cpp:174) and only affects the FOLDER.  So the files are
-	// dlair.s0 / spaceace.s0 / <tq>.s0 -- one per game, sharing one .dlv folder.
-	// ⚠️ REMEMBER-LAST-MOUNT, not auto-mount-by-name: the FIRST mount of each game is manual,
-	// every launch after that restores it.  MiSTer has NO name-match auto-mount -- the old
-	// comment on this line claimed one and was fiction.  MGL can mount up front but launches an
-	// <rbf>, not an .mra (mra_loader.cpp:1301-1327), so it cannot carry an arcade core's ROMs.
-	// ⛔ USER 2026-08-18: we do NOT ship pre-seeded config/<setname>.s0 files to skip the first
-	// mount -- against MiSTer project policy.  First assign is the user's, by design.
+	// SC remembers the last mounted image per core name (= the MRA <setname>, so per game).
+	// The first mount of each game is manual; every launch after that restores it.
 	"SC0,DLV,Load Disc;",
 	"ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
-	// "OC,Orientation,Vert,Horz;",  // ROT0-FIX-2026-07-03: removed — DL/SA horizontal-only, orientation hardcoded (see horz)
 	"OB,Flip Vertical,Off,On;",
 	"OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
-	// BEEPVOL-2026-08-18: AY beep volume.  Normal is FIRST because status[] powers up at 0 and
-	// MiSTer has no OSD default mechanism -- index 0 must be the pre-existing behaviour.
+	// Normal is first: status[] powers up at 0 and MiSTer has no OSD default mechanism.
 	"OIJ,Beep Volume,Normal,Loud,Max,Off;",
 	"-;",
 	"P1,Pause Options;",
@@ -341,7 +283,7 @@ wire [21:0] gamma_bus;
 wire        direct_video;
 wire        video_rotated = 1'b0;   // screen_rotate removed (ROT0) — video is never rotated
 
-// LD-VIDEO-2026-07-04: .dlv block-mount interface (hps_io SD slot 0, VDNUM=1) -> dlv_streamer.
+// .dlv block-mount interface (hps_io SD slot 0, VDNUM=1) -> dlv_streamer.
 // The .dlv is a mounted block device (CHD-style, read on demand), NOT an ioctl_download blob.
 wire        dlv_img_mounted;        // [VD:0]=1 bit, pulses on a new mount
 wire [63:0] dlv_img_size;
@@ -359,7 +301,7 @@ assign dlv_sd_buff_din[0] = 8'd0;   // never write back
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
-	.clk_sys(CLK_CORE),   // CLOCK-UNIFY-2026-07-04: was CLK_10M (Kangaroo leftover); core is single-clock now
+	.clk_sys(CLK_CORE),   // was CLK_10M (Kangaroo leftover); core is single-clock now
 	.HPS_BUS(HPS_BUS),
 	.EXT_BUS(),
 	.gamma_bus(gamma_bus),
@@ -385,7 +327,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.joystick_1(joystick_1),
 	.ps2_key(ps2_key),
 
-	// LD-VIDEO-2026-07-04: .dlv block-mount (slot 0) -> dlv_streamer (all CLK_CORE, no CDC)
+	// .dlv block-mount (slot 0) -> dlv_streamer (all CLK_CORE, no CDC)
 	.img_mounted(dlv_img_mounted),
 	.img_readonly(),
 	.img_size(dlv_img_size),
@@ -402,46 +344,12 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 ////////////////////   CLOCKS   ///////////////////
 
-// ============================================================================
-// CLOCK-80M-2026-08-15 -- CORE CLOCK RAISED 40 MHz -> 80 MHz.  HW-TESTED, KEPT AS BASELINE.
-//
-// WHY IT WAS DONE: sys/sys_top.sdc:5 constrains the HPS memory bridge (h2f_user0_clk) at
-// 100 MHz, but DDRAM_CLK below was tied to the 40 MHz core clock -- the memory path was
-// running at 40% of the rate its own timing constraints are written for.  The same change
-// removed ALL dropouts/sync loss/segment glitches on VCR-Robots the same day.
-//
-// ✅ HW RESULT (user, 2026-08-15): picture is BRIGHTER and SHARPER.  Kept.
-// ❌ BUT THE LAG IS UNCHANGED: "still have the same issues with some lag/spurious frames".
-//    So the 40 MHz memory-bandwidth ceiling was NOT the cause of the gameplay lag, and the
-//    "gameplay lags / attract mode is perfect" split is NOT explained by starved DDR bandwidth.
-//    ⛔ DO NOT re-propose raising the clock (e.g. to 100 MHz) as the lag fix -- that hypothesis
-//    has been tested on hardware and did not hold.  Look elsewhere.
-//
-// WHY 80 AND NOT 100: at 80 MHz with CE_DIV_LOG2 3 the pixel clock is 80/8 = 10 MHz, identical
-// to the old 40/4, so V_TOTAL stays 725 and V_BP stays 213 -- video timing is BYTE-IDENTICAL
-// to the 40 MHz build, with 2x the memory bandwidth and zero geometry risk.  100 MHz would
-// force pixel 12.5 MHz -> V_TOTAL 906 -> 45% vertical blanking; on Robots 65% blanking made
-// the picture BOUNCE (unstable scaler lock).
-//
-// 🔑 EVERY clock-coupled constant DERIVES from CORE_CLK_HZ.  Do not re-hardcode 40e6/80e6.
-//    They fail SILENTLY when wrong: lint stays clean and a too-wide literal assigned to a
-//    narrow register is perfectly legal Verilog.  Three of the overflow sites were NOT in the
-//    upgrade recipe and were found by sweeping for "40 MHz"/"40e6": DragonsLair_CPU.sv
-//    IRQ_PERIOD, DragonsLair_LDV1000.sv PLAY_PERIOD, dlv_streamer.v FRAME_DIV -- all three
-//    would have truncated in a [20:0] register.  See also cdiv, FILM_PERIOD, the LDV1000
-//    strobe block, WD_LIMIT, ACC_MOD, and SEEK_TMO below.
-//    Every derived form is written as "the known-good 40 MHz literal, scaled by CLK_HZ", so
-//    setting CORE_CLK_HZ back to 40e6 reproduces the old constants bit-for-bit (verified).
-//
-// TO REVERT: set CORE_CLK_HZ back to 40_000_000, set CE_DIV_LOG2 back to 3'd2, and restore
-// rtl/pll/pll_0002.v's .c_cnt_hi_div0/.c_cnt_lo_div0 to 10/10 (+ the frequency string to
-// "40.000000 MHz").  Everything else follows automatically from CORE_CLK_HZ.
-// ============================================================================
+// Core clock is 80 MHz.  Every clock-coupled constant DERIVES from CORE_CLK_HZ -- never
+// re-hardcode a frequency: a too-wide literal in a narrow register truncates silently and lints
+// clean.  100 MHz was rejected because it forces 45% vertical blanking and destabilises the scaler.
 localparam [31:0] CORE_CLK_HZ = 32'd80_000_000;   // single source of truth for the core clock
 
-// NAMING: deliberately frequency-AGNOSTIC.  This wire was called CLK_40M through the 2026-08-15
-// upgrade, which made it a lie the moment the PLL changed.  Never name it after a frequency
-// again -- CORE_CLK_HZ above is the one place the number appears.
+// Deliberately frequency-agnostic: CORE_CLK_HZ is the one place the number appears.
 wire CLK_CORE;                  // the core clock: CORE_CLK_HZ (80 MHz), = DDRAM_CLK = CLK_VIDEO
 wire CLK_10M;                   // PLL outclk_1, genuinely 10 MHz, UNUSED by the core (Kangaroo leftover)
 wire locked;
@@ -476,7 +384,7 @@ reg btn_service  = 0;
 
 wire pressed = ~ps2_key[9];
 wire [7:0] code = ps2_key[7:0];
-always @(posedge CLK_CORE) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M
+always @(posedge CLK_CORE) begin
 	reg old_state;
 	old_state <= ps2_key[10];
 	if(old_state != ps2_key[10]) begin
@@ -507,11 +415,8 @@ wire m_down1    = btn_down      | joystick_0[2];
 wire m_left1    = btn_left      | joystick_0[1];
 wire m_right1   = btn_right     | joystick_0[0];
 wire m_action1  = btn_fire      | joystick_0[4];
-// SKILL-BUTTONS-2026-07-25: Space Ace's skill-level daughter board. Authority = Daphne
-// game/lair.cpp:1055-1063 (SWITCH_SKILL1/2/3 clear joyskill bits 5/6/7); port $C008 is the
-// "joystick/spaceace skill query" (lair.cpp:771). Active-low at the port via p1_bus = ~p1.
-// MRA button order (Fire,Cadet,Captain,SpaceAce,...) = joystick_0[4],[5],[6],[7].
-// Unused by Dragon's Lair, which simply never reads these bits.
+// Space Ace's skill-level daughter board on port $C008, active-low via p1_bus = ~p1.
+// MRA button order (Fire,Cadet,Captain,SpaceAce) = joystick_0[4..7].  DL never reads these bits.
 wire m_skill1   = joystick_0[5];   // Cadet      -> p1[5]
 wire m_skill2   = joystick_0[6];   // Captain    -> p1[6]
 wire m_skill3   = joystick_0[7];   // Space Ace  -> p1[7]
@@ -526,86 +431,50 @@ wire m_pause    = btn_pause     | joystick_0[11];
 // PAUSE SYSTEM
 wire pause_cpu;
 wire [23:0] rgb_out;
-// DEAD-CODE-2026-07-05 FOLLOWUP: r/g/b used to be implicitly connected via .* to the
-// (since-removed) dead CPU-video wires -- explicit now so this can't silently break again.
-// rgb_out is still NOT consumed by arcade_video (RGB_in is fed by comp_r/g/b directly, see
-// below) -- the dim-after-10s-paused feature has been non-functional since the FB-PIVOT-
-// 2026-07-04 rewiring, predating this session. Left as-is (pre-existing, separate gap) rather
-// than silently also wiring it in -- that's a real display-behavior change, not a compile fix.
-// CLOCK-80M-2026-08-15: CLKSPD (4th param, "main clock speed in MHz") was a hardcoded 10 --
-// already wrong before this change, since the core was 40 MHz.  Derived now.
+// NOTE: rgb_out is not consumed by arcade_video (RGB_in comes from comp_r/g/b directly), so
+// the dim-after-10s-paused feature is inert.  Known gap, left as-is deliberately.
 pause #(8,8,8,CORE_CLK_HZ/32'd1_000_000) pause
 (
 	.*,
-	.clk_sys(CLK_CORE),   // CLOCK-UNIFY-2026-07-04: was CLK_10M
+	.clk_sys(CLK_CORE),   // was CLK_10M
 	.user_button(m_pause),
-	.pause_request(1'b0),   // hiscore removed 2026-07-04
+	.pause_request(1'b0),   // hiscore removed
 	.options(~status[26:25]),
 	.r(comp_r), .g(comp_g), .b(comp_b)
 );
 
 ///////////////                 Video                  ////////////////
 
-// ---- Raster video path (DDR framebuffer -> arcade_video) : FB-PIVOT-2026-07-04 ----
+// ---- Raster video path (DDR framebuffer -> arcade_video) ----
 wire [63:0] led_digits_flat;
 wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
-// LAYOUT-2026-07-04 (Option B — grow canvas): the LED band and the video are SEPARATE, never
-// overlaid.  The reader (fb_raster_reader #(.V_BAND(BAND_H))) grows the active frame to
-// FB_ROWS_HW+BAND_H rows (RES-512x480-2026-07-24: 480+12; was 240+12): rows 0..BAND_H-1 = black band strip ON TOP, rows BAND_H.. = the FULL, pixel-
-// exact 320x240 video (NO crop, NO scale).  led_band lights rows 2..8 (inside the strip), so the
-// composite mux is unchanged: red text where lit in the strip, black elsewhere in it, video below.
-// NB: VIDEO_ARX/ARY "Original" is 320:(240+BAND_H) so the video stays exact 4:3 — if BAND_H
-// changes, update that ratio too (see the VIDEO_ARX/ARY assigns above).
-// RES-512x480-FIX-2026-07-24: 12 -> 20. The 2x-magnified glyph needs BAND_Y0 + FH*2 = 16
-// rows; 20 leaves margin. ORIGINAL: localparam [15:0] BAND_H = 16'd12;
+// The LED band and the video are SEPARATE, never overlaid: rows 0..BAND_H-1 are the band, rows
+// BAND_H.. are the full pixel-exact video.
 localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
 wire  [7:0] comp_r = led_lit ? 8'hFF : rr_r;   // red band text in the strip, video below
 wire  [7:0] comp_g = led_lit ? 8'h00 : rr_g;
 wire  [7:0] comp_b = led_lit ? 8'h00 : rr_b;
 wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
-wire [63:0] rr_dout2_64;    // READ-COALESCE-2026-07-20: whole cached word from ddram read port 2
+wire [63:0] rr_dout2_64;    // whole cached word from ddram read port 2
 wire        rr_rd_req2, rr_rd_ack2;
-// WRITE-GATE-2026-07-16 (new wire, delete on revert): fb_raster_reader tells fb_writer when its
-// line fetch has landed, so the writer never contends with an in-flight read2.  Declared here
-// because fb_writer is instantiated ABOVE fb_raster_reader.
+// fb_raster_reader tells fb_writer when its line fetch has landed, so the writer never contends
+// with an in-flight read2.  Declared here because fb_writer is instantiated ABOVE the reader.
 wire        rr_fill_idle;
 
-// DEAD-CODE-2026-07-05: the Kangaroo-derived rotation/2x-doubling scheme (ce_pix_2x,
-// rotate_ccw, no_rotate, flip) was removed here — its only consumer, screen_rotate, was
-// already commented out 2026-07-04 (SCREEN_ROTATE-REMOVED, see below), leaving those wires
-// unread by anything (confirmed by grep + arcade_video's real port list has no such ports).
-// DL/SA are ROT0 (horizontal) and always were; the video path never actually rotated.
-//
-// SCREEN_ROTATE-REMOVED-2026-07-04: DL/SA are ROT0, so screen_rotate only ever rotated a
-// BLANK raster — and it drives FB_*/DDRAM_*, which our LD-video framebuffer now owns (see
-// the STAGE-2 VIDEO block near endmodule).  Removed to resolve the multiple-driver conflict
-// on FB_*/DDRAM_*.  video_rotated (its only other output) is tied off at its decl.
-// To restore rotation: reinstate rotate_ccw/no_rotate/flip above, re-add
-// `screen_rotate screen_rotate(.*);`, and delete the FB_* assigns + STAGE-2 VIDEO block.
 
-// RASTER PATH (FB-PIVOT-2026-07-04): arcade_video is now driven by fb_raster_reader
-// (DDR framebuffer) with the LED band composited over it — replaces the old core LED
-// raster + 512-wide doubling.  Everything is on the standard core-video path, so the
-// LED band shows AND the MiSTer screenshot captures it.
-// RES-512x480-2026-07-24: first parameter is arcade_video's WIDTH -- the depth of video_mixer's
-// scandoubler/hq2x line buffers. It MUST be >= H_ACT or those buffers wrap mid-line.
-// ORIGINAL: arcade_video #(320,24) arcade_video
+// Driven by fb_raster_reader with the LED band composited over it.  The first parameter is
+// arcade_video's WIDTH and MUST be >= H_ACT or video_mixer's line buffers wrap mid-line.
 arcade_video #(512,24) arcade_video
 (
 	.*,
 
-	// ⭐ CLKVIDEO-DRIVER-2026-08-17 -- FIXES Quartus Error 12014 (CLK_CORE multiply driven).
-	// arcade_video.v:40 declares `output CLK_VIDEO`, and the `.*` above wires it onto emu's
-	// CLK_VIDEO net -- which line 411 ALSO drives (`assign CLK_VIDEO = CLK_CORE;`). Quartus
-	// collapses that assign, so CLK_CORE ends up fed by both pll.outclk_0 and arcade_video.
-	// Leaving the port explicitly unconnected keeps line 411 as the single driver, which is the
-	// value the working builds already had (arcade_video just passes clk_video through, so the
-	// net value is identical either way -- this changes nothing but the driver count).
-	// ⚠️ Invisible to grep: the conflicting connection is made by `.*`, not by any named line.
+    // Left unconnected on purpose: arcade_video declares `output CLK_VIDEO`, and the `.*` above
+    // would make it a second driver of emu's CLK_VIDEO net (Quartus Error 12014).  The conflicting
+    // connection is made by `.*`, so it is invisible to grep.
 	.CLK_VIDEO(),
 
 	.clk_video(CLK_CORE),
@@ -620,62 +489,50 @@ arcade_video #(512,24) arcade_video
 	.fx(status[17:15])
 );
 
-// DIP switches — arrive from the OSD via ioctl index 254 (standard MiSTer DIP
-// download). The MRA <switches> writes DSW1 -> byte 0, DSW2 -> byte 1.
-// dsw[7:0] = DSW1 (AY port A), dsw[15:8] = DSW2 (AY port B).
+// DIP switches arrive from the OSD via ioctl index 254.  dsw[7:0] = DSW1 (AY port A),
+// dsw[15:8] = DSW2 (AY port B).
 reg [7:0] dip_sw[8] = '{8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00,8'h00};
-always @(posedge CLK_CORE) begin   // CLOCK-UNIFY-2026-07-04: was CLK_10M (ioctl now same-domain)
+always @(posedge CLK_CORE) begin
 	if (ioctl_wr && (ioctl_index == 8'd254) && !ioctl_addr[24:3])
 		dip_sw[ioctl_addr[2:0]] <= ioctl_dout;
 end
 wire [15:0] dsw = {dip_sw[1], dip_sw[0]};
 
-// GAME-ID-2026-08-17: MRA <rom index="1"> mod byte. Absent (Dragon's Lair) => stays 0.
-// Space Ace's MRA writes 01. This is the ONLY thing that enables the skill field on the LED band,
-// so DL can never render it -- label or letters -- regardless of what the Z80 writes.
+// MRA <rom index="1"> mod byte: absent (Dragon's Lair) => 0, Space Ace's MRA writes 01.
+// This is the ONLY thing that enables the skill field on the LED band.
 reg [7:0] game_mod = 8'd0;
 always @(posedge CLK_CORE) begin
     if (ioctl_wr && (ioctl_index == 8'd1)) game_mod <= ioctl_dout;
 end
 wire is_spaceace = (game_mod == 8'd1);
-wire [1:0] skill_level;   // SKILL-SNOOP-2026-08-17: from DragonsLair_CPU's scoreboard snoop
-wire [16:0] ld_curr_frame_top;   // HLE-DRIVE-2026-07-04: LD disc frame from DragonsLair -> dlv_streamer
+wire [1:0] skill_level;   // from DragonsLair_CPU's scoreboard snoop
+wire [16:0] ld_curr_frame_top;   // LD disc frame from DragonsLair -> dlv_streamer
 
-// ---- SEEK-HOLD-2026-07-20 (step 1: the delay mechanism) --------------------------------------
-// A real LD player does NOT seek instantly -- the head moves and playback visibly stalls. The
-// games were designed around that pause. Resuming instantly is what left video racing to catch up
-// (stutter, frames shown that should have been passed, audio ahead of picture). So: on a seek,
-// HOLD both streams, refill the pipeline, then release TOGETHER and free-run until the next seek.
-//   video : fb_adopt inhibited -> display FREEZES on the last frame (better than the black/zigzag
-//           a real player showed).
-//   audio : dlv_streamer mutes and HOLDS aud_rd, so the ring REFILLS instead of draining.
-// Release requires BOTH: SEEK_PRIME post-seek frames decoded AND the audio ring primed.
-//
-// Declared here (above the dlv_streamer instance) because the instance uses them; the rest of the
-// state machine lives with the framebuffer logic further down.
+// ---- Seek hold ----
+// A real LD player stalls visibly while the head moves and the games were built around it, so hold
+// both streams on a seek, refill, then release together.  Release needs SEEK_PRIME post-seek frames
+// decoded AND the audio ring primed.
 wire       fb_seek_pulse;      // = the Z80's CMD_SEARCH, straight from the LDV1000
-// PLAY-END-FLUSH-2026-08-16: 1-cycle pulse when playback STOPS (any mechanism). Mirrors
-// fb_seek_edge, but for the END of a segment instead of the start.
+// 1-cycle pulse when playback STOPS (any mechanism).  Mirrors fb_seek_edge, for the END of a
+// segment instead of the start.
 wire       fb_play_end;
-reg        fb_seek_q;          // SEEK-HOLD-2026-07-20: edge-detect the arm. Belt-and-braces --
+reg        fb_seek_q;          // edge-detect the arm. Belt-and-braces --
 wire       fb_seek_edge = fb_seek_pulse & ~fb_seek_q;   // if the source ever stuck HIGH, a
                                // LEVEL-triggered arm would re-arm every cycle and the hold could
                                // never release (FSM-model-proven). An EDGE can only arm once.
 wire       fb_aud_primed;      // from dlv_streamer (ring >= SEEK_FILL)
 reg        fb_seek_hold;       // driven in the framebuffer block below
 
-wire        ld_playing_top;      // AUDIO-GATE-2026-07-05: LD mode==PLAY from DragonsLair -> dlv_streamer
+wire        ld_playing_top;      // LD mode==PLAY from DragonsLair -> dlv_streamer
 
 //Instantiate Dragon's Lair top-level game module
-DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst   // CLOCK-80M-2026-08-15: thread the core clock down
+DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 (
 	.reset(~reset),       // MiSTer reset is active-high; invert for active-low game modules
 
 	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)
 
 	// P1 (0xC008): {3'b0, action, right, left, down, up} active-high (inverted to active-low bus inside)
-	// SKILL-BUTTONS-2026-07-25: original was `{3'b000, m_action1, ...}` -- bits 7:5 tied off, so
-	// Space Ace's Cadet/Captain/Space Ace buttons could never be pressed. Restore to revert.
 	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
 	// SYSTEM (0xC010) cabinet bits: {coin2, coin1, start2, start1} active-high
 	.cab({m_coin2, m_coin1, m_start2, m_start1}),
@@ -691,42 +548,25 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst   // CLOCK-80M-2026-08-15: thread th
 	.ioctl_index(ioctl_index),
 
 	.pause(pause_cpu),
-	// LD-HOLD-SYNC-2026-08-13: the seek hold now freezes the DISC as well as the picture, so the
-	// game cannot execute frames it has not shown yet. fb_seek_hold is already in this CLK_CORE
-	// domain (SEEK_TMO is counted at the core clock), so no CDC is needed.
+// The seek hold freezes the DISC as well as the picture, so the game cannot execute frames it
+// has not shown yet.  fb_seek_hold is already in the CLK_CORE domain, so no CDC is needed.
 	.disc_hold(fb_seek_hold),
 
 	.led_digits_o(led_digits_flat),
-	.skill_o(skill_level),            // SKILL-SNOOP-2026-08-17
+	.skill_o(skill_level),
 	.dbg_led(dbg_led),
-	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE / SEEK-HOLD-2026-07-20
-	.ld_play_end_o(fb_play_end),                                       // PLAY-END-FLUSH-2026-08-16
-	.ld_playing_o(ld_playing_top)     // AUDIO-GATE-2026-07-05
+	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE /
+	.ld_play_end_o(fb_play_end),
+	.ld_playing_o(ld_playing_top)
 );
 
-// HISCORE REMOVED 2026-07-04 — Dragon's Lair / Space Ace / Thayer's Quest do not
-// persist high scores.  The hiscore module was the SOLE driver of ioctl_din and
-// ioctl_upload_req, so tie them off to keep hps_io happy.
+// Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
+// module.  It was the sole driver of ioctl_din and ioctl_upload_req -- tied off to keep hps_io happy.
 assign ioctl_din        = 8'd0;
 assign ioctl_upload_req = 1'b0;
 
-//============================================================================
-// STAGE-2 VIDEO CHECKPOINT (FB-TESTPATTERN-2026-07-04)
-//----------------------------------------------------------------------------
-// Enable the MISTER_FB framebuffer in HPS DDR3 (via rtl/ram_rom/ddram.sv @
-// 0x30000000) and drive it with a test pattern to prove the ddram -> DDR3 FB ->
-// ascal scaler path BEFORE the real streamer/decoder are hung on it.
-// NOTE: while FB_EN=1 the scaler shows the framebuffer, so the LED-band /
-// arcade_video output is NOT displayed during this checkpoint.
-// TO REVERT to the LED-band display: set FB_EN back to 1'b0 (the DDR block below
-// is then harmless/idle).  All of this runs in the CLK_CORE domain (= DDRAM_CLK),
-// so there is no hps_io/CDC involved yet.
-//============================================================================
-// FB-PIVOT-2026-07-04: MISTER_FB DISPLAY DISABLED.  It bypasses the core-video/
-// arcade_video path where the LED band AND the screenshot both live, so it dropped
-// the score and wasn't captured.  Switching to the RASTER path: the decoder writes
-// frames to DDR (ddram/fb_writer below, kept), a raster reader reads them back in
-// scan order into arcade_video, LED band composited in.  FB_EN stays 0.
+// The MISTER_FB path is NOT used (FB_EN=0): it bypasses the arcade_video path where the LED band
+// and the MiSTer screenshot live.
 assign FB_EN     = 1'b0;
 assign FB_FORMAT = 5'b00100;      // (ignored while FB_EN=0) [2:0]=100 16bpp, [3]=0 565, [4]=0 RGB
 assign FB_WIDTH  = 12'd320;
@@ -739,31 +579,23 @@ assign DDRAM_CLK = CLK_CORE;
 wire [27:1] fb_wraddr;
 wire [15:0] fb_din;
 wire        fb_we_req, fb_we_ack;
-wire [63:0] fb_din64;   // WRITE-STAGE-A-2026-07-20
+wire [63:0] fb_din64;
 wire  [7:0] fb_be64;
 wire        tp_we, tp_ready;
 wire [15:0] tp_x, tp_y;
 wire  [7:0] tp_r, tp_g, tp_b;
 
-// LD-VIDEO-STAGE1-2026-07-04: real .dlv -> block streamer -> JPEG decoder -> fb_writer.
-// DIAG-REVERT-2026-07-04: the proven test-pattern source is kept commented for a 1-uncomment
-// fallback (also restore fb_writer's px_* to tp_* below if you re-enable it).
-// fb_testpattern tp_gen (
-//     .clk(CLK_CORE), .reset(reset),
-//     .ready(tp_ready), .we(tp_we),
-//     .x(tp_x), .y(tp_y), .r(tp_r), .g(tp_g), .b(tp_b)
-// );
+// .dlv -> block streamer -> JPEG decoder -> fb_writer.
 
 // ---- .dlv block streamer (hps_io slot 0) — all CLK_CORE, single-clock, no CDC ----
 wire  [7:0] strm_byte;
 wire        strm_valid, strm_ready, strm_last;
-wire        dec_reset_w;                // STREAMING-2026-07-04: per-frame decoder reset (decoder only)
-wire signed [15:0] pcm_l, pcm_r;        // STREAMING-2026-07-04: .dlv PCM -> audio mux (see AUDIO_L/R above)
+wire        dec_reset_w;                // per-frame decoder reset (decoder only)
+wire signed [15:0] pcm_l, pcm_r;        // .dlv PCM -> audio mux (see AUDIO_L/R above)
 
-// STREAMING-2026-07-04: continuous video+audio streamer.  Free-runs film frames from START_FRAME
-// (paced ~30 fps), and keeps a 44.1 kHz PCM ring topped up (audio has SD priority).  The one-shot
-// frame fetch (ld_req_*/STAGE1_FRAME) is removed — this is the real streaming path.
-dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (   // CLOCK-80M-2026-08-15
+// Continuous video+audio streamer: free-runs film frames from START_FRAME and keeps a 44.1 kHz
+// PCM ring topped up (audio has SD priority).
+dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .clk(CLK_CORE), .reset(reset),
     .img_mounted(dlv_img_mounted), .img_size(dlv_img_size),
     .sd_lba(dlv_sd_lba[0]), .sd_blk_cnt(dlv_sd_blk_cnt[0]),
@@ -772,9 +604,9 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (   // CLO
     .out_byte(strm_byte), .out_valid(strm_valid), .out_ready(strm_ready), .out_last(strm_last),
     .dec_reset(dec_reset_w),
     .pcm_l(pcm_l), .pcm_r(pcm_r),
-    .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),   // HLE-DRIVE-2026-07-04
-    .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/FLUSH-2026-07-20
-    .ld_playing(ld_playing_top)                             // AUDIO-GATE-2026-07-05
+    .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),
+    .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
+    .ld_playing(ld_playing_top)
 );
 
 // ---- JPEG frame decoder: byte stream -> px writes (block-order, addressed by x,y) ----
@@ -784,63 +616,20 @@ wire  [7:0] dec_px_r, dec_px_g, dec_px_b;
 wire        dec_frame_done, dec_idle;
 
 jpeg_frame_decoder dec (
-    .clk(CLK_CORE), .rst(dec_reset_w),   // STREAMING-2026-07-04: per-frame reset (NOT global); fb_writer stays on global reset
+    .clk(CLK_CORE), .rst(dec_reset_w),   // per-frame reset, NOT global; fb_writer stays on global reset
     .in_byte(strm_byte), .in_valid(strm_valid), .in_ready(strm_ready), .in_last(strm_last),
     .px_ready(dec_px_ready), .px_we(dec_px_we),
     .px_x(dec_px_x), .px_y(dec_px_y), .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
     .frame_width(dec_w), .frame_height(dec_h), .frame_done(dec_frame_done), .idle(dec_idle)
 );
 
-// FB-DOUBLEBUF-2026-07-15: two-frame ping-pong so the decoder never writes into the same buffer
-// the raster reader is scanning out of. Root cause of the black-line-comb/streak bug (latest17):
-// fb_writer and fb_raster_reader were both hardcoded to DDR halfword base 0 -- one shared
-// framebuffer, no swap at all, so the reader could catch a frame mid-write. Swap on the decoder's
-// own frame_done pulse (dec_frame_done was computed above but never connected to anything).
-// FB-TRIPLEBUF-2026-07-20: the two-buffer ping-pong above was NOT sufficient, and the reason is
-// structural -- keeping the old code commented directly below for reference.
-//
-// THE BUG IT FIXES (matches "garbage rows in the TOP area of specific frames, identical every
-// attract cycle"): fb_raster_reader deliberately LATCHES frame_base_hw once per raster frame
-// (fb_raster_reader.v:128-134, applied at v_last) so a mid-scan flip can't tear one displayed
-// frame across two buffers. But fb_wr_base flipped IMMEDIATELY on dec_frame_done. So when the
-// decoder finished mid-scanout:
-//   reader has BUF1 latched and is still scanning it  ->  fb_buf_sel toggles  ->
-//   writer's base becomes BUF1  ->  writer writes the NEXT frame INTO THE BUFFER BEING DISPLAYED.
-// fb_writer emits top-to-bottom, so wherever it outran the raster beam those upper rows showed
-// the new frame's pixels, with correct output below = a garbage band at the top that recovers.
-// Deterministic per frame because decode duration tracks frame size, so a given frame always
-// collides at the same point. With only TWO buffers this is unavoidable: the writer's back buffer
-// and the reader's latched front buffer are forced to be the same buffer.
-// (The fill_idle write-gate does not help -- it arbitrates DDR BUS access, not buffer choice.)
-//
-// THE FIX: three buffers with an explicit ready/display handoff. Invariant maintained below:
-// wr_idx != disp_idx ALWAYS, so the writer can never target the displayed buffer.
-//   - dec_frame_done : the just-written buffer becomes `ready`; writing moves to the one buffer
-//                      that is neither `ready` nor `disp` (indices 0+1+2=3, so free = 3-a-b).
-//   - reader vblank  : if a completed frame is waiting, adopt it as the new display buffer.
-// Updating disp_idx at the RISING EDGE OF VBLANK gives the value time to settle well before the
-// reader's own latch fires at v_last, so the reader still sees one stable base per frame.
-// Cost: one extra 320x240x16b buffer = 153,600 B in the 0x30000000 region (ddram_fb is ours
-// alone -- rom_req is hardwired off on this core's instance).
-//
-// DIAG-REVERT-2026-07-20: original two-buffer logic, uncomment to restore
-// localparam [26:0] FB_BUF0_HW = 27'd0;
-// localparam [26:0] FB_BUF1_HW = 27'd76800;   // 320*240 halfwords past buf0
-// reg fb_buf_sel;
-// always @(posedge CLK_CORE) begin
-//     if (reset) fb_buf_sel <= 1'b0;
-//     else if (dec_frame_done) fb_buf_sel <= ~fb_buf_sel;
-// end
-// wire [26:0] fb_wr_base = fb_buf_sel ? FB_BUF1_HW : FB_BUF0_HW;   // decoder writes here (back buffer)
-// wire [26:0] fb_rd_base = fb_buf_sel ? FB_BUF0_HW : FB_BUF1_HW;   // raster reader reads here (front buffer)
+// Three framebuffers with a ready/display handoff.  Invariant: wr_idx != disp_idx ALWAYS, so the
+// writer can never target the displayed buffer -- two buffers cannot hold that, because the reader
+// latches its base for a whole raster frame.
 
-// ---- RES-512x480-2026-07-24: framebuffer geometry, defined ONCE and passed everywhere ----------
-// The Daphne source m2v IS 512x480, so encoding at 512x480 is a pure re-compress with NO resampling
-// at all -- which is why raising JPEG quality (q3 -> q2) and switching the downscale to lanczos both
-// bought ZERO visible improvement: resampling was never the dominant loss, the 320x240 pixel budget
-// was. 512 is also exactly fb_raster_reader's line-buffer ceiling (linebuf[0:1023] indexed
-// {buf, hcnt[8:0]} => 2 x 512), so the widest useful target needs no line-buffer change.
-// ORIGINAL (320x240): FB_COLS_HW=320, FB_ROWS_HW=240, FB_BUF_HW=27'd76800.
+// ---- Framebuffer geometry, defined ONCE and passed everywhere ----
+// 512x480 matches the Daphne source m2v exactly, so encoding is a pure re-compress, and 512 is
+// fb_raster_reader's line-buffer ceiling.
 localparam [15:0] FB_COLS_HW   = 16'd512;
 localparam [15:0] FB_ROWS_HW   = 16'd480;
 localparam [26:0] FB_BUF_HW    = 27'd245760;  // 512*480 halfwords per buffer (was 76800)
@@ -853,68 +642,33 @@ reg  [1:0] fb_disp_idx;    // buffer the raster reader is displaying
 reg  [1:0] fb_ready_idx;   // most recently COMPLETED frame, waiting to be displayed
 reg        fb_have_new;    // a completed frame is waiting for the next vblank
 
-// ---- SEEK-HOLD-2026-07-20 state (see the note above the dlv_streamer instance) ---------------
-// ⭐ DIAG-REVERT-2026-08-16 -- SINGLE-BUFFER MODE SWITCH.  Set TRIPLE_BUF back to 1'b1 to restore.
-// Nothing is deleted: every index, the stale tagging and the adopt logic all still run exactly as
-// before.  The switch only (a) points the write and display bases at the SAME buffer, so a frame is
-// visible as it is decoded rather than at the next vblank swap, and (b) drops the post-seek bank-
-// ahead to a single frame, because priming 3 frames into 1 buffer just overwrites the same memory
-// three times and would hold the segment for three fetches to no purpose.
-//
-// WHY (user, 2026-08-16): the 2026-07-20 prime hold and the 2026-08-16 clock-skew fix are two
-// fixes for the SAME problem -- "don't start the segment before the picture is up".  The skew fix
-// (disc + Z80 + IRQ frozen together) solved it properly; banking 3 frames is the older, cruder
-// attempt still sitting underneath, and it costs 120-300 ms of fetch time at every single seek.
+// ---- Seek-hold state ----
+// TRIPLE_BUF=0 points the write and display bases at the same buffer.
 localparam        TRIPLE_BUF = 1'b1;          // DIAG: 1'b0 = single buffer, 1'b1 = original
-// ⭐ FABLE-B1-2026-08-17 -- THE 3-FRAME PRIME WAS UNREACHABLE: EVERY SEEK EXITED VIA SEEK_TMO.
-// Priming needs the disc to MOVE (each new curr_frame -> new vid_target -> one fetch), but the
-// hold FREEZES the disc: in M_SEARCH curr_frame is pinned at search_frame (LDV1000.sv:494) and
-// disc_hold also gates the M_PLAY advance.  vid_target is therefore CONSTANT for the whole hold,
-// so the streamer's dedup gate (dlv_streamer.v:760, vid_target != last_fetched_frame) fetches
-// EXACTLY ONE frame.  fb_prime_cnt tops out at 1, never reaches 3, and fb_seek_release below can
-// only fire via its 1.0 s SEEK_TMO backstop -- on every single seek, with the Z80 and the IRQ
-// counter frozen for the whole second (DragonsLair_CPU.sv:137/504).
-// The prime mechanism and the freeze are mutually exclusive, and both are enabled.
-// 1 is the only value the freeze can satisfy; the audio ring (fb_aud_primed) remains the real
-// gate, so the release still waits for BOTH streams.  Expect the seek stall to drop from a flat
-// 1000 ms to the ~0.5 s Daphne search fiction (LDV1000.sv:548 holds M_SEARCH until the hold ends).
-// MEASUREMENT IF IT LOOKS WRONG: fb_seek_tmr reads exactly SEEK_TMO at every release TODAY.
-// ORIGINAL: localparam [2:0]  SEEK_PRIME = TRIPLE_BUF ? 3'd3 : 3'd1;
+// SEEK_PRIME is 1: the hold freezes the disc, so vid_target is constant and the dedup gate
+// fetches exactly ONE frame.  A larger value can never be reached.
 localparam [2:0]  SEEK_PRIME = 3'd1;   // post-seek frames to bank before resuming
-// 🚨 CLOCK-80M-2026-08-15: was `localparam [25:0] SEEK_TMO = 26'd40000000;` / `reg [25:0] fb_seek_tmr;`.
-// 80,000,000 needs 27 bits and [25:0] tops out at 67,108,863, so BOTH would have silently
-// truncated.  This is failure mode #1 from the Robots upgrade: if fb_seek_tmr is too narrow,
-// `fb_seek_tmr >= SEEK_TMO` can NEVER be true, the seek-hold never releases, the framebuffer
-// adopt stays inhibited => BLANK SCREEN with audio muted.  Both widened to [27:0].
+// SEEK_TMO/fb_seek_tmr must be wide enough for the core clock, or the compare never trips and
+// the hold never releases -- blank screen, muted audio.
 localparam [27:0] SEEK_TMO   = CORE_CLK_HZ;   // ~1 s at the core clock -- SAFETY, see below
 reg  [2:0]  fb_prime_cnt;
 reg  [27:0] fb_seek_tmr;
 reg         fb_wr_stale;   // frame decoding when the seek hit -> finish it, but never publish it
-// ⭐ TAIL-FRAME-2026-08-17 (rev 2): vblank-counted window in which the display may still adopt
-// PRE-seek frames after the seek arms -- the queued one AND the one that was in flight.
-// Counted in VBLANKS, not adoptions, so it is hard-bounded at 2 refresh periods (~83 ms) no matter
-// what completes, and can never extend the hold.  See the fb_seek_edge block for the reasoning.
+// Window in which the display may still adopt PRE-seek frames, counted in vblanks so it is
+// hard-bounded and can never extend the hold.
 reg  [1:0]  fb_tail_adopt;
-// ⚠️ SAFETY TIMEOUT IS NON-NEGOTIABLE. An unbounded "wait until buffers fill" is a brand-new
-// hard-lock source -- exactly the class of bug removed from this core (fill_idle/ddram). The
-// timer is NOT re-zeroed by a further seek while already holding, so a burst of seeks cannot keep
-// the hold alive indefinitely: the bound is measured from the FIRST seek of the burst.
+// The safety timeout is not optional.  It is NOT re-zeroed by a further seek while already
+// holding, so a burst of seeks cannot keep the hold alive indefinitely.
 wire fb_seek_release = (fb_prime_cnt >= SEEK_PRIME && fb_aud_primed) || (fb_seek_tmr >= SEEK_TMO);
 
 reg        rr_vblank_q;
 wire       fb_vbl_rise = rr_vblank & ~rr_vblank_q;
-// FABLE-B5-2026-08-18: rising edge of the per-frame decoder reset (reset | frame_fetch | wd_rst).
+// Rising edge of the per-frame decoder reset (reset | frame_fetch | wd_rst).
 reg        dec_reset_q;
 wire       dec_reset_rise = dec_reset_w & ~dec_reset_q;
 
-// Adoption and completion can land on the SAME cycle, so the free-buffer choice must be made
-// against the buffer that will be displayed AFTER this cycle -- not the current one. Using the
-// stale fb_disp_idx there would pick exactly the buffer vblank is about to start displaying.
-// TAIL-FRAME-2026-08-17: ORIGINAL: `= fb_vbl_rise & fb_have_new & ~fb_seek_hold;`
-// The hold freezes the display, so ANY frame not yet adopted when the seek arrives is lost -- even
-// a fully decoded one.  fb_tail_adopt grants exactly one adoption through the hold, so the last
-// frame of the segment is presented and THEN the picture freezes on it, instead of freezing one
-// frame short.  It self-clears on that adoption, so the hold still blocks everything after it.
+// The free-buffer choice must use the buffer displayed AFTER this cycle: adoption and completion
+// can land together, and the stale fb_disp_idx is exactly what vblank is about to display.
 wire       fb_adopt    = fb_vbl_rise & fb_have_new & (~fb_seek_hold | (fb_tail_adopt != 2'd0));
 wire [1:0] fb_next_disp = fb_adopt ? fb_ready_idx : fb_disp_idx;
 // the one index that is neither a nor b (0+1+2=3; valid because the invariant keeps them distinct)
@@ -922,72 +676,41 @@ wire [1:0] fb_free_idx  = 2'd3 - fb_wr_idx - fb_next_disp;
 
 always @(posedge CLK_CORE) begin
     rr_vblank_q <= rr_vblank;
-    dec_reset_q <= dec_reset_w;   // FABLE-B5-2026-08-18
+    dec_reset_q <= dec_reset_w;
     if (reset) begin
         fb_wr_idx    <= 2'd0;
         fb_disp_idx  <= 2'd1;
         fb_ready_idx <= 2'd1;
         fb_have_new  <= 1'b0;
         rr_vblank_q  <= 1'b0;
-        dec_reset_q  <= 1'b0;      // FABLE-B5-2026-08-18
+        dec_reset_q  <= 1'b0;
         fb_seek_q    <= 1'b0;
-        fb_seek_hold <= 1'b0;      // SEEK-HOLD-2026-07-20
+        fb_seek_hold <= 1'b0;
         fb_prime_cnt <= 3'd0;
-        fb_seek_tmr  <= 28'd0;   // CLOCK-80M-2026-08-15: widened 26->28
+        fb_seek_tmr  <= 28'd0;   // 28 bits: 80 MHz needs 27
         fb_wr_stale  <= 1'b0;
-        fb_tail_adopt<= 2'd0;    // TAIL-FRAME-2026-08-17
+        fb_tail_adopt<= 2'd0;
     end else begin
-        fb_seek_q <= fb_seek_pulse;   // SEEK-HOLD-2026-07-20
-        // TAIL-FRAME-2026-08-17 (rev 2): the tail window burns down on VBLANKS, not on adoptions,
-        // so a frame that has not finished decoding yet still gets its chance, and a frame that
-        // never arrives cannot leave the window open.  The fb_seek_edge block below re-arms it.
+        fb_seek_q <= fb_seek_pulse;
+        // The tail window burns down on VBLANKS, not adoptions, so a frame still decoding gets its
+        // chance and one that never arrives cannot hold the window open.
         if (fb_vbl_rise && (fb_tail_adopt != 2'd0)) fb_tail_adopt <= fb_tail_adopt - 2'd1;
         // start of vblank: adopt the newest completed frame, if any
         if (fb_adopt) begin
             fb_disp_idx   <= fb_ready_idx;
             fb_have_new   <= 1'b0;
         end
-        // decoder finished: publish it, move writing to the free buffer.
-        // Ordered AFTER the adopt block so its fb_have_new<=1'b1 wins on a simultaneous cycle
-        // (we adopted the old ready, and this newly finished frame is immediately pending).
+        // Ordered AFTER the adopt block so fb_have_new wins on a simultaneous cycle.
         if (dec_frame_done) begin
             fb_ready_idx <= fb_wr_idx;
             fb_wr_idx    <= fb_free_idx;   // != fb_next_disp by construction
-            // ⭐ TAIL-FRAME-2026-08-17 (rev 2) -- PUBLISH THE IN-FLIGHT FRAME TOO.
-            // ORIGINAL: fb_have_new <= ~fb_wr_stale;
-            // The stale tag was justified as "this frame is from the OLD disc position" -- true, but
-            // the old disc position IS the segment that just ended, and its fetch only started
-            // because vid_target reached it, i.e. the disc really did play it.  That discard made
-            // sense only while FABLE-D1 had the disc OVERRUNNING ~5 frames, when those frames were
-            // genuinely past the intended end.  With D1 fixed they are real content, and dropping
-            // them is the second half of the "segments end too short" report (HW 2026-08-17).
-            // ⚠️ fb_wr_stale is STILL COMPUTED and still gates fb_prime_cnt below -- the hold must
-            // keep waiting for a genuine POST-seek frame, or it releases before the picture is up
-            // (that is the LD-HOLD-SYNC-2026-08-13 bug).  Only the PUBLISH decision changes.
-            // ⚠️ If the 2026-07-25 "one spare frame" returns, this line is the revert.
+            // Publish the in-flight frame too: its fetch only started because vid_target reached it.
             fb_have_new  <= 1'b1;
             fb_wr_stale  <= 1'b0;
             // bank post-seek frames (a stale one does not count toward priming)
-            // TAIL-GATE-2026-08-18: ORIGINAL is the bare single-statement if below -- uncomment it
-            // and delete the begin/end block to revert.
-            // if (fb_seek_hold && !fb_wr_stale && fb_prime_cnt < SEEK_PRIME)
-            //     fb_prime_cnt <= fb_prime_cnt + 3'd1;
             if (fb_seek_hold && !fb_wr_stale && fb_prime_cnt < SEEK_PRIME) begin
                 fb_prime_cnt <= fb_prime_cnt + 3'd1;
-                // ⭐ TAIL-GATE-2026-08-18 -- CONTENT-GATE THE TAIL WINDOW.
-                // fb_tail_adopt above is TIME-gated: 2 vblanks (42-83 ms) with no test of WHICH
-                // frame adopts.  The post-seek primed frame decodes in ~10-35 ms, i.e. usually
-                // INSIDE that window, so it was being adopted during the hold -- the screen jumped
-                // to the NEW scene about one refresh after the seek instead of holding the old
-                // segment's last frame through the search the way Daphne does.  That reads as "the
-                // ending got chopped".
-                // This frame is by definition the first POST-seek frame (that is what the prime
-                // condition tests), so the tail grace is over: close it and let the hold hold.
-                // The vblank burn-down above stays as a pure backstop.
-                // ⚠️ Scope: this stops the early jump to the NEW scene.  It does NOT guarantee the
-                // segment's FINAL frame is the one held -- if the post-seek frame publishes before
-                // any vblank, it has already overwritten fb_ready_idx (the single-ready-slot race,
-                // item 3 of END_TRUNCATION_2026-08-18.md).  That is a separate change.
+                // First post-seek frame: close the time-gated tail window so the hold holds.
                 fb_tail_adopt <= 2'd0;
             end
         end
@@ -996,81 +719,14 @@ always @(posedge CLK_CORE) begin
             if (fb_seek_tmr < SEEK_TMO) fb_seek_tmr <= fb_seek_tmr + 28'd1;
             if (fb_seek_release)        fb_seek_hold <= 1'b0;
         end
-        // ⭐ FABLE-B5-2026-08-18 -- ORPHANED STALE TAG (review item B5, END_TRUNCATION_2026-08-18.md
-        // section 5).  ADDITIVE: to revert, delete this if -- there is no original to restore.
-        // fb_wr_stale is cleared in exactly ONE place: dec_frame_done.  But the post-seek fetch
-        // asserts dec_reset_w (dlv_streamer.v:247) and can kill the tagged decode BEFORE it ever
-        // reaches dec_frame_done -- the tagged frame dies unpublished and the tag is orphaned.
-        // The next dec_frame_done (the post-seek frame) then reads the STALE value in its own
-        // `!fb_wr_stale` guard, so fb_prime_cnt never increments; vid_target is frozen during the
-        // hold so nothing re-fetches, and the hold can only exit via the 1.0 s SEEK_TMO -- an
-        // occasional full-second freeze that looks random.  The tagged frame is dead either way, so
-        // drop the tag when the decoder that owned it is reset.
-        // ⚠️ Ordered BEFORE the fb_seek_edge block so a coincident NEW seek still re-tags (it wins).
-        // ⚠️ !dec_frame_done: if the frame completed this cycle the normal path already owns the tag.
+        // Drop an orphaned stale tag: the post-seek fetch can kill the tagged decode before it
+        // completes, which would otherwise block priming until the 1.0 s timeout.
         if (fb_seek_hold && fb_wr_stale && dec_reset_rise && !dec_frame_done)
             fb_wr_stale <= 1'b0;
-        // ⭐ PLAY-END-FLUSH-2026-08-16 -- the END-side mirror of the seek flush below.
-        // At a SEEK we already drop the queued frame and tag in-flight decodes stale. At a STOP
-        // we did NOT, so the decode/framebuffer pipeline kept DRAINING onto the screen after the
-        // game had ended the segment -- the 1-3 frame end-of-segment overshoot, and the "spurious
-        // frames that shouldn't show".  The disc stops, but frames already fetched/decoded/queued
-        // were still adopted at the following vblanks.
-        //
-        // Deliberately does NOT assert fb_seek_hold: nothing needs re-priming here, we only need
-        // to stop publishing frames that are AHEAD of where the disc actually stopped.
-        //
-        // ⚠️ Known tradeoff: if the segment's genuine last frame was still in flight when the stop
-        // arrived, this drops it too and the still lands one frame EARLY rather than 1-3 late.
-        // That is the correct direction to err (a frame the game meant to show beats frames it
-        // never meant to show), but if stills now appear one frame short, this is why.
-        // ⛔ PLAY-END-FLUSH DISABLED 2026-08-16 -- HW-tested INERT for the end overshoot, and its
-        // only possible action is to DISCARD frames.  It fires on any drop of
-        // seg_playing = (mode==M_PLAY) && (play_speed_q4 != 0), so a transient mid-segment throws
-        // away good frames.  It was built for a CMD_STOP path DL never uses -- the Daphne log of a
-        // full playthrough contains ZERO stop commands; every segment ends with a fresh SEARCH.
-        // The play_end_o pulse is left plumbed; only the action is disabled.  Uncomment to restore.
-        // if (fb_play_end) begin
-        //     fb_have_new <= 1'b0;                        // never publish a frame past the stop
-        //     fb_wr_stale <= ~dec_idle | dec_reset_w;     // and disown anything mid-flight
-        // end
-        // SEEK-HOLD: arm. LAST so it wins any coincidence -- a frame completing on the same cycle
-        // as a seek was decoded BEFORE it, so it is stale too. Note fb_seek_tmr is only zeroed
-        // when NOT already holding (see the safety note above).
         if (fb_seek_edge) begin
-            // ⭐ TAIL-FRAME-2026-08-17 -- WE WERE THROWING AWAY THE SEGMENT'S LAST FRAME.
-            // ORIGINAL: fb_have_new <= 1'b0;   // drop the frame waiting to be displayed
-            //
-            // fb_have_new at this instant is a frame that FINISHED DECODING and was waiting for the
-            // next vblank -- legitimate content of the segment that just ended, never shown.
-            // Dropping it was added 2026-07-25 against the "one spare frame" at segment ends, whose
-            // real cause was FABLE-D1 (the disc running ~200 ms long on every command). With that
-            // fixed, this discard is pure over-correction and costs a frame off every segment.
-            // (HW 2026-08-17, user: video and audio both "just a bit too short".)
-            // ⚠️ fb_wr_stale below is DELIBERATELY UNCHANGED -- tagging genuinely mid-flight decodes
-            // is the INFLIGHT-FIX-2026-07-25 result and reopening it is what brings the spare frame
-            // back. This grants ONE completed frame, nothing in flight.
-            // rev 2: 2 vblanks of grace covers BOTH the queued frame and the one still in flight.
+            // Keep the queued frame: it finished decoding and was waiting for a vblank, so it is
+            // real content of the segment that just ended.
             fb_tail_adopt <= 2'd2;
-            // STILL-FRAME-FIX-2026-07-25: original below, uncomment (and delete the line under it)
-            // to restore.  BUG: fb_wr_stale was tagged UNCONDITIONALLY on every seek, whether or
-            // not a decode was actually in flight.  It is cleared only by the next dec_frame_done,
-            // and that same completion does `fb_have_new <= ~fb_wr_stale`.  On a SEEK-TO-STILL the
-            // disc parks (M_STOP) so vid_target is CONSTANT, the REDUNDANT-REDRAW-FIX gate
-            // (dlv_streamer.v:721) fetches exactly ONE frame, and that one frame therefore always
-            // absorbed the stale tag: never published (fb_have_new stuck 0), and fb_prime_cnt never
-            // left 0 either (its guard is !fb_wr_stale).  Display stayed frozen on the PRE-SEEK
-            // buffer for the whole hold -- black whenever the previous scene faded out.  Stills only
-            // ever appeared when the watchdog (dlv_streamer.v:893) happened to force a re-fetch.
-            // fb_wr_stale  <= 1'b1;              // and tag the one still decoding
-            // INFLIGHT-FIX-2026-07-25: ~dec_idle alone was WRONG -- frame_fetch holds the decoder in
-            // reset for the WHOLE SD read (dlv_streamer.v:747 set, :779 cleared only after every
-            // sector is in), so dec_idle reads 1 (idle) for ~40-100 ms of the frame's life and a seek
-            // landing there left the in-flight frame untagged => it published = the "one spare frame"
-            // (HW 2026-07-25). dec_reset_w = reset|frame_fetch|wd_rst covers the fetch phase.
-            // Residual hole: frame_fetch drops at :779 but dec_idle stays 1 until img_start_i (JPEG
-            // header parse, ~10-50 us = ~0.1% of a 41.8 ms frame). Revert = restore the line below.
-            // fb_wr_stale  <= ~dec_idle;         // only tag a frame that is ACTUALLY mid-decode
             fb_wr_stale  <= ~dec_idle | dec_reset_w;   // tag anything IN FLIGHT: fetching or decoding
             fb_seek_hold <= 1'b1;
             fb_prime_cnt <= 3'd0;
@@ -1079,13 +735,6 @@ always @(posedge CLK_CORE) begin
     end
 end
 
-// DIAG-REVERT-2026-08-16: single-buffer mode collapses both bases onto FB_BUF0 so the decoder
-// writes into the buffer the raster is reading.  ORIGINALS commented below; restoring them (or
-// just setting TRIPLE_BUF = 1'b1) reverts.
-// wire [26:0] fb_wr_base = (fb_wr_idx   == 2'd0) ? FB_BUF0_HW :
-//                          (fb_wr_idx   == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
-// wire [26:0] fb_rd_base = (fb_disp_idx == 2'd0) ? FB_BUF0_HW :
-//                          (fb_disp_idx == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
 wire [26:0] fb_wr_base = !TRIPLE_BUF          ? FB_BUF0_HW :
                          (fb_wr_idx   == 2'd0) ? FB_BUF0_HW :
                          (fb_wr_idx   == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
@@ -1093,9 +742,7 @@ wire [26:0] fb_rd_base = !TRIPLE_BUF          ? FB_BUF0_HW :
                          (fb_disp_idx == 2'd0) ? FB_BUF0_HW :
                          (fb_disp_idx == 2'd1) ? FB_BUF1_HW : FB_BUF2_HW;
 
-// RES-512x480-2026-07-24: geometry now passed explicitly instead of relying on the module's
-// 320x240 defaults -- CLEAR_ROWS especially, which would otherwise clear only the top half of each
-// buffer and leave the rest as uninitialised DDR. ORIGINAL: fb_writer #(.STRIDE_HW(16'd320)) fb_wr (
+// Geometry passed explicitly -- CLEAR_ROWS especially, or only part of each buffer is cleared.
 fb_writer #(
     .STRIDE_HW (FB_COLS_HW),
     .FB_COLS   (FB_COLS_HW),
@@ -1106,10 +753,10 @@ fb_writer #(
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
     .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
     .px_ready(dec_px_ready),
-    .fill_idle(rr_fill_idle),       // WRITE-GATE-2026-07-16: yield DDR while the raster reader fetches (delete on revert)
+    .fill_idle(rr_fill_idle),       // yield DDR while the raster reader fetches (delete on revert)
     .base_hw(fb_wr_base),
     .wraddr(fb_wraddr), .din(fb_din),
-    .din64(fb_din64), .be64(fb_be64),   // WRITE-STAGE-A-2026-07-20
+    .din64(fb_din64), .be64(fb_be64),
     .we_req(fb_we_req), .we_ack(fb_we_ack)
 );
 
@@ -1126,119 +773,48 @@ ddram ddram_fb (
     .DDRAM_WE(DDRAM_WE),
     // write port (fb_writer)
     .wraddr(fb_wraddr), .din(fb_din),
-    .din64(fb_din64), .be64(fb_be64),   // WRITE-STAGE-A-2026-07-20
+    .din64(fb_din64), .be64(fb_be64),
     .we_req(fb_we_req), .we_ack(fb_we_ack),
     // rom read/write port — unused
     .rdaddr(27'd0), .dout(), .rom_din(16'd0), .rom_be(2'd0),
     .rom_we(1'b0), .rom_req(1'b0), .rom_ack(),
     // second read port — raster reader (DDR framebuffer -> video)
-    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),   // READ-COALESCE-2026-07-20
+    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
 );
 
 // Read the framebuffer back in scan order, then composite the LED band over it.
-// LAYOUT-2026-07-04: reserve top BAND_H rows for the LED band, video below.
-// RES-512x480-2026-07-24: geometry + pixel-clock divider passed explicitly.
-//   raster = (512+8+32+24) x (480+12+8+4+16) = 576 x 520
-//   ce_pix = clk/2  ->  576*520*2 = 599,040 cyc = 14.98 ms = 66.8 Hz, safely above the 23.938 fps
-//   content rate. clk/8 would be 16.7 Hz here -- BELOW content rate, dropping frames at the display.
-// ⚠️ CE_DIV_LOG2 is the BANDWIDTH DIAL: DDR read traffic scales directly with refresh. If 512x480
-// starves, set 3'd2 (clk/4 = 33.4 Hz, still above content rate) to halve reads before changing
-// anything structural. ORIGINAL: fb_raster_reader #(.V_BAND(BAND_H)) rr (
 fb_raster_reader #(
     .H_ACT      (FB_COLS_HW),
     .V_ACT      (FB_ROWS_HW),
     .STRIDE     (FB_COLS_HW),
     .V_BAND     (BAND_H),
-    // RES-512x480-FIX-2026-07-24: was 3'd1 (clk/2, 66.8 Hz). HW result: **bottom of the picture cut
-    // off** -- the classic fill-stall signature. The reader must fetch H_ACT/4 = 128 words inside ONE
-    // line-time; at clk/2 that is 576*2 = 1152 cycles = only 9 cycles per DDR request, which it
-    // cannot make. It then misses the h_last swap, repeats the line, `fline` falls behind `vcnt`,
-    // and the bottom of the framebuffer is never scanned out. (Same mechanism as the 2026-07-15
-    // "progressive vertical stretch, mild at top / severe at bottom" -- that was DDR contention,
-    // this is line rate.) Per FRAME the bandwidth is fine (61,440 requests in 599,040 cycles); it is
-    // purely the per-LINE deadline.
-    // clk/4 -> 576*4 = 2304 cyc/line = 18 cycles per request, and 33.4 Hz is still above the
-    // 23.938 fps content rate. Also halves DDR read traffic (5.57 M/s -> 3.52 M/s).
-    // 🔑 CLOCK-80M-2026-08-15: was 3'd2 (clk/4 @ 40 MHz).  Bumped to 3'd3 (clk/8) so that at the
-    // new 80 MHz core clock the pixel rate stays 80/8 = 10 MHz -- EXACTLY the old 40/4.  Every
-    // number in the two comment blocks around this line is therefore UNCHANGED in wall-clock
-    // terms: V_TOTAL 725, 8*576*725 = 3,340,800 cyc @ 80 MHz = 23.9464 Hz, still 1:1 against the
-    // 23.938 Hz film tick, and V_BP stays 213.  The per-LINE deadline actually IMPROVES: 576*8 =
-    // 4608 cycles per line against 128 DDR requests = 36 cycles/request, vs 18 before.
-    // ⚠️ CE_DIV_LOG2 and CORE_CLK_HZ must move TOGETHER -- changing one alone changes video timing.
+    // CE_DIV_LOG2 is the bandwidth dial: too fast and the reader cannot fetch a whole line in one
+    // line-time (bottom of the picture cuts off); too slow drops below the content frame rate.
     .CE_DIV_LOG2(3'd3),
 
-    // ---- CADENCE-FIX-2026-07-24 ------------------------------------------------------------
-    // SYMPTOM this addresses (user, on Space Ace): "the graphics are very jumpy" -- specifically
-    // a LURCHING CADENCE of otherwise-correct footage (not corrupt frames, not wrong scenes).
-    //
-    // A new film frame can only become visible at the start of a display scan, so what matters is
-    // refresh / film_rate.  refresh = CORE_CLK_HZ / (2^CE_DIV_LOG2 * H_TOTAL * V_TOTAL), where
-    // H_TOTAL = H_ACT+H_FP+H_SYNC+H_BP and V_TOTAL = V_ACT+V_BAND+V_FP+V_SYNC+V_BP.
-    // ⚠️ The clk/N divider names in the BEFORE/AFTER lines below are at the OLD 40 MHz clock.
-    // Post CLOCK-80M-2026-08-15 the core is 80 MHz and CE_DIV_LOG2 is 3, so today's clk/8 is
-    // the SAME pixel rate (10 MHz) as the "clk/4" described below.  The Hz figures still stand:
-    //   BEFORE (320x240, BAND_H=12, clk/8): 384*280  -> 46.503 Hz = 1.9427x  =~ 2  -> every film
-    //       frame got exactly TWO refreshes; even cadence, one mild hitch every ~17 frames. SMOOTH.
-    //   AFTER  (512x480, BAND_H=20, clk/4): 576*528  -> 32.881 Hz = 1.3736x -> 41.774 ms of content
-    //       against a 30.413 ms refresh means frames alternate ONE and TWO refreshes, i.e. on-screen
-    //       durations of 30.4 / 60.8 ms -- a 2:1 swing about 3 times per 8 film frames (~9 Hz).
-    //       That is the lurch.  The resolution change did this; it is NOT Space Ace specific.
-    // clk/2 (66.8 Hz, 2.789x) is not available -- it already failed on HW (per-LINE deadline, see
-    // RES-512x480-FIX above), and 2x the film rate (47.876 Hz) needs clk/2-class rates too:
-    // at clk/4 it would need H_TOTAL*V_TOTAL = 208,878 < the 512*500 = 256,000 active pixels.
-    //
-    // So the only integer ratio reachable at clk/4 is 1:1 -- ONE refresh per film frame, which is
-    // the ideal presentation for film content (zero judder by construction).  Pure BLANKING change:
-    //   V_TOTAL = 500+8+4+213 = 725 ; 4*576*725 = 1,670,400 cyc = 23.9464 Hz
-    //   film_tick (DragonsLair_LDV1000.sv FILM_PERIOD) = 1,670,983 cyc = 23.9380 Hz
-    //   ratio 1.00035 -> phase slips one refresh every ~2860 frames (~2 min): a single micro-hitch,
-    //   versus the current ~9 Hz lurch.
-    // BONUS: fewer scans/second CUTS DDR read traffic another 27% (3.52 M/s -> 2.57 M/s), which is
-    // the opposite direction from every other option here.
-    // Per-LINE budget is UNCHANGED (still clk/4 = 2304 cyc/line = 18 cyc/request, the known-good
-    // value), so this cannot reintroduce the bottom-of-picture cut-off.
-    //
-    // ⚠️ UNVERIFIED ON HW, AND ONE REAL RISK: a ~23.9 Hz core output is unusually low for the
-    // MiSTer video chain. If the scaler/monitor flickers or refuses it, REVERT THIS ONE LINE
-    // (V_BP back to the 16 default) and the only loss is that the lurch returns.
-    // ⚠️ ALSO CHECK DRAGON'S LAIR IN THE SAME BUILD: DL and TQ share the 23.938 film tick, so they
-    // were juddering too. If DL looked SMOOTH before this change, the analysis above is WRONG.
-    // ⭐ FABLE-B2-2026-08-17 -- THE CADENCE IS INVERTED: THE DISPLAY IS SLOWER THAN THE CONTENT.
-    // 213 was tuned to sit just ABOVE the old 23.938 film tick.  FILM-RATE-DAPHNE-2026-08-16 then
-    // raised the tick to 23.976 (LDV1000.sv FILM_PERIOD) and this was never retuned:
-    //   V_TOTAL 725 -> 8*576*725 = 3,340,800 cyc = 23.9464 Hz   <  film 3,336,666 cyc = 23.9760 Hz
-    // Content now outruns the display by 0.124%, so decode-to-vblank phase slides through a whole
-    // frame every ~32 s and fb_ready_idx is overwritten before adoption (:841) = one SILENTLY
-    // DROPPED frame per beat, plus a 0->41.7 ms sawtooth on display latency.
-    //   V_TOTAL 724 -> 8*576*724 = 3,336,192 cyc = 23.9795 Hz  -> back on the correct side.
-    // Phase now slips once per ~4.9 min and the artifact becomes a REPEATED frame, not a lost one.
-    // Per-LINE budget unchanged (blanking-only change), so this cannot bring back the 2026-07-24
-    // bottom-of-picture cut-off.  The 23.938 quoted in the comment block above is stale.
-    // ORIGINAL: V_BP defaulted to 16'd16 (V_TOTAL 528 -> 32.881 Hz). Delete this line to revert.
-    // ORIGINAL: .V_BP       (16'd213)     // 23.9464 Hz, tuned against the old 23.938 film tick
+    // ---- video timing ----
+    // ONE display refresh per film frame: any other ratio alternates one and two refreshes and the
+    // picture visibly lurches.  V_BP is the knob, and the display must stay just FASTER than the
+    // film tick -- slower silently DROPS a frame per beat, faster only repeats one.
     .V_BP       (16'd212)
 ) rr (
     .clk(CLK_CORE), .reset(reset),
-    .frame_base_hw(fb_rd_base),             // FB-DOUBLEBUF-2026-07-15: was hardcoded 27'd0, see fb_buf_sel above
-    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),   // READ-COALESCE-2026-07-20
+    .frame_base_hw(fb_rd_base),             // was hardcoded 27'd0, see fb_buf_sel above
+    .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
-    .fill_idle(rr_fill_idle),               // WRITE-GATE-2026-07-16 (delete on revert)
+    .fill_idle(rr_fill_idle),               // (delete on revert)
     .ce_pix(rr_ce_pix),
     .hsync(rr_hs), .vsync(rr_vs), .hblank(rr_hblank), .vblank(rr_vblank),
     .hpos(rr_hpos), .vpos(rr_vpos),
     .vid_r(rr_r), .vid_g(rr_g), .vid_b(rr_b)
 );
 
-// RES-512x480-FIX-2026-07-24: recentre for 512 wide and magnify 2x (see led_band.v).
-//   X_START = (512 - 33*6*2)/2 = 58.  ORIGINAL: led_band led_band_i (
-// SKILL-BAND-2026-08-17: X_START_SKILL recentres the 39-slot Space Ace band; DL keeps X_START=58
-// and its exact 33-slot geometry because skill_en is 0 for it.
+// X_START centres the 33-slot band; X_START_SKILL centres Space Ace's 39-slot version.
 led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
     .hc(rr_hpos), .vc(rr_vpos),
-    .led_digits(led_digits_flat),   // real score/lives, restored 2026-07-15
-    .skill_en(is_spaceace),         // GAME-ID-2026-08-17: MRA mod byte, SA only
+    .led_digits(led_digits_flat),   // real score/lives, restored
+    .skill_en(is_spaceace),         // MRA mod byte, SA only
     .skill(skill_level),
     .seg_lit(led_lit)
 );

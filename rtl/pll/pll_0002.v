@@ -30,7 +30,7 @@ module  pll_0002(
 		.pll_dsm_out_sel("1st_order"),
 		.operation_mode("direct"),
 		.number_of_clocks(2),
-		.output_clock_frequency0("80.000000 MHz"),   // CLOCK-80M-2026-08-15: was "40.000000 MHz" (metadata string; real config is c_cnt_*_div0 below)
+		.output_clock_frequency0("80.000000 MHz"),   // metadata string only; the real config is c_cnt_*_div0 below
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
 		.output_clock_frequency1("10.000000 MHz"),
@@ -94,8 +94,9 @@ module  pll_0002(
 		.n_cnt_bypass_en("true"),
 		.m_cnt_odd_div_duty_en("false"),
 		.n_cnt_odd_div_duty_en("false"),
-		// CLOCK-80M-2026-08-15: was hi=10 / lo=10 -> C0 divider 20 -> 800/20 = 40 MHz.
-		// Now hi=5 / lo=5 -> C0 divider 10 -> 800/10 = 80 MHz.  (VCO stays 800 MHz: M=8+8=16, 50*16.)
+		// C0 divider: hi+lo = 20 gives 800/20 = 40 MHz, hi+lo = 10 gives 80 MHz.
+		// ⚠️ HAND-EDITED GENERATED FILE -- regenerating this PLL from the Quartus wizard silently
+		// reverts the core clock.  CORE_CLK_HZ in Arcade-LaserdiscGames.sv must match.
 		.c_cnt_hi_div0(5),
 		.c_cnt_lo_div0(5),
 		.c_cnt_prst0(1),

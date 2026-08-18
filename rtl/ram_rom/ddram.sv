@@ -70,12 +70,10 @@ assign DDRAM_WE       = ram_write;
 assign dout  =  ram_q[{rdaddr[2:1],  4'b0000} +:16];
 assign dout2 = ram_q2[{rdaddr2[2:1], 4'b0000} +:16];
 
-// READ-COALESCE-2026-07-20 (ADDITIVE ONLY -- this file is stock Sorgelig; nothing above or below
-// is modified, no logic/timing/behaviour change, and dout2 still works exactly as before).
-// Exposes the WHOLE cached 64-bit word that dout2 slices 16 bits out of, so a sequential reader
-// can take all 4 halfwords from ONE request instead of issuing 4 (see fb_raster_reader.v).
-// Valid on the same rd_ack2 handshake as dout2; ram_q2 holds the 4 halfwords whose address share
-// rdaddr2[27:3], i.e. {A|3, A|2, A|1, A|0} for a 4-aligned A, low halfword in bits [15:0].
+// dout2_64 is an ADDITIVE fork of stock Sorgelig ddram: it exposes the whole cached 64-bit word
+// that dout2 slices 16 bits out of, so a sequential reader can take all 4 halfwords from ONE
+// request instead of four (see fb_raster_reader.v).  Valid on the same rd_ack2 handshake as dout2;
+// low halfword in bits [15:0].  dout2 itself is unchanged.
 assign dout2_64 = ram_q2;
 
 reg  [7:0] ram_burst;
@@ -89,22 +87,13 @@ reg  [7:0] ram_be = 0;
 reg [1:0]  state  = 0;
 reg        ch = 0;
 
-// DDR-DOUTREADY-FIX-2026-07-20 -- ROOT CAUSE OF THE VIDEO HARD LOCK.
-// States 2 and 3 CONSUME read data (DDRAM_DOUT_READY). They were nested inside the
-// `if(!DDRAM_BUSY)` gate below, so if the HPS ever asserted BUSY and DOUT_READY on the SAME
-// cycle the returning word was silently DROPPED and this state machine waited for it forever.
-// BUSY (command FIFO full) and DOUT_READY (read data returning) are INDEPENDENT channels on the
-// f2h bridge and can coincide under load.
-// Consequence: rd_ack2 never returns -> fb_raster_reader never finishes a line -> fill_idle stuck
-// low -> fb_writer's px_ready stuck low -> the JPEG decoder stalls -> dlv_streamer wedges on its
-// untimed S_STRM_VLD wait -> VIDEO AND .dlv AUDIO BOTH DIE while the Z80 keeps running.
-// Reproduced in the full-subsystem co-sim: with BUSY asserted independently ~1 cycle in 64 the
-// pipeline wedges within one frame (px_ready=0, fill_idle=0, we_pending=0); with BUSY asserted
-// only during transactions it never wedges.
-// FIX: handle DOUT_READY OUTSIDE the BUSY gate. States 2/3 only receive data -- they issue no
-// commands -- so they never needed that gate. Command issue (states 0/1) still respects BUSY.
-// NOTE this is stock Sorgelig code; the hazard does not bite the usual MiSTer pattern (load ROM
-// once, then read) and only surfaces with sustained CONCURRENT read+write traffic like ours.
+// NOTE: the read-data return path must NOT be gated by DDRAM_BUSY.  BUSY (command FIFO full) and
+// DOUT_READY (read data returning) are independent channels on the f2h bridge and can coincide
+// under load; with states 2/3 nested inside the BUSY gate the returning word is dropped and this
+// state machine waits for it forever, wedging video and audio together.  States 2/3 only receive
+// data, so they never needed the gate.  Command issue (states 0/1) still respects BUSY.
+// This hazard does not bite the usual MiSTer pattern (load ROM once, then read) -- only sustained
+// concurrent read+write traffic like ours.
 always @(posedge DDRAM_CLK) begin
 
 	// ---- read-data return path: MUST NOT be gated by DDRAM_BUSY ----

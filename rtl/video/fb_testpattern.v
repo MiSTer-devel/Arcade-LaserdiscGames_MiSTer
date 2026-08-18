@@ -5,7 +5,6 @@
 // G = vertical, B = const).  Position-unique so orientation/offset bugs are
 // obvious.  Uses the same px_we/px_ready handshake as jpeg_frame_decoder's
 // drain, so it drops straight into fb_writer.  Continuous rewrite.
-//
 // Diagnostic only: proves the ddram -> DDR3 FB -> ascal display path.  Once the
 // pattern shows correctly, swap this source for the real decoder output.
 //============================================================================

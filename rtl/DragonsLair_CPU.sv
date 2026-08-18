@@ -1,16 +1,13 @@
 //============================================================================
-//
 //  Dragon's Lair / Space Ace (US set) Main CPU Board
 //  Based on MAME dlair.cpp (dlus_map / dlair_ldv1000) by Aaron Giles
-//
 //  Single Z80 @ (real 4 MHz) + AY-3-8910 (real 2 MHz) + Pioneer LD-V1000
 //  laserdisc.  The LD is a real command/status HLE (DragonsLair_LDV1000.sv,
-//  see "LaserDisc" section below) — LDV1000-UPGRADE-2026-07-04 replaced the
+//  see "LaserDisc" section below) — replaced the
 //  earlier constant-ready stub. This module has NO video output of its own;
 //  all game video is on the LaserDisc, decoded/composited in the top file
 //  (rtl/video/) — an earlier standalone LED-band raster that lived here was
-//  superseded by that pipeline and removed (DEAD-CODE-2026-07-05, see led_band.v).
-//
+//  superseded by that pipeline and removed (, see led_band.v).
 //  Memory map (dlus_map), reads mirror 0x1FC7 / writes mirror 0x1FC7,
 //  device-select = A5:A3, bank-select = A15:A13:
 //    0x0000-0x9FFF  R   ROM (region size 0xA000)
@@ -25,29 +22,26 @@
 //    0xE020  W  laserdisc_w (data latch)  (bank 111, dev 100)
 //    0xE038-0xE03F W led_den1 (7-seg 0-7)  (bank 111, dev 111, A2:A0 = digit)
 //    0xE030-0xE037 W led_den2 (7-seg 8-15) (bank 111, dev 110, A2:A0 = digit)
-//
 //  Interrupt: single periodic IRQ0 @ ~30.5 Hz (hold), cleared on Z80 INTA
 //  (M1 + IORQ).  AY needs a 1 T-state WAIT when addressed.
-//
-//  CLOCK (fixed 2026-07-03; re-based 2026-08-15): the core runs in the single
+//  CLOCK (fixed; re-based): the core runs in the single
 //  CLK_CORE domain from the PLL, whose rate arrives as the CLK_HZ parameter
 //  (CORE_CLK_HZ in Arcade-LaserdiscGames.sv, 80 MHz today; was 40 MHz).  The Z80
 //  and AY rates are REAL-HARDWARE constants and never change — only the
 //  dividers do: Z80 = 4.00 MHz, AY = 2.00 MHz, both derived from CLK_HZ below.
 //  Real-time signals (IRQ ~30.5 Hz, LD strobes) are counted in absolute
 //  CLK_CORE cycles, scaled from CLK_HZ, so they stay wall-clock accurate.
-//
 //============================================================================
 
 module DragonsLair_CPU
 #(
-    // CLOCK-80M-2026-08-15: core clock rate, threaded down from CORE_CLK_HZ in
+    // core clock rate, threaded down from CORE_CLK_HZ in
     // Arcade-LaserdiscGames.sv.  The Z80/AY clock enables derive from it -- never re-hardcode 40e6.
     parameter [31:0] CLK_HZ = 32'd80_000_000
 )
 (
     input         reset,             // active LOW (fed to RESET_n)
-    input         clk_sys,           // master clock (80 MHz as of CLOCK-80M-2026-08-15; was 40 MHz)
+    input         clk_sys,           // master clock (80 MHz as of ; was 40 MHz)
 
     // Player inputs (active HIGH; inverted to active-low bus internally)
     input   [7:0] p1,                // {skill3,skill2,skill1, btn1, right, left, down, up}
@@ -68,38 +62,29 @@ module DragonsLair_CPU
     input         ioctl_wr,
 
     input         pause,
-    input         disc_hold,      // LD-HOLD-SYNC-2026-08-13: video path priming -> freeze disc motion
+    input         disc_hold,      // video path priming -> freeze disc motion
 
     // LED score/status digits (16 x 4-bit, flattened) for the top-level FB compositor
     output [63:0] led_digits_o,
-    // SKILL-SNOOP-2026-08-17: Space Ace skill level, latched from the game's own scoreboard write
+    // Space Ace skill level, latched from the game's own scoreboard write
     output  [1:0] skill_o,       // 0 = none yet, 1 = Cadet, 2 = Captain, 3 = Space Ace
 
     // Bring-up "core alive" heartbeat LED
     output        dbg_led,
 
-    // HLE-DRIVE-2026-07-04: LDV1000 HLE current disc frame -> streamer video/audio position
-    output        search_cmd_o,   // SEEK-HOLD-2026-07-20: Z80's CMD_SEARCH accepted (1-cycle)
-    output        play_end_o,     // PLAY-END-FLUSH-2026-08-16: playback stopped (1-cycle)
+    // LDV1000 HLE current disc frame -> streamer video/audio position
+    output        search_cmd_o,   // Z80's CMD_SEARCH accepted (1-cycle)
+    output        play_end_o,     // playback stopped (1-cycle)
     output [16:0] ld_frame_o,
 
-    // AUDIO-GATE-2026-07-05: LDV1000 HLE playing flag -> streamer audio ring gate
+    // LDV1000 HLE playing flag -> streamer audio ring gate
     output        ld_playing_o
 );
 
 //------------------------------------------------------- Clock Enables -------------------------------------------------------//
 
-// clk_sys -> cen_4m (Z80, 4 MHz), cen_2m (AY, 2 MHz).  The Z80 and AY rates are REAL-HARDWARE
-// speeds and do not change with the core clock -- only the divider does.
-// One mod-CDIV_MOD counter yields both the Z80 tick (at 0 and the half point) and the AY tick (at 0).
-//
-// CLOCK-80M-2026-08-15: was a hardcoded mod-20 in a `reg [4:0]` (max 31):
-//   reg [4:0] cdiv = 5'd0;
-//   always_ff @(posedge clk_sys) cdiv <= (cdiv == 5'd19) ? 5'd0 : cdiv + 5'd1;
-//   wire cen_4m = (cdiv == 5'd0) | (cdiv == 5'd10);   // 40/10 = 4.00 MHz  (Z80)
-//   wire cen_2m = (cdiv == 5'd0);                      // 40/20 = 2.00 MHz  (AY)
-// At 80 MHz this needs mod-40 with the Z80 tick at 0 and 20, and 39 does NOT fit in [4:0] --
-// widened to [5:0].  Derived form reproduces 20/10 exactly at 40 MHz.
+// clk_sys -> cen_4m (Z80, 4 MHz) and cen_2m (AY, 2 MHz).  Both are REAL-HARDWARE rates and do
+// not change with the core clock -- only the divider does.
 localparam [5:0] CDIV_MOD  = CLK_HZ / 32'd2_000_000;   // 40 @ 80 MHz -> AY  = 2 MHz
 localparam [5:0] CDIV_HALF = CLK_HZ / 32'd4_000_000;   // 20 @ 80 MHz -> Z80 = 4 MHz
 reg [5:0] cdiv = 6'd0;
@@ -117,25 +102,9 @@ T80s #(.Mode(0), .T2Write(1), .IOWait(1)) main_cpu
 (
     .RESET_n(reset),
     .CLK(clk_sys),
-    // ⭐ Z80-HOLD-2026-08-16 -- freeze GAME TIME while the video path primes after a seek.
-    // ORIGINAL: .CEN(cen_4m & ~pause),
-    //
-    // WHY: the Z80 runs on a real-time ~30.5 Hz IRQ that nothing we do slows down. If the picture
-    // and audio are held to prime the ring/framebuffers but the CPU keeps counting, game-time
-    // advances while picture-time does not. The Z80 then opens and closes the input window, and
-    // schedules the segment end, from a moment the player has not seen yet -- so on a reaction
-    // scene the usable reaction time is the window MINUS the hold. It compounds per seek, which is
-    // why gameplay broke while attract (one seek per 43 s) looked perfect.
-    //
-    // ⚠️ Deliberately NOT routed through `pause`. `pause` also freezes the LD-V1000's command
-    // processing and strobes, and fb_seek_hold is asserted ON the SEARCH command -- so pausing the
-    // LD would stop it performing the atomic land (curr_frame <= search_frame). The streamer primes
-    // against ld_curr_frame, so it would prime the OLD position and the hold would never satisfy
-    // correctly. The LD must stay live to land the seek; only the Z80 freezes.
-    //
-    // Companion to DISC-HOLD-GUARD-RESTORED-2026-08-16 in DragonsLair_LDV1000.sv, which stops the
-    // DISC advancing during the same window. Disc guard alone flips the skew's sign (disc frozen,
-    // CPU still counting => segment ends slightly SHORT); this cancels the remaining term.
+    // CEN is gated by disc_hold to freeze GAME TIME while the video path primes after a seek:
+    // the Z80 runs on a real-time ~30.5 Hz IRQ, so if the picture is held but the CPU keeps
+    // counting it schedules the segment end from a moment the player has not seen yet.
     .CEN(cen_4m & ~pause & ~disc_hold),
     .WAIT_n(cpu_wait_n),
     .INT_n(n_irq),
@@ -185,7 +154,7 @@ wire [7:0] workram_D;
 wire [7:0] ay_dout;
 
 // P1 (0xC008): active-low. Daphne calls this the "joystick/spaceace skill query" (lair.cpp:771).
-// SKILL-BUTTONS-2026-07-25: b5/b6/b7 are NOT unused -- they are Space Ace's Cadet/Captain/Space Ace
+// b5/b6/b7 are NOT unused -- they are Space Ace's Cadet/Captain/Space Ace
 // skill-level buttons (daughter board; lair.cpp:1055-1063). Dragon's Lair just never reads them.
 wire [7:0] p1_bus = ~p1;
 
@@ -254,7 +223,7 @@ dpram_dc #(.widthad_a(16)) prog_rom
 
 //---------------------------------------------------------- Work RAM ----------------------------------------------------------//
 
-// 2KB work RAM at 0xA000-0xA7FF.  Port B unused (hiscore removed 2026-07-04).
+// 2KB work RAM at 0xA000-0xA7FF.  Port B unused (hiscore removed).
 dpram_dc #(.widthad_a(11)) work_ram
 (
     .clock_a(clk_sys),
@@ -306,74 +275,18 @@ wire [9:0] ay_sum = {2'b00, ay_A} + {2'b00, ay_B} + {2'b00, ay_C};
 wire signed [15:0] ay_signed = {1'b0, ay_sum, 5'd0} - 16'sd12288;
 assign sound = ay_signed;
 
-//======================================================= LaserDisc stub =======================================================//
-//
-// Pioneer LD-V1000 (HLE) minimal stub, modelled on MAME ldv1000hle.cpp.  The
-// real player continuously emits a status byte per video frame; the Z80 syncs
-// to the status strobe, reads the status byte, and issues commands via
-// latch(0xE020) + strobe(misc b5) + enter(misc b6).  To keep the Z80 from
-// hanging on the LD handshake — and, crucially, to make the Dragon's Lair POST
-// reach its "2nd beep = disc player initialized" — this stub:
-//
-//   * reports the player READY on SYSTEM b7 (command/ready strobe, 0 = ready);
-//   * pulses the status-strobe on SYSTEM b6 at the LD-V1000 "park" rate;
-//   * returns a constant "parked / ready / idle / no-error" status byte at
-//     0xC020 = STATUS_PARK(0x7C) | STATUS_READY(0x80) = 0xFC.
-//
-// Timing replicates the HLE's device_reset() park cadence exactly:
-//   park_strobe_tick every 21 ms:  status_strobe asserted (low) for 26 us,
-//   then 54 us after the tick command_strobe asserted (low) for 25 us.
-// In MAME the strobe bools sit TRUE(=high) and dip FALSE(=low) during a pulse;
-// SYSTEM b6 = m_status_strobe, SYSTEM b7 = (ready==ASSERT)?0:1 = ~m_command_strobe.
-//
-// This is the note's recommended "first attempt: constant ready + idle status
-// + ~frame-rate strobe."  It does NOT process commands (search/play), so real
-// LD playback is not possible yet — that is the separate later effort.
-// TODO(dlair): process ld_cmd_captured (search/play/stop) + drive real status
-// codes (SEARCH_FINISH, PLAY, ...) once LD-on-FPGA video is added.
-//
-// LDV1000-UPGRADE-2026-07-04: the constant "parked/ready" stub below is REPLACED
-// by the real DragonsLair_LDV1000 command/status controller (instanced further
-// down).  Kept commented (not deleted) as a fallback — it was the POST-proven
-// stub.  To revert: uncomment this block and delete the u_ldv1000 instance.
-// localparam LD_STATUS_PARK  = 8'h7C;
-// localparam LD_STATUS_READY = 8'h80;
-//
-// localparam [19:0] PARK_PERIOD = 20'd840000;  // 21 ms  @ 40 MHz
-// localparam [19:0] STAT_LOW    = 20'd1040;    // 26 us  status-strobe low window
-// localparam [19:0] CMD_START   = 20'd2160;    // 54 us  command-strobe start
-// localparam [19:0] CMD_END     = 20'd3160;    // 79 us  command-strobe end (25 us wide)
-//
-// reg  [19:0] park_cnt          = 20'd0;
-// reg         ld_status_strobe  = 1'b1;   // MAME m_status_strobe  (idle high)
-// reg         ld_command_strobe = 1'b1;   // MAME m_command_strobe (idle high)
-//
-// always_ff @(posedge clk_sys) begin
-//     if (!reset) begin
-//         park_cnt          <= 18'd0;
-//         ld_status_strobe  <= 1'b1;
-//         ld_command_strobe <= 1'b1;
-//     end
-//     else begin
-//         if (park_cnt >= PARK_PERIOD - 20'd1) park_cnt <= 20'd0;
-//         else                                 park_cnt <= park_cnt + 20'd1;
-//         ld_status_strobe  <= ~(park_cnt < STAT_LOW);
-//         ld_command_strobe <= ~((park_cnt >= CMD_START) & (park_cnt < CMD_END));
-//     end
-// end
-// wire [7:0] ld_status = LD_STATUS_PARK | LD_STATUS_READY;   // 0xFC
 
 // Real LD-V1000 controller: processes the Z80's SEARCH/PLAY/STOP stream, tracks
 // the disc frame, and reports real status + per-frame strobe (see DragonsLair_LDV1000.sv).
 wire  [7:0] ld_status;
 wire        ld_status_strobe, ld_command_strobe;
 wire [16:0] ld_curr_frame;   // routed to the video path via ld_frame_o below (disc->film map, dlv_streamer.v)
-wire        ld_playing_w;    // AUDIO-GATE-2026-07-05: mode==M_PLAY, for the streamer's audio ring gate
+wire        ld_playing_w;    // mode==M_PLAY, for the streamer's audio ring gate
 wire [16:0] dbg_seek_frame_w;
-wire [19:0] dbg_end_frame_w;   // DIAG-REVERT-2026-08-16: raw SEARCH digits (5 nibbles)   // DIAG-REVERT-2026-08-15: segment start/end frame probe
-wire  [3:0] dbg_flags_w;                         // DIAG-REVERT-2026-08-15: sticky autostop telemetry
+wire [19:0] dbg_end_frame_w;   // raw SEARCH digits (5 nibbles)   // segment start/end frame probe
+wire  [3:0] dbg_flags_w;                         // sticky autostop telemetry
 
-DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // CLOCK-80M-2026-08-15: thread the core clock down
+DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // thread the core clock down
     .clk            (clk_sys),
     .reset_n        (reset),          // core reset is active-low
     .cmd_stb        (ld_cmd_stb),
@@ -381,23 +294,22 @@ DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // CLOCK-80M-2026-08-15: th
     .status         (ld_status),
     .status_strobe  (ld_status_strobe),
     .command_strobe (ld_command_strobe),
-    .search_cmd_o   (search_cmd_o),     // SEEK-HOLD-2026-07-20
-    .play_end_o     (play_end_o),       // PLAY-END-FLUSH-2026-08-16
+    .search_cmd_o   (search_cmd_o),
+    .play_end_o     (play_end_o),
     .curr_frame     (ld_curr_frame),
-    .pause          (pause),            // HLE-DRIVE-2026-07-04: freeze disc motion during pause
-    .disc_hold      (disc_hold),        // LD-HOLD-SYNC-2026-08-13: video path still priming
-    .playing        (ld_playing_w),     // AUDIO-GATE-2026-07-05
-    .dbg_seek_frame (dbg_seek_frame_w), // DIAG-REVERT-2026-08-15: segment START frame
-    .dbg_end_frame  (dbg_end_frame_w), // DIAG-REVERT-2026-08-15: segment END frame
-    .dbg_flags      (dbg_flags_w)      // DIAG-REVERT-2026-08-15: autostop armed/fired
+    .pause          (pause),            // freeze disc motion during pause
+    .disc_hold      (disc_hold),        // video path still priming
+    .playing        (ld_playing_w),
+    .dbg_seek_frame (dbg_seek_frame_w), // segment START frame
+    .dbg_end_frame  (dbg_end_frame_w), // segment END frame
+    .dbg_flags      (dbg_flags_w)      // autostop armed/fired
 );
 
-// HLE-DRIVE-2026-07-04: expose disc frame to the top (streamer maps -> mjpeg frame + audio sample)
+// expose disc frame to the top (streamer maps -> mjpeg frame + audio sample)
 assign ld_frame_o    = ld_curr_frame;
-assign ld_playing_o  = ld_playing_w;   // AUDIO-GATE-2026-07-05
+assign ld_playing_o  = ld_playing_w;
 
 //------------------------------------------------- misc_w / LD data latch -----------------------------------------------------//
-//
 // misc_w (0xE008): b4 coin counter, b5 1->0 = strobe latched byte to LD,
 //                  b6 = LD ENTER (0 = assert), b7 = INT/EXT.
 // laserdisc_w (0xE020): latch the byte to send to the LD.
@@ -429,7 +341,6 @@ always_ff @(posedge clk_sys) begin
 end
 
 //----------------------------------------------------- LED digit latches ------------------------------------------------------//
-//
 // Two banks of 8 common-anode 7-seg digits.  Z80 writes a 4-bit digit code:
 //   0xE038-0xE03F (led_den1) -> digits[0..7]   (MAME led_den1_w: m_digits[0|off])
 //   0xE030-0xE037 (led_den2) -> digits[8..15]  (MAME led_den2_w: m_digits[8|off])
@@ -444,23 +355,8 @@ always_ff @(posedge clk_sys) begin
     if (cs_led2_w) led_digits[{1'b1, cpu_A[2:0]}] <= cpu_Dout[3:0];  // den2 (E030) -> digits 8..15 (MAME dlair.cpp:338)
 end
 
-// Expose the 16 digits (flattened) to the top-level FB compositor (led_band).
-// led_digits_o[i*4 +: 4] = led_digits[i]  (digit 0 in the low nibble).
-// ⭐ SCOREBOARD RESTORED 2026-08-16 -- real Z80 score/lives/credits on all 16 digits.
-// The segment-boundary frame probe below is commented out for a public build.  To re-enable it,
-// comment this assign and uncomment the DIAG block underneath (dbg_*_w and the two LDV1000 ports
-// are deliberately left in place and simply go unused, so re-enabling is one uncomment).
-//------------------------------------------- SKILL-SNOOP-2026-08-17 (Space Ace) -----------------------------------------------//
-// Space Ace does NOT keep the chosen skill in a RAM variable -- it writes it to the SCOREBOARD.
-// spaceace.dasm $1FE3 reads $C008, masks $E0 (the three skill buttons) and maps the pressed one to
-// a ONE-HOT code 1/2/4; $2026 then does:
-//     ld hl,$E03F / ld (hl),$CC / neg / add a,l / ld l,a / ld (hl),$CC
-// i.e. 0xCC into digit 7 AND into digit (7 - code)  =>  digit 6 = Cadet, 5 = Captain, 3 = Space Ace.
-// We already decode exactly those writes as cs_led1_w ($E038-$E03F), so this needs NO new bus tap.
-// ⚠️ MUST LATCH: digits 6/7 are the LIVES field, so the game overwrites the marker the moment play
-// starts -- that is why the indicator only appears on the select screen.
-// Dragon's Lair never runs this routine, and is independently gated off by skill_en (the MRA mod
-// byte) at the top level, so this can never reach DL's band even if DL wrote the same pattern.
+// Expose the 16 digits (flattened) to the top-level compositor: led_digits_o[i*4 +: 4] =
+// led_digits[i], digit 0 in the low nibble.
 reg [1:0] skill_lat;
 always @(posedge clk_sys) begin
     if (!reset) skill_lat <= 2'd0;                       // reset is active LOW on this module
@@ -480,38 +376,10 @@ assign led_digits_o = {led_digits[15], led_digits[14], led_digits[13], led_digit
                        led_digits[ 7], led_digits[ 6], led_digits[ 5], led_digits[ 4],
                        led_digits[ 3], led_digits[ 2], led_digits[ 1], led_digits[ 0]};
 
-// DIAG-REVERT-2026-08-15: segment-boundary frame probe, displayed as 5 HEX digits per score field.
-//   P1 score (digits 0-5, slot 3..8  , digit 0 = LEFTMOST) = frame the SEARCH landed on
-//   P2 score (digits 8-13, slot 17..22, digit 8 = LEFTMOST) = segment END frame
-// Leading digit is forced to 0 so all five nibbles of the 17-bit frame are visible without
-// needing a 6th glyph.  Lives (6,7) and credits (14,15) are left on the real Z80 values.
-// wire [19:0] dbg_p1_hex = {3'd0, dbg_seek_frame_w};   // 17-bit frame -> 5 nibbles
-// wire [19:0] dbg_p2_hex = dbg_end_frame_w;   // DIAG-REVERT-2026-08-16: raw digits, already 5 nibbles
-//
-// assign led_digits_o = {led_digits[15], led_digits[14],                 // credits (real)
-//                        dbg_p2_hex[ 3:0], dbg_p2_hex[ 7:4],             // digits 13,12
-//                        dbg_p2_hex[11:8], dbg_p2_hex[15:12],            // digits 11,10
-//                        dbg_p2_hex[19:16], 4'd0,                        // digits  9, 8 (8 = leftmost)
-//                        led_digits[ 7], led_digits[ 6],                 // lives (real)
-//                        dbg_p1_hex[ 3:0], dbg_p1_hex[ 7:4],             // digits  5, 4
-//                        dbg_p1_hex[11:8], dbg_p1_hex[15:12],            // digits  3, 2
-//                        dbg_p1_hex[19:16], dbg_flags_w};                // digits  1, 0
+// Segment-boundary frame probe, displayed as 5 hex digits per score field.
 
-//------------------------------------------------------ Periodic IRQ0 ---------------------------------------------------------//
-//
-// Single periodic IRQ0 @ ~30.5 Hz (hold), cleared on Z80 interrupt-acknowledge
-// (M1 + IORQ).  MAME: set_periodic_int(irq0_line_hold, MASTER_CLOCK_US/8/16^4)
-// = 16 MHz/8/65536 = 30.517 Hz.  The Operation Manual: RTC ~33 ms square wave,
-// held until INTA (M1- + IORQ- together) removes it — required to keep the Z80
-// in sync with the videodisc.  Counted in absolute clk_sys cycles (wall-clock),
-// matching the (real-time) LD-stub strobes.
-//
-// 🚨 CLOCK-80M-2026-08-15: was `localparam [20:0] IRQ_PERIOD = 21'd1310720;` / `reg [20:0] irq_cnt;`.
-// NOT in the upgrade recipe's table -- found by sweeping for "40 MHz" in comments.  This is the
-// MAIN Z80 periodic IRQ, the thing that keeps the CPU in sync with the videodisc.  At 80 MHz it
-// must be 2621440, which needs 22 bits; [20:0] tops out at 2097151, so it would have SILENTLY
-// truncated to 524288 -- IRQ firing 5x too fast, clean lint, game desynced from the disc.
-// Widened to [21:0] and derived; the form reproduces 1310720 exactly at 40 MHz.
+//------------------------------------------------------ Periodic IRQ0 ---------------------------
+// Single periodic IRQ0 @ ~30.5 Hz (hold), cleared on Z80 interrupt-acknowledge (M1 + IORQ).
 localparam [21:0] IRQ_PERIOD = (64'd1310720 * CLK_HZ) / 64'd40_000_000;  // clk_sys / 30.518 Hz
 
 reg n_irq = 1'b1;
@@ -521,9 +389,8 @@ always_ff @(posedge clk_sys) begin
         n_irq   <= 1'b1;
         irq_cnt <= 22'd0;
     end
-    // Z80-HOLD-2026-08-16: the IRQ counter IS game-time -- it must freeze with the CPU, or the
+    // the IRQ counter IS game-time -- it must freeze with the CPU, or the
     // interrupt phase walks by the hold duration on every seek even though the Z80 is stopped.
-    // ORIGINAL: `else begin` (ungated).
     else begin
         // Only the TIMER freezes. The INTA clear below stays ungated: if the hold happened to
         // assert during an interrupt-acknowledge cycle, gating it would drop the clear and the
