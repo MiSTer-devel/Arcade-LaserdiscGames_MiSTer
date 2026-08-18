@@ -198,8 +198,35 @@ assign HDMI_BOB_DEINT = 0;
 wire signed [15:0] audio_l, audio_r;
 // STREAMING-2026-07-04: mux .dlv PCM (pcm_l/pcm_r from dlv_streamer, declared near the streamer) with
 // the AY, saturating.  pcm_* forward-referenced (same as pause_cpu below); driven by dlv_strm.
-wire signed [16:0] mix_l = audio_l + pcm_l;
-wire signed [16:0] mix_r = audio_r + pcm_r;
+// BEEPVOL-2026-08-18: OSD volume on the AY beeps only; the .dlv PCM is untouched.
+// status[19:18]: 0=Normal (1x), 1=Loud (1.5x), 2=Max (2x), 3=Off.
+// The AY arrives as ({ay_sum,5'd0} - 12288) (DragonsLair_CPU.sv:306) -- a 0..24480 swing biased
+// by -12288 -- so the gain is applied to the SWING and the bias re-applied unchanged.  Scaling
+// audio_l directly would scale the bias too and pin the idle level at -24576 (Loud) / -32768 (Max).
+// Saturated back to 16 bits BEFORE the PCM add so the 17-bit mix + saturation below stays valid.
+// Normal is arithmetically identical to the pre-BEEPVOL behaviour.
+wire [1:0]         beep_vol = status[19:18];
+wire signed [17:0] ay_l_w   = {{2{audio_l[15]}}, audio_l};   // explicit sign-extend (no implicit widen)
+wire signed [17:0] ay_r_w   = {{2{audio_r[15]}}, audio_r};
+wire signed [17:0] ay_l_ac  = ay_l_w + 18'sd12288;          // 0 .. 24480, silence = 0
+wire signed [17:0] ay_r_ac  = ay_r_w + 18'sd12288;
+wire signed [17:0] ay_l_g   = (beep_vol == 2'd0) ?  ay_l_ac                    - 18'sd12288 :
+                              (beep_vol == 2'd1) ? (ay_l_ac + (ay_l_ac >>> 1)) - 18'sd12288 :
+                              (beep_vol == 2'd2) ? (ay_l_ac <<< 1)             - 18'sd12288 :
+                                                   18'sd0;
+wire signed [17:0] ay_r_g   = (beep_vol == 2'd0) ?  ay_r_ac                    - 18'sd12288 :
+                              (beep_vol == 2'd1) ? (ay_r_ac + (ay_r_ac >>> 1)) - 18'sd12288 :
+                              (beep_vol == 2'd2) ? (ay_r_ac <<< 1)             - 18'sd12288 :
+                                                   18'sd0;
+wire signed [15:0] ay_l_s   = (ay_l_g >  18'sd32767) ?  16'sd32767 :
+                              (ay_l_g < -18'sd32768) ? -16'sd32768 : ay_l_g[15:0];
+wire signed [15:0] ay_r_s   = (ay_r_g >  18'sd32767) ?  16'sd32767 :
+                              (ay_r_g < -18'sd32768) ? -16'sd32768 : ay_r_g[15:0];
+// ORIGINAL (pre-BEEPVOL-2026-08-18) -- uncomment these two and delete the block above to revert:
+// wire signed [16:0] mix_l = audio_l + pcm_l;
+// wire signed [16:0] mix_r = audio_r + pcm_r;
+wire signed [16:0] mix_l = ay_l_s + pcm_l;
+wire signed [16:0] mix_r = ay_r_s + pcm_r;
 wire signed [15:0] sat_l = (mix_l >  17'sd32767) ?  16'sd32767 :
                            (mix_l < -17'sd32768) ? -16'sd32768 : mix_l[15:0];
 wire signed [15:0] sat_r = (mix_r >  17'sd32767) ?  16'sd32767 :
@@ -255,11 +282,31 @@ localparam CONF_STR = {
 	// this does NOT orphan per-game settings.  The .rbf name comes from the MRA's <rbf>, not here.
 	// ORIGINAL: "DRAGONSLAIR;;",
 	"LaserdiscGames;;",
-	"S0,DLV,Load Disc;",   // LD-VIDEO-2026-07-04: mount slot 0 for the .dlv (name-match auto-mount: dlair.dlv/spaceace.dlv)
+	// AUTOLOAD-SC0-2026-08-18: ORIGINAL: "S0,DLV,Load Disc;",
+	// The `C` flag is the ONLY documented per-core mount memory in Main_MiSTer, verified in source:
+	//   arm    menu.cpp:2201-2207  -- parsing `S`, `if (p[1]=='C') store_name = 1`
+	//   save   menu.cpp:2480-2484  -- on image select: FileSaveConfig("<core>.s<idx>", selPath)
+	//   load   user_io.cpp:915-919 -- at core start: FileLoadConfig("<core>.s<idx>") ...
+	//   mount  user_io.cpp:940-943 -- ... then user_io_set_index() + user_io_file_mount()
+	// PER GAME, and it survives <setname same_dir="1">: this path uses user_io_get_core_name(),
+	// which returns core_name, and user_io.cpp:415 sets core_name = the MRA <setname> override
+	// (support/arcade/mra_loader.cpp:1085).  The same_dir fallback lives in the OTHER accessor
+	// (user_io_get_core_name2(), user_io.cpp:174) and only affects the FOLDER.  So the files are
+	// dlair.s0 / spaceace.s0 / <tq>.s0 -- one per game, sharing one .dlv folder.
+	// ⚠️ REMEMBER-LAST-MOUNT, not auto-mount-by-name: the FIRST mount of each game is manual,
+	// every launch after that restores it.  MiSTer has NO name-match auto-mount -- the old
+	// comment on this line claimed one and was fiction.  MGL can mount up front but launches an
+	// <rbf>, not an .mra (mra_loader.cpp:1301-1327), so it cannot carry an arcade core's ROMs.
+	// ⛔ USER 2026-08-18: we do NOT ship pre-seeded config/<setname>.s0 files to skip the first
+	// mount -- against MiSTer project policy.  First assign is the user's, by design.
+	"SC0,DLV,Load Disc;",
 	"ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	// "OC,Orientation,Vert,Horz;",  // ROT0-FIX-2026-07-03: removed — DL/SA horizontal-only, orientation hardcoded (see horz)
 	"OB,Flip Vertical,Off,On;",
 	"OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	// BEEPVOL-2026-08-18: AY beep volume.  Normal is FIRST because status[] powers up at 0 and
+	// MiSTer has no OSD default mechanism -- index 0 must be the pre-existing behaviour.
+	"OIJ,Beep Volume,Normal,Loud,Max,Off;",
 	"-;",
 	"P1,Pause Options;",
 	"P1OP,Pause when OSD is open,On,Off;",
@@ -856,6 +903,9 @@ wire fb_seek_release = (fb_prime_cnt >= SEEK_PRIME && fb_aud_primed) || (fb_seek
 
 reg        rr_vblank_q;
 wire       fb_vbl_rise = rr_vblank & ~rr_vblank_q;
+// FABLE-B5-2026-08-18: rising edge of the per-frame decoder reset (reset | frame_fetch | wd_rst).
+reg        dec_reset_q;
+wire       dec_reset_rise = dec_reset_w & ~dec_reset_q;
 
 // Adoption and completion can land on the SAME cycle, so the free-buffer choice must be made
 // against the buffer that will be displayed AFTER this cycle -- not the current one. Using the
@@ -872,12 +922,14 @@ wire [1:0] fb_free_idx  = 2'd3 - fb_wr_idx - fb_next_disp;
 
 always @(posedge CLK_CORE) begin
     rr_vblank_q <= rr_vblank;
+    dec_reset_q <= dec_reset_w;   // FABLE-B5-2026-08-18
     if (reset) begin
         fb_wr_idx    <= 2'd0;
         fb_disp_idx  <= 2'd1;
         fb_ready_idx <= 2'd1;
         fb_have_new  <= 1'b0;
         rr_vblank_q  <= 1'b0;
+        dec_reset_q  <= 1'b0;      // FABLE-B5-2026-08-18
         fb_seek_q    <= 1'b0;
         fb_seek_hold <= 1'b0;      // SEEK-HOLD-2026-07-20
         fb_prime_cnt <= 3'd0;
@@ -916,14 +968,48 @@ always @(posedge CLK_CORE) begin
             fb_have_new  <= 1'b1;
             fb_wr_stale  <= 1'b0;
             // bank post-seek frames (a stale one does not count toward priming)
-            if (fb_seek_hold && !fb_wr_stale && fb_prime_cnt < SEEK_PRIME)
+            // TAIL-GATE-2026-08-18: ORIGINAL is the bare single-statement if below -- uncomment it
+            // and delete the begin/end block to revert.
+            // if (fb_seek_hold && !fb_wr_stale && fb_prime_cnt < SEEK_PRIME)
+            //     fb_prime_cnt <= fb_prime_cnt + 3'd1;
+            if (fb_seek_hold && !fb_wr_stale && fb_prime_cnt < SEEK_PRIME) begin
                 fb_prime_cnt <= fb_prime_cnt + 3'd1;
+                // ⭐ TAIL-GATE-2026-08-18 -- CONTENT-GATE THE TAIL WINDOW.
+                // fb_tail_adopt above is TIME-gated: 2 vblanks (42-83 ms) with no test of WHICH
+                // frame adopts.  The post-seek primed frame decodes in ~10-35 ms, i.e. usually
+                // INSIDE that window, so it was being adopted during the hold -- the screen jumped
+                // to the NEW scene about one refresh after the seek instead of holding the old
+                // segment's last frame through the search the way Daphne does.  That reads as "the
+                // ending got chopped".
+                // This frame is by definition the first POST-seek frame (that is what the prime
+                // condition tests), so the tail grace is over: close it and let the hold hold.
+                // The vblank burn-down above stays as a pure backstop.
+                // ⚠️ Scope: this stops the early jump to the NEW scene.  It does NOT guarantee the
+                // segment's FINAL frame is the one held -- if the post-seek frame publishes before
+                // any vblank, it has already overwritten fb_ready_idx (the single-ready-slot race,
+                // item 3 of END_TRUNCATION_2026-08-18.md).  That is a separate change.
+                fb_tail_adopt <= 2'd0;
+            end
         end
         // SEEK-HOLD: run the safety timer and release once primed (or on timeout)
         if (fb_seek_hold) begin
             if (fb_seek_tmr < SEEK_TMO) fb_seek_tmr <= fb_seek_tmr + 28'd1;
             if (fb_seek_release)        fb_seek_hold <= 1'b0;
         end
+        // ⭐ FABLE-B5-2026-08-18 -- ORPHANED STALE TAG (review item B5, END_TRUNCATION_2026-08-18.md
+        // section 5).  ADDITIVE: to revert, delete this if -- there is no original to restore.
+        // fb_wr_stale is cleared in exactly ONE place: dec_frame_done.  But the post-seek fetch
+        // asserts dec_reset_w (dlv_streamer.v:247) and can kill the tagged decode BEFORE it ever
+        // reaches dec_frame_done -- the tagged frame dies unpublished and the tag is orphaned.
+        // The next dec_frame_done (the post-seek frame) then reads the STALE value in its own
+        // `!fb_wr_stale` guard, so fb_prime_cnt never increments; vid_target is frozen during the
+        // hold so nothing re-fetches, and the hold can only exit via the 1.0 s SEEK_TMO -- an
+        // occasional full-second freeze that looks random.  The tagged frame is dead either way, so
+        // drop the tag when the decoder that owned it is reset.
+        // ⚠️ Ordered BEFORE the fb_seek_edge block so a coincident NEW seek still re-tags (it wins).
+        // ⚠️ !dec_frame_done: if the frame completed this cycle the normal path already owns the tag.
+        if (fb_seek_hold && fb_wr_stale && dec_reset_rise && !dec_frame_done)
+            fb_wr_stale <= 1'b0;
         // ⭐ PLAY-END-FLUSH-2026-08-16 -- the END-side mirror of the seek flush below.
         // At a SEEK we already drop the queued frame and tag in-flight decodes stale. At a STOP
         // we did NOT, so the decode/framebuffer pipeline kept DRAINING onto the screen after the
