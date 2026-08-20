@@ -30,11 +30,11 @@ module fb_raster_reader #(
     parameter [15:0] H_ACT  = 16'd320,
     parameter [15:0] V_ACT  = 16'd240,
     parameter [15:0] STRIDE = 16'd320,     // halfwords per row (= H_ACT, tight)
-    parameter [15:0] V_BAND = 16'd0,       // (Option B, grow canvas): reserved top strip for the LED band.
-                                           //   Total active height becomes V_ACT + V_BAND.  Display rows 0..V_BAND-1 are
-                                           //   forced black (band lives there); rows V_BAND..V_BAND+V_ACT-1 show the FULL
-                                           //   video (row R -> framebuffer row R-V_BAND).  Video is NEVER cropped/scaled.
-                                           //   V_BAND=0 => old behaviour (no band).
+    parameter [15:0] V_BAND = 16'd0,       // top strip reserved for the LED band.  Always counted in V_TOTAL;
+                                           //   the v_band input picks how much of it is ACTIVE this frame.
+                                           //   Rows 0..v_band-1 are forced black (the band composites there);
+                                           //   rows v_band..v_band+V_ACT-1 show the FULL video (row R ->
+                                           //   framebuffer row R-v_band).  Video is NEVER cropped/scaled.
     parameter [15:0] H_FP = 16'd8, H_SYNC = 16'd32, H_BP = 16'd24,
     parameter [15:0] V_FP = 16'd8, V_SYNC = 16'd4,  V_BP = 16'd16,
     // ce_pix = clk / 2^CE_DIV_LOG2.  Refresh must stay ABOVE the content frame rate, and the
@@ -44,6 +44,8 @@ module fb_raster_reader #(
     input             clk,            // CLK_CORE (= DDRAM_CLK); 80 MHz as of
     input             reset,          // active-high
     input      [26:0] frame_base_hw,  // DDR halfword base of the frame to display
+    input      [15:0] v_band,         // active band height: V_BAND (band on) or 0 (full screen).  V_TOTAL
+                                      //   reserves V_BAND either way, so the frame time never changes.
 
     // ddram.sv read port 2
     output reg [26:0] rdaddr2,
@@ -68,11 +70,17 @@ module fb_raster_reader #(
     output     [7:0]  vid_g,
     output     [7:0]  vid_b
 );
-    // Option B (grow canvas): total active rows = full video rows + the reserved band.  The video
-    // keeps ALL V_ACT rows (never cropped/scaled); the band just adds V_BAND rows of active height.
-    localparam [15:0] V_DISP  = V_ACT + V_BAND;
+    // Total active rows = full video rows + the active band.  The video keeps ALL V_ACT rows
+    // (never cropped/scaled); the band just adds active height above them.
+    // V_TOTAL always reserves V_BAND rows, so switching the band off shrinks the active window
+    // WITHOUT changing the frame time -- V_BP is tuned to sit just above the film tick, and a
+    // shorter frame would repeat a frame every ~36 ticks (visible lurch).
     localparam [15:0] H_TOTAL = H_ACT + H_FP + H_SYNC + H_BP;
-    localparam [15:0] V_TOTAL = V_DISP + V_FP + V_SYNC + V_BP;
+    localparam [15:0] V_TOTAL = V_ACT + V_BAND + V_FP + V_SYNC + V_BP;
+
+    // Latched once per frame: a mid-frame OSD toggle must not move the active window under the raster.
+    reg  [15:0] v_band_q = V_BAND;
+    wire [15:0] v_disp   = V_ACT + v_band_q;
 
     // pixel clock enable = clk / 2^CE_DIV_LOG2  (RES-512x480-; was hardwired clk/8).
     // The counter still free-runs over its full 3 bits; only the compare mask narrows, so
@@ -88,7 +96,7 @@ module fb_raster_reader #(
     wire h_last = (hcnt == H_TOTAL - 16'd1);
     wire v_last = (vcnt == V_TOTAL - 16'd1);
     wire h_active = (hcnt < H_ACT);
-    wire v_active = (vcnt < V_DISP);   // active rows 0..V_DISP-1 = band strip + full video (Option B)
+    wire v_active = (vcnt < v_disp);   // active rows 0..v_disp-1 = band strip + full video
 
     // ping-pong line buffer: 2 lines, 512-halfword stride (matches the
     // {buf, hcnt[8:0]} / {buf, fidx[8:0]} index — H_ACT<=512).
@@ -130,18 +138,18 @@ module fb_raster_reader #(
             fst <= F_IDLE; fidx <= 16'd0; rd_req2 <= 1'b0; rdaddr2 <= 27'd0;
             frame_base_hw_q <= 27'd0;
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
-            fw_hold <= 48'd0; fw_cnt <= 2'd0; fw_idx <= 16'd0;
+            fw_hold <= 48'd0; fw_cnt <= 2'd0; fw_idx <= 16'd0; v_band_q <= v_band;
         end else begin
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
                 // read this pixel and register the aligned timing flags
                 pix_q    <= linebuf[{disp_buf, hcnt[8:0]}];
-                active_q <= h_active & v_active & (vcnt >= V_BAND);  // reserved top strip -> black (LED band composites there)
+                active_q <= h_active & v_active & (vcnt >= v_band_q);  // reserved top strip -> black (LED band composites there)
                 hpos     <= hcnt;   vpos <= vcnt;
                 hblank   <= ~h_active;
                 vblank   <= ~v_active;
                 hsync    <= (hcnt >= H_ACT + H_FP) && (hcnt < H_ACT + H_FP + H_SYNC);
-                vsync    <= (vcnt >= V_DISP + V_FP) && (vcnt < V_DISP + V_FP + V_SYNC);
+                vsync    <= (vcnt >= v_disp + V_FP) && (vcnt < v_disp + V_FP + V_SYNC);
                 // advance counters -- raster/hsync/vsync timing ALWAYS advances on schedule,
                 // independent of fetch progress (never stall the video timing itself, that's a
                 // framework/HDMI risk).
@@ -155,7 +163,10 @@ module fb_raster_reader #(
                         disp_buf    <= ~disp_buf;
                         fill_done_q <= 1'b0;
                     end
-                    if (v_last) resync_pending <= 1'b1;   // request a resync, applied below when safe
+                    if (v_last) begin
+                        resync_pending <= 1'b1;   // request a resync, applied below when safe
+                        v_band_q       <= v_band; // adopt an OSD toggle only at the frame boundary
+                    end
                 end else begin
                     hcnt <= hcnt + 16'd1;
                 end
@@ -179,10 +190,10 @@ module fb_raster_reader #(
                     end
                 end
             F_REQ:
-                // display line `fline` shows framebuffer row (fline - V_BAND); rows inside the
-                // reserved band (fline < V_BAND) fetch nothing (they're blanked to black anyway).
-                if (fline >= V_BAND && (fline - V_BAND) < V_ACT) begin
-                    rdaddr2 <= frame_base_hw_q + (fline - V_BAND)*STRIDE + fidx;
+                // display line `fline` shows framebuffer row (fline - v_band_q); rows inside the
+                // active band (fline < v_band_q) fetch nothing (they're blanked to black anyway).
+                if (fline >= v_band_q && (fline - v_band_q) < V_ACT) begin
+                    rdaddr2 <= frame_base_hw_q + (fline - v_band_q)*STRIDE + fidx;
                     rd_req2 <= ~rd_req2;                    // issue read
                     fst     <= F_WAIT;
                 end else begin

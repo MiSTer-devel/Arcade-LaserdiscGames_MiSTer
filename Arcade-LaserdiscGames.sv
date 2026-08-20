@@ -228,13 +228,15 @@ assign BUTTONS = 0;
 
 
 wire [1:0] ar = status[14:13];
+wire band_off = status[20];   // LED bar off -> the video gets the band's rows back (full screen)
 
 wire horz = 1'b1;   // DL/SA are horizontal-only
 
 // "Original" AR is the DISPLAY ratio, not the pixel count: 512x480 is anamorphic, and the LED
-// band adds BAND_H rows above the 480 video rows.  ARX:ARY = 4 : 3*(480+BAND_H)/480.
+// band adds BAND_H rows above the 480 video rows.  ARX:ARY = 4 : 3*(480+BAND_H)/480, so with the
+// band off it collapses to a plain 4:3.
 assign VIDEO_ARX = horz ? ((!ar) ? 12'd640 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
-assign VIDEO_ARY = horz ? ((!ar) ? 12'd500 : 12'd0) : ((!ar) ? 12'd4 : 12'd0);  // 4 : 3*(480+BAND_H)/480
+assign VIDEO_ARY = horz ? ((!ar) ? (band_off ? 12'd480 : 12'd500) : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -245,6 +247,7 @@ localparam CONF_STR = {
 	// The first mount of each game is manual; every launch after that restores it.
 	"SC0,DLV,Load Disc;",
 	"ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
+	"OK,LED Bar,On,Off;",
 	"OB,Flip Vertical,Off,On;",
 	"OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	// Normal is first: status[] powers up at 0 and MiSTer has no OSD default mechanism.
@@ -454,9 +457,13 @@ wire        led_lit;
 // The LED band and the video are SEPARATE, never overlaid: rows 0..BAND_H-1 are the band, rows
 // BAND_H.. are the full pixel-exact video.
 localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
-wire  [7:0] comp_r = led_lit ? 8'hFF : rr_r;   // red band text in the strip, video below
-wire  [7:0] comp_g = led_lit ? 8'h00 : rr_g;
-wire  [7:0] comp_b = led_lit ? 8'h00 : rr_b;
+// The band's rows stay reserved in the reader's V_TOTAL either way, so switching it off gives them
+// to the video without changing the frame time.
+wire [15:0] band_h_w = band_off ? 16'd0 : BAND_H;
+wire        band_lit = led_lit & ~band_off;
+wire  [7:0] comp_r = band_lit ? 8'hFF : rr_r;  // red band text in the strip, video below
+wire  [7:0] comp_g = band_lit ? 8'h00 : rr_g;
+wire  [7:0] comp_b = band_lit ? 8'h00 : rr_b;
 wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
 wire [63:0] rr_dout2_64;    // whole cached word from ddram read port 2
@@ -801,6 +808,7 @@ fb_raster_reader #(
 ) rr (
     .clk(CLK_CORE), .reset(reset),
     .frame_base_hw(fb_rd_base),             // was hardcoded 27'd0, see fb_buf_sel above
+    .v_band(band_h_w),                      // 0 = LED bar off, video takes the band's rows
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .fill_idle(rr_fill_idle),               // (delete on revert)
