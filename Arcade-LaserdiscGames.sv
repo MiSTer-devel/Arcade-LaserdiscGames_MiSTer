@@ -229,6 +229,8 @@ assign BUTTONS = 0;
 
 wire [1:0] ar = status[14:13];
 wire band_off = status[20];   // LED bar off -> the video gets the band's rows back (full screen)
+wire crt_mode = (status[22:21] == 2'd1);   // 15 kHz 240p60 raster instead of the 480p24 film raster
+wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
 wire horz = 1'b1;   // DL/SA are horizontal-only
 
@@ -241,21 +243,20 @@ assign VIDEO_ARY = horz ? ((!ar) ? (band_off ? 12'd480 : 12'd500) : 12'd0) : ((!
 `include "build_id.v"
 localparam CONF_STR = {
 	// Entry 0 is the OSD title AND the .dlv folder name: both MRAs carry <setname same_dir="1">,
-	// so every game shares this one folder.  Entry 1 is an OSD option, never a path.
 	"LaserdiscGames;;",
-	// SC remembers the last mounted image per core name (= the MRA <setname>, so per game).
-	// The first mount of each game is manual; every launch after that restores it.
 	"SC0,DLV,Load Disc;",
-	"ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
-	"OK,LED Bar,On,Off;",
-	"OB,Flip Vertical,Off,On;",
-	"OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
-	// Normal is first: status[] powers up at 0 and MiSTer has no OSD default mechanism.
-	"OIJ,Beep Volume,Normal,Loud,Max,Off;",
 	"-;",
-	"P1,Pause Options;",
-	"P1OP,Pause when OSD is open,On,Off;",
-	"P1OQ,Dim video after 10s,On,Off;",
+	"P1,Video;",
+	"P1OLM,Video Timing,Film 24Hz,CRT 240p60;",
+	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
+	"P1OK,LED Bar,On,Off;",
+	"P1OB,Flip Screen,Off,On;",
+	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"P2,Pause Options;",
+	"P2OP,Pause when OSD is open,On,Off;",
+	"P2OQ,Dim video after 10s,On,Off;",
+	"-;",
+	"OIJ,Beep Volume,Normal,Loud,Max,Off;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -459,7 +460,7 @@ wire        led_lit;
 localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
 // The band's rows stay reserved in the reader's V_TOTAL either way, so switching it off gives them
 // to the video without changing the frame time.
-wire [15:0] band_h_w = band_off ? 16'd0 : BAND_H;
+wire [15:0] band_h_w = band_off ? 16'd0 : (crt_mode ? (BAND_H >> 1) : BAND_H);
 wire        band_lit = led_lit & ~band_off;
 wire  [7:0] comp_r = band_lit ? 8'hFF : rr_r;  // red band text in the strip, video below
 wire  [7:0] comp_g = band_lit ? 8'h00 : rr_g;
@@ -493,7 +494,8 @@ arcade_video #(512,24) arcade_video
 	.HSync(rr_hs),
 	.VSync(rr_vs),
 
-	.fx(status[17:15])
+	.forced_scandoubler(forced_scandoubler & ~crt_mode),
+	.fx(crt_mode ? 3'd0 : status[17:15])
 );
 
 // DIP switches arrive from the OSD via ioctl index 254.  dsw[7:0] = DSW1 (AY port A),
@@ -809,6 +811,8 @@ fb_raster_reader #(
     .clk(CLK_CORE), .reset(reset),
     .frame_base_hw(fb_rd_base),             // was hardcoded 27'd0, see fb_buf_sel above
     .v_band(band_h_w),                      // 0 = LED bar off, video takes the band's rows
+    .crt(crt_mode),
+    .flip(flip),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .fill_idle(rr_fill_idle),               // (delete on revert)
@@ -820,7 +824,7 @@ fb_raster_reader #(
 
 // X_START centres the 33-slot band; X_START_SKILL centres Space Ace's 39-slot version.
 led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
-    .hc(rr_hpos), .vc(rr_vpos),
+    .hc(rr_hpos), .vc(rr_vpos), .crt_240p(crt_mode),
     .led_digits(led_digits_flat),   // real score/lives, restored
     .skill_en(is_spaceace),         // MRA mod byte, SA only
     .skill(skill_level),

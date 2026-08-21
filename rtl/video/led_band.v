@@ -24,6 +24,9 @@ module led_band #(
 )(
     input      [15:0] hc,
     input      [15:0] vc,
+    // 240p halves the row count while the width is unchanged, so the glyph must NOT be magnified
+    // vertically or it renders double-height relative to the picture.
+    input             crt_240p,
     input      [63:0] led_digits,        // 16 x 4-bit, digit i = [i*4 +: 4]
     // Space Ace difficulty field. skill_en is the GAME ID (mod byte) and
     // controls the band WIDTH; skill is the latched selection and controls the letters.
@@ -73,9 +76,13 @@ module led_band #(
     wire [15:0] bx   = hoff >> SCALE_LOG2;
     wire [5:0]  slot = bx / PITCH;                // 0..32 (0..38 with skill field)
     wire [2:0]  fx   = bx - slot*PITCH;           // 0..5 (5 = inter-char gap)
-    wire [2:0]  fy   = voff >> SCALE_LOG2;        // 0..6 within the glyph
+    // Vertical scale only: 1x in 240p, 2^SCALE_LOG2 otherwise.  Named wires because Quartus 17
+    // elaborates .v as Verilog-2001, where (expr)[2:0] is illegal.
+    wire [15:0] gh     = crt_240p ? FH : (FH << SCALE_LOG2);   // glyph height in display rows
+    wire [15:0] voff_s = crt_240p ? voff : (voff >> SCALE_LOG2);
+    wire [2:0]  fy     = voff_s[2:0];             // 0..6 within the glyph
     wire in_band = (hc >= x_org) && (hc < x_org + ((n_slots*PITCH) << SCALE_LOG2)) &&
-                   (vc >= BAND_Y0) && (vc < BAND_Y0 + (FH << SCALE_LOG2));
+                   (vc >= BAND_Y0) && (vc < BAND_Y0 + gh);
 
     // Blank until a skill is latched, so the field does not show a lone "D" on the select screen.
     reg [4:0] sk0, sk1, sk2;
