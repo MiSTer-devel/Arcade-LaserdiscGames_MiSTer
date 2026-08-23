@@ -229,7 +229,7 @@ assign BUTTONS = 0;
 
 wire [1:0] ar = status[14:13];
 wire band_off = status[20];   // LED bar off -> the video gets the band's rows back (full screen)
-wire crt_mode = (status[22:21] == 2'd1);   // 15 kHz 240p60 raster instead of the 480p24 film raster
+wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
 wire horz = 1'b1;   // DL/SA are horizontal-only
@@ -247,7 +247,7 @@ localparam CONF_STR = {
 	"SC0,DLV,Load Disc;",
 	"-;",
 	"P1,Video;",
-	"P1OLM,Video Timing,Film 24Hz,CRT 240p60;",
+	"P1OLM,Video Timing,CRT 240p60,Film 24Hz;",
 	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	"P1OK,LED Bar,On,Off;",
 	"P1OB,Flip Screen,Off,On;",
