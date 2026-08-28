@@ -605,7 +605,8 @@ fb_writer #(
     .STRIDE_HW (FB_COLS_HW),
     .FB_COLS   (FB_COLS_HW),
     .FB_ROWS   (FB_ROWS_HW),
-    .CLEAR_ROWS(FB_ROWS_HW)
+    .CLEAR_ROWS(FB_ROWS_HW),
+    .COALESCE  (1'b0)   // write-coalesce accumulator is the suspect for the green-dot corruption; disabled pending fix
 ) fb_wr (
     .clk(CLK_CORE), .reset(reset),
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
