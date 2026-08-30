@@ -86,6 +86,21 @@ module DragonsLair_LDV1000
     // 59.94 Hz, so 30).  Times the STATUS report only -- the disc POSITION lands atomically.
     localparam [4:0] SEARCH_TICKS = 5'd30;   // 0.5 s at 59.94 Hz
     reg  [4:0]  search_delay;
+
+    // ---- POST-SEEK TAIL DRAIN ----
+    // When CMD_SEARCH (0xF7) is received the Z80 protocol requires status to immediately
+    // report ST_SEARCH (busy), but the real LD-V1000 disc keeps spinning until the head
+    // physically lifts.  The game software and animation were authored around that: the last
+    // ~5 film frames of every scene play out during the command-entry sequence BEFORE 0xF7,
+    // but the video/audio pipeline has 60-100 ms of latency, so those frames are still in
+    // flight when we would normally commit the seek.
+    //
+    // POST_SEEK_FRAMES: extra film ticks to hold curr_frame advancing and playing=1 after
+    // CMD_SEARCH, before committing the atomic land and firing search_cmd_o.
+    // The Z80 sees ST_SEARCH immediately (status is set at command-receive time below).
+    // Tune by ear: 0 = old instant behaviour, 5 ≈ 208 ms ≈ 5 film frames.
+    localparam [3:0] POST_SEEK_FRAMES = 4'd3;  // *** TUNING KNOB ***
+    reg  [3:0]  seek_tail_cnt;   // counts down film ticks remaining before committing the seek
     reg  [16:0] stop_frame;
     reg         stop_valid;
     reg         audio_en1, audio_en2;   // per-channel enable, MAME default = both on
@@ -97,7 +112,9 @@ module DragonsLair_LDV1000
     reg  [1:0]  speed_acc;              // fractional remainder for sub/multi-1x frame advance
 
     // MAME's update_audio_enable() only unmutes at mode==PLAY && speed==1.0
-    assign playing = (mode == M_PLAY) && (play_speed_q4 == 5'd4) && audio_en1 && audio_en2;
+    // Also stay "playing" during the post-seek tail drain so audio doesn't mute prematurely.
+    assign playing = ((mode == M_PLAY) || (mode == M_SEARCH && seek_tail_cnt != 4'd0))
+                     && (play_speed_q4 == 5'd4) && audio_en1 && audio_en2;
 
     // Wall-clock periods, scaled from CLK_HZ -- mind the register widths, a narrow one truncates
     // silently.  The LD-V1000 strobes once per FIELD (59.94 Hz), not per frame (Daphne ldp.cpp:703).
@@ -188,6 +205,7 @@ module DragonsLair_LDV1000
             audio_en1 <= 1'b1; audio_en2 <= 1'b1; has_digit <= 1'b0;
             dig_sr <= 20'd0; dig_latched <= 20'd0;
             play_speed_q4 <= 5'd4; speed_acc <= 2'd0;
+            seek_tail_cnt <= 4'd0;
         end else if (!pause) begin     // paused -> hold all state (disc frozen, in sync)
     // ---- strobe generator (idle high, assert low) ----
     // Deliberately NOT frozen by disc_hold: freezing fcnt gates frame_tick, which gates the
@@ -214,10 +232,31 @@ module DragonsLair_LDV1000
                 end
             end
 
+        // POST-SEEK TAIL DRAIN: after CMD_SEARCH we keep advancing curr_frame for
+        // POST_SEEK_FRAMES film ticks so the video/audio pipeline drains naturally before
+        // we commit the seek.  The Z80 already sees ST_SEARCH status; only the video path
+        // (curr_frame, playing, search_cmd_o) is deferred.
+            if (seek_tail_cnt != 4'd0) begin
+                if (film_tick) begin
+                    curr_frame <= curr_frame + {14'd0, speed_adv};   // keep disc moving
+                    speed_acc  <= speed_rem;
+                    if (seek_tail_cnt == 4'd1) begin
+                        // Tail expired: commit the seek now.
+                        search_cmd_o  <= 1'b1;   // fires seek_flush / fb_seek_hold arm
+                        seek_tail_cnt <= 4'd0;
+                        // From here the atomic land below takes over (mode == M_SEARCH).
+                    end else begin
+                        seek_tail_cnt <= seek_tail_cnt - 4'd1;
+                    end
+                end
+            end
+
         // The land sits OUTSIDE the frame_tick gate on purpose: a hold must never freeze the clock
         // that satisfies its own release condition.  Daphne lands atomically at the command and only
         // REPORTS busy, so landing every clock while in M_SEARCH is idempotent.
-            if (mode == M_SEARCH) curr_frame <= search_frame;
+        // Only land once the tail has expired (seek_tail_cnt == 0); while it is counting the disc
+        // is still advancing above and curr_frame must not be overwritten.
+            if (mode == M_SEARCH && seek_tail_cnt == 4'd0) curr_frame <= search_frame;
 
             // ---- per-frame disc motion, locked to the strobe the game reads ----
             if (frame_tick) begin
@@ -272,9 +311,18 @@ module DragonsLair_LDV1000
                             dig_latched <= dig_sr;   // freeze what the Z80 SENT
                             dig_sr      <= 20'd0;
                             search_frame <= number; mode <= M_SEARCH;
-                            status <= ST_SEARCH;              // 0x50 busy
+                            status <= ST_SEARCH;              // 0x50 busy -- Z80 sees this immediately
                             stop_valid <= 1'b0; number <= 17'd0;
-                            search_cmd_o <= 1'b1;             // the REAL event
+                            // search_cmd_o (-> seek_flush, fb_seek_hold) is DEFERRED: the tail
+                            // drain counts down POST_SEEK_FRAMES film ticks first so the video
+                            // and audio pipeline drains on old-segment content.  When the counter
+                            // hits 1->0 in the film_tick block above, search_cmd_o fires then.
+                            // Only arm the tail when we were actually PLAYING -- hold-frame seeks
+                            // arrive from M_STOP/M_SEARCH and must flush instantly (no audio to drain).
+                            if (POST_SEEK_FRAMES == 4'd0 || mode != M_PLAY)
+                                search_cmd_o <= 1'b1;
+                            else
+                                seek_tail_cnt <= POST_SEEK_FRAMES;
                         end
                         CMD_PLAY: begin
                             mode <= M_PLAY; status <= ST_PLAY; // 0x64
