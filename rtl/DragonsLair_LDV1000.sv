@@ -41,7 +41,10 @@ module DragonsLair_LDV1000
     output reg [16:0] dbg_seek_frame,
     output     [19:0] dbg_end_frame,      // REPURPOSED -> raw SEARCH digits (5 nibbles)
     // Sticky autostop telemetry: bit0 = armed at least once, bit1 = compare has fired.
-    output      [3:0] dbg_flags
+    output      [3:0] dbg_flags,
+    // MRA-tunable tail drain length.  0 = old instant behaviour, 5 ≈ 5 film frames ≈ 208 ms.
+    // Loaded from MRA index 1, byte 1 at startup.  Default 0 if MRA omits it.
+    input       [3:0] post_seek_frames
 );
     // ---- status codes (ldv1000hle.h) ----
     localparam [7:0] ST_PARK=8'h7c, ST_PLAY=8'h64, ST_STOP=8'h65,
@@ -95,11 +98,12 @@ module DragonsLair_LDV1000
     // but the video/audio pipeline has 60-100 ms of latency, so those frames are still in
     // flight when we would normally commit the seek.
     //
-    // POST_SEEK_FRAMES: extra film ticks to hold curr_frame advancing and playing=1 after
+    // post_seek_frames: extra film ticks to hold curr_frame advancing and playing=1 after
     // CMD_SEARCH, before committing the atomic land and firing search_cmd_o.
     // The Z80 sees ST_SEARCH immediately (status is set at command-receive time below).
     // Tune by ear: 0 = old instant behaviour, 5 ≈ 208 ms ≈ 5 film frames.
-    localparam [3:0] POST_SEEK_FRAMES = 4'd3;  // *** TUNING KNOB ***
+    // Value comes from the post_seek_frames port (MRA index 1, byte 1).
+    // (was: localparam [3:0] post_seek_frames = 4'd3)
     reg  [3:0]  seek_tail_cnt;   // counts down film ticks remaining before committing the seek
     reg  [16:0] stop_frame;
     reg         stop_valid;
@@ -233,7 +237,7 @@ module DragonsLair_LDV1000
             end
 
         // POST-SEEK TAIL DRAIN: after CMD_SEARCH we keep advancing curr_frame for
-        // POST_SEEK_FRAMES film ticks so the video/audio pipeline drains naturally before
+        // post_seek_frames film ticks so the video/audio pipeline drains naturally before
         // we commit the seek.  The Z80 already sees ST_SEARCH status; only the video path
         // (curr_frame, playing, search_cmd_o) is deferred.
             if (seek_tail_cnt != 4'd0) begin
@@ -314,15 +318,15 @@ module DragonsLair_LDV1000
                             status <= ST_SEARCH;              // 0x50 busy -- Z80 sees this immediately
                             stop_valid <= 1'b0; number <= 17'd0;
                             // search_cmd_o (-> seek_flush, fb_seek_hold) is DEFERRED: the tail
-                            // drain counts down POST_SEEK_FRAMES film ticks first so the video
+                            // drain counts down post_seek_frames film ticks first so the video
                             // and audio pipeline drains on old-segment content.  When the counter
                             // hits 1->0 in the film_tick block above, search_cmd_o fires then.
                             // Only arm the tail when we were actually PLAYING -- hold-frame seeks
                             // arrive from M_STOP/M_SEARCH and must flush instantly (no audio to drain).
-                            if (POST_SEEK_FRAMES == 4'd0 || mode != M_PLAY)
+                            if (post_seek_frames == 4'd0 || mode != M_PLAY)
                                 search_cmd_o <= 1'b1;
                             else
-                                seek_tail_cnt <= POST_SEEK_FRAMES;
+                                seek_tail_cnt <= post_seek_frames;
                         end
                         CMD_PLAY: begin
                             mode <= M_PLAY; status <= ST_PLAY; // 0x64

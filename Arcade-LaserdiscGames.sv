@@ -359,8 +359,15 @@ wire [15:0] dsw = {dip_sw[1], dip_sw[0]};
 // MRA <rom index="1"> mod byte: absent (Dragon's Lair) => 0, Space Ace's MRA writes 01.
 // This is the ONLY thing that enables the skill field on the LED band.
 reg [7:0] game_mod = 8'd0;
+// MRA index 1, byte 1: post-seek tail drain length (film ticks).
+// 0 = instant flush (old behaviour), 5 ≈ 208 ms ≈ 5 film frames.
+// Write the desired value in the MRA <rom index="1"> as the second byte.
+reg [3:0] post_seek_frames_r = 4'd0;
 always @(posedge CLK_CORE) begin
-    if (ioctl_wr && (ioctl_index == 8'd1)) game_mod <= ioctl_dout;
+    if (ioctl_wr && (ioctl_index == 8'd1)) begin
+        if (ioctl_addr == 25'd0) game_mod          <= ioctl_dout;
+        if (ioctl_addr == 25'd1) post_seek_frames_r <= ioctl_dout[3:0];
+    end
 end
 wire is_spaceace = (game_mod == 8'd1);
 wire [1:0] skill_level;   // from DragonsLair_CPU's scoreboard snoop
@@ -415,7 +422,8 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	.dbg_led(dbg_led),
 	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE /
 	.ld_play_end_o(fb_play_end),
-	.ld_playing_o(ld_playing_top)
+	.ld_playing_o(ld_playing_top),
+	.post_seek_frames(post_seek_frames_r)
 );
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore

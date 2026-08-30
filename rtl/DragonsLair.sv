@@ -45,7 +45,9 @@ module DragonsLair
     output               ld_search_cmd_o, // Z80's CMD_SEARCH accepted (1-cyc)
     output               ld_play_end_o,   // playback stopped (1-cyc)
     output        [16:0] ld_frame_o,   // LD disc frame -> streamer
-    output               ld_playing_o  // LD playing flag -> streamer audio gate
+    output               ld_playing_o,  // LD playing flag -> streamer audio gate
+    // MRA-tunable post-seek tail drain (index 1, byte 1). 0 = instant flush.
+    input          [3:0] post_seek_frames
 );
 
 //------------------------------------------------------- ROM Selector --------------------------------------------------------//
@@ -82,7 +84,8 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
     .search_cmd_o(ld_search_cmd_o),
     .play_end_o(ld_play_end_o),
     .ld_frame_o(ld_frame_o),
-    .ld_playing_o(ld_playing_o)
+    .ld_playing_o(ld_playing_o),
+    .post_seek_frames(post_seek_frames)
 );
 
 // Mono -> stereo
