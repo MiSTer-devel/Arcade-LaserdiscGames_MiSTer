@@ -4,7 +4,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE Arcade-LaserdiscGames.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_CPU.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_LDV1000.sv
-
 set_global_assignment -name QIP_FILE rtl/cpu/T80/T80.qip
 
 set_global_assignment -name QIP_FILE rtl/sound/v_sound.qip

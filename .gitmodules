@@ -1,0 +1,3 @@
+[submodule "rtl/cpu/t400"]
+	path = rtl/cpu/t400
+	url = https://github.com/devsaurus/t400

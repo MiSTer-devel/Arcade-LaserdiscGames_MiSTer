@@ -104,8 +104,12 @@ localparam CONF_STR = {
 	"P2,Pause Options;",
 	"P2OP,Pause when OSD is open,On,Off;",
 	"P2OQ,Dim video after 10s,On,Off;",
-	"-;",
-	"OIJ,Beep Volume,Normal,Loud,Max,Off;",
+	"P3,Behaviour Options;",
+	"P3OIJ,Beep Volume,Normal,Loud,Max,Off;",
+	"P3O4,Seek Behaviour,Hold Frame,Black;",
+	"P3O13,Seek Delay,0,1,2,3,4,5;",
+	"P3O8,Hold Frame Seek,Off,On;",
+	"P3O57,Segment Tail,MRA Default,0,1,2,3,4,5;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -304,6 +308,15 @@ wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
+// Seek state. Declared up here because the compositor below reads it; both are DRIVEN in the
+// framebuffer block further down.
+reg         fb_seek_hold;      // high while a seek holds the picture and audio
+reg   [1:0] fb_tail_adopt;     // vblanks in which PRE-seek frames may still be adopted
+reg         seek_was_play;     // real playback has ended since the last seek
+reg         seek_is_seg;       // captured at the seek: this hold follows a SEGMENT, not a hold frame
+// Hold Frame Seek (status[8]): does a hold-frame seek get the seek pause at all?  Off = segment
+// ends only.  When it does pause, Seek Behaviour decides what that pause looks like.
+wire        seek_pause = seek_is_seg | status[8];
 // The LED band and the video are SEPARATE, never overlaid: rows 0..BAND_H-1 are the band, rows
 // BAND_H.. are the full pixel-exact video.
 localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
@@ -311,9 +324,13 @@ localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in r
 // to the video without changing the frame time.
 wire [15:0] band_h_w = band_off ? 16'd0 : (crt_mode ? (BAND_H >> 1) : BAND_H);
 wire        band_lit = led_lit & ~band_off;
-wire  [7:0] comp_r = band_lit ? 8'hFF : rr_r;  // red band text in the strip, video below
-wire  [7:0] comp_g = band_lit ? 8'h00 : rr_g;
-wire  [7:0] comp_b = band_lit ? 8'h00 : rr_b;
+// Seek Behaviour (status[4]): 0 = hold the last frame, 1 = go black like a real player with no
+// sync.  Only during a SEARCH hold, never a still/pause, and only once fb_tail_adopt has burned
+// down -- those frames are real content of the segment that just ended.
+wire        seek_black = status[4] & fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0);
+wire  [7:0] comp_r = band_lit ? 8'hFF : (seek_black ? 8'h00 : rr_r);  // band text, video below
+wire  [7:0] comp_g = band_lit ? 8'h00 : (seek_black ? 8'h00 : rr_g);
+wire  [7:0] comp_b = band_lit ? 8'h00 : (seek_black ? 8'h00 : rr_b);
 wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
 wire [63:0] rr_dout2_64;    // whole cached word from ddram read port 2
@@ -363,6 +380,13 @@ reg [7:0] game_mod = 8'd0;
 // 0 = instant flush (old behaviour), 5 ≈ 208 ms ≈ 5 film frames.
 // Write the desired value in the MRA <rom index="1"> as the second byte.
 reg [3:0] post_seek_frames_r = 4'd0;
+// Segment Tail (status[7:5]) lets the player override that per-config without editing the MRA.
+// The framework owns status[], so the MRA value cannot be pushed into it as a power-on default --
+// instead selection 0 MEANS "use the MRA byte", and 1-6 are explicit overrides of 0-5.  status[]
+// powers up at 0, so a fresh config and every existing one keep the MRA value exactly as today.
+wire [2:0] seg_tail_sel  = status[7:5];
+wire [3:0] post_seek_eff = (seg_tail_sel == 3'd0) ? post_seek_frames_r
+                                                  : {1'b0, seg_tail_sel - 3'd1};
 always @(posedge CLK_CORE) begin
     if (ioctl_wr && (ioctl_index == 8'd1)) begin
         if (ioctl_addr == 25'd0) game_mod          <= ioctl_dout;
@@ -370,6 +394,7 @@ always @(posedge CLK_CORE) begin
     end
 end
 wire is_spaceace = (game_mod == 8'd1);
+wire is_thayers  = (game_mod == 8'd2);
 wire [1:0] skill_level;   // from DragonsLair_CPU's scoreboard snoop
 wire [16:0] ld_curr_frame_top;   // LD disc frame from DragonsLair -> dlv_streamer
 
@@ -386,7 +411,6 @@ wire       fb_seek_edge = fb_seek_pulse & ~fb_seek_q;   // if the source ever st
                                // LEVEL-triggered arm would re-arm every cycle and the hold could
                                // never release (FSM-model-proven). An EDGE can only arm once.
 wire       fb_aud_primed;      // from dlv_streamer (ring >= SEEK_FILL)
-reg        fb_seek_hold;       // driven in the framebuffer block below
 
 wire        ld_playing_top;      // LD mode==PLAY from DragonsLair -> dlv_streamer
 
@@ -403,6 +427,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	.cab({m_coin2, m_coin1, m_start2, m_start1}),
 	// dsw[7:0] = DSW1 (AY port A), dsw[15:8] = DSW2 (AY port B)
 	.dsw(dsw),
+	.is_thayers(is_thayers),
 
 	.sound_l(audio_l),
 	.sound_r(audio_r),
@@ -423,7 +448,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE /
 	.ld_play_end_o(fb_play_end),
 	.ld_playing_o(ld_playing_top),
-	.post_seek_frames(post_seek_frames_r)
+	.post_seek_frames(post_seek_eff)
 );
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
@@ -520,12 +545,49 @@ localparam [27:0] SEEK_TMO   = CORE_CLK_HZ;   // ~1 s at the core clock -- SAFET
 reg  [2:0]  fb_prime_cnt;
 reg  [27:0] fb_seek_tmr;
 reg         fb_wr_stale;   // frame decoding when the seek hit -> finish it, but never publish it
-// Window in which the display may still adopt PRE-seek frames, counted in vblanks so it is
-// hard-bounded and can never extend the hold.
-reg  [1:0]  fb_tail_adopt;
+// fb_tail_adopt (declared near the compositor above) is the window in which the display may still
+// adopt PRE-seek frames, counted in vblanks so it is hard-bounded and can never extend the hold.
+// Seek Delay (status[3:1]): extra hold AFTER the buffer is ready, 0-5 x 400 ms, so a seek can be
+// made to feel as slow as a real player's head.  This gates the shared seek-hold release, which is
+// fed by ld_search_cmd_o / fb_aud_primed -- it is player-agnostic and applies to any LD player.
+localparam [27:0] SEEK_DLY_STEP = (CORE_CLK_HZ / 32'd5) * 32'd2;   // 400 ms at the core clock
+wire  [2:0] seek_dly_sel = status[3:1];
+reg  [27:0] seek_dly_target;
+always @(*) begin
+    case (seek_dly_sel)
+        3'd1:    seek_dly_target = SEEK_DLY_STEP;
+        3'd2:    seek_dly_target = SEEK_DLY_STEP * 28'd2;
+        3'd3:    seek_dly_target = SEEK_DLY_STEP * 28'd3;
+        3'd4:    seek_dly_target = SEEK_DLY_STEP * 28'd4;
+        3'd5:    seek_dly_target = SEEK_DLY_STEP * 28'd5;
+        default: seek_dly_target = 28'd0;   // 0 = release as soon as buffered, as before
+    endcase
+end
+// SEGMENT ENDS ONLY.  A hold-frame seek parks the player in M_STOP and never pulses play_end,
+// so it must release the moment it is buffered, exactly as before -- no delay, no blanking.
+// play_end leads search_cmd (the LDV1000 defers search_cmd by the post-seek tail), so latch it.
+always @(posedge CLK_CORE) begin
+    if (reset) begin
+        seek_was_play <= 1'b0;
+        seek_is_seg   <= 1'b0;
+    end else begin
+        if (fb_play_end)  seek_was_play <= 1'b1;
+        if (fb_seek_edge) begin
+            seek_is_seg   <= seek_was_play | fb_play_end;   // | covers a same-cycle coincidence
+            seek_was_play <= 1'b0;
+        end
+    end
+end
+wire [27:0] seek_dly_eff = seek_pause ? seek_dly_target : 28'd0;
+
+reg  [27:0] fb_dly_cnt;
+wire        fb_buffered = (fb_prime_cnt >= SEEK_PRIME) && fb_aud_primed;
+wire        fb_dly_done = (fb_dly_cnt >= seek_dly_eff);
 // The safety timeout is not optional.  It is NOT re-zeroed by a further seek while already
-// holding, so a burst of seeks cannot keep the hold alive indefinitely.
-wire fb_seek_release = (fb_prime_cnt >= SEEK_PRIME && fb_aud_primed) || (fb_seek_tmr >= SEEK_TMO);
+// holding, so a burst of seeks cannot keep the hold alive indefinitely.  It is extended by the
+// chosen delay so an intentional wait is never cut short by the safety net.
+wire [27:0] fb_seek_tmo = SEEK_TMO + seek_dly_eff;
+wire fb_seek_release = (fb_buffered && fb_dly_done) || (fb_seek_tmr >= fb_seek_tmo);
 
 reg        rr_vblank_q;
 wire       fb_vbl_rise = rr_vblank & ~rr_vblank_q;
@@ -552,6 +614,7 @@ always @(posedge CLK_CORE) begin
         dec_reset_q  <= 1'b0;
         fb_seek_q    <= 1'b0;
         fb_seek_hold <= 1'b0;
+        fb_dly_cnt   <= 28'd0;
         fb_prime_cnt <= 3'd0;
         fb_seek_tmr  <= 28'd0;   // 28 bits: 80 MHz needs 27
         fb_wr_stale  <= 1'b0;
@@ -582,8 +645,9 @@ always @(posedge CLK_CORE) begin
         end
         // SEEK-HOLD: run the safety timer and release once primed (or on timeout)
         if (fb_seek_hold) begin
-            if (fb_seek_tmr < SEEK_TMO) fb_seek_tmr <= fb_seek_tmr + 28'd1;
-            if (fb_seek_release)        fb_seek_hold <= 1'b0;
+            if (fb_seek_tmr < fb_seek_tmo)   fb_seek_tmr  <= fb_seek_tmr + 28'd1;
+            if (fb_buffered && !fb_dly_done) fb_dly_cnt   <= fb_dly_cnt + 28'd1;
+            if (fb_seek_release)             fb_seek_hold <= 1'b0;
         end
         // Drop an orphaned stale tag: the post-seek fetch can kill the tagged decode before it
         // completes, which would otherwise block priming until the 1.0 s timeout.
@@ -596,6 +660,7 @@ always @(posedge CLK_CORE) begin
             fb_wr_stale  <= ~dec_idle | dec_reset_w;   // tag anything IN FLIGHT: fetching or decoding
             fb_seek_hold <= 1'b1;
             fb_prime_cnt <= 3'd0;
+            fb_dly_cnt   <= 28'd0;
             if (!fb_seek_hold) fb_seek_tmr <= 28'd0;
         end
     end

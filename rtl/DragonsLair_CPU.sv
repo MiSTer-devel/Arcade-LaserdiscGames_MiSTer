@@ -22,6 +22,14 @@
 //    0xE020  W  laserdisc_w (data latch)  (bank 111, dev 100)
 //    0xE038-0xE03F W led_den1 (7-seg 0-7)  (bank 111, dev 111, A2:A0 = digit)
 //    0xE030-0xE037 W led_den2 (7-seg 8-15) (bank 111, dev 110, A2:A0 = digit)
+//  Thayer's Quest (RDI board, is_thayers=1) is a different machine in the same
+//  cabinet -- ROM/RAM split differently and every peripheral is I/O-mapped:
+//    0x0000-0x7FFF  R   ROM (tq_u33)
+//    0x8000-0xBFFF  RW  Work RAM (16KB linear)
+//    0xC000-0xDFFF  R   ROM (tq_u1)
+//    IN  0xF0  laserdisc data      OUT 0xF3  interrupt trigger
+//    IN  0xF1  DSWB/coins/strobes  OUT 0xF4  laserdisc data (latch + send)
+//    IN  0xF2  DSWA                OUT 0xF5  coin counter / LD ENTER / INT-EXT
 //  Interrupt: single periodic IRQ0 @ ~30.5 Hz (hold), cleared on Z80 INTA
 //  (M1 + IORQ).  AY needs a 1 T-state WAIT when addressed.
 //  CLOCK (fixed; re-based): the core runs in the single
@@ -52,11 +60,15 @@ module DragonsLair_CPU
     //   dsw[15:8] = DSW2 -> AY port B
     input  [15:0] dsw,
 
+    // Board select: 0 = Dragon's Lair / Space Ace (dlus_map), 1 = Thayer's Quest (RDI)
+    input         is_thayers,
+
     // Audio (AY-3-8910)
     output signed [15:0] sound,
 
     // Main program ROM download (index 0) -> 0x0000-0x9FFF
     input         rom_cs_i,
+    input         cop_rom_cs_i,    // MRA index 2 -> COP421 program ROM
     input  [24:0] ioctl_addr,
     input   [7:0] ioctl_data,
     input         ioctl_wr,
@@ -126,14 +138,23 @@ T80s #(.Mode(0), .T2Write(1), .IOWait(1)) main_cpu
 //------------------------------------------------------ Address Decoding ------------------------------------------------------//
 
 wire mem_access = ~n_mreq & n_rfsh;
+wire io_access  = ~n_iorq & n_m1;    // M1 high excludes the interrupt-acknowledge cycle
 
 // Bank select = A15:A13, device select = A5:A3 (A3/A4/A5 per the schematics)
 wire [2:0] dev = cpu_A[5:3];
 
-wire cs_rom = mem_access & (cpu_A[15:13] <= 3'b100);   // 0x0000-0x9FFF
-wire cs_ram = mem_access & (cpu_A[15:13] == 3'b101);   // 0xA000-0xBFFF (2KB mirrored x4)
-wire bankC  = mem_access & (cpu_A[15:13] == 3'b110);   // 0xC000-0xDFFF read strobes
-wire bankE  = mem_access & (cpu_A[15:13] == 3'b111);   // 0xE000-0xFFFF write strobes
+// Dragon's Lair / Space Ace: everything is memory-mapped.
+wire dl_rom = mem_access & (cpu_A[15:13] <= 3'b100);   // 0x0000-0x9FFF
+wire dl_ram = mem_access & (cpu_A[15:13] == 3'b101);   // 0xA000-0xBFFF (2KB mirrored x4)
+wire bankC  = mem_access & (cpu_A[15:13] == 3'b110) & ~is_thayers;   // 0xC000 read strobes
+wire bankE  = mem_access & (cpu_A[15:13] == 3'b111) & ~is_thayers;   // 0xE000 write strobes
+
+// Thayer's Quest: ROM either side of a 16KB RAM window, peripherals on the I/O bus.
+wire tq_rom = mem_access & (~cpu_A[15] | (cpu_A[15:13] == 3'b110));  // 0x0000-0x7FFF, 0xC000-0xDFFF
+wire tq_ram = mem_access & (cpu_A[15:14] == 2'b10);                  // 0x8000-0xBFFF
+
+wire cs_rom = is_thayers ? tq_rom : dl_rom;
+wire cs_ram = is_thayers ? tq_ram : dl_ram;
 
 // Read strobes (0xC0xx)
 wire cs_ay_data_r = bankC & ~n_rd & (dev == 3'b000);   // 0xC000
@@ -148,6 +169,22 @@ wire cs_ay_addr_w = bankE & ~n_wr & (dev == 3'b010);   // 0xE010
 wire cs_ld_w      = bankE & ~n_wr & (dev == 3'b100);   // 0xE020
 wire cs_led2_w    = bankE & ~n_wr & (dev == 3'b110);   // 0xE030-0xE037
 wire cs_led1_w    = bankE & ~n_wr & (dev == 3'b111);   // 0xE038-0xE03F
+
+// Thayer's I/O ports (Daphne game/thayers.cpp port_read / port_write)
+wire       tq_io       = io_access & is_thayers;
+wire [7:0] io_A        = cpu_A[7:0];
+wire cs_tq_ldrd  = tq_io & ~n_rd & (io_A == 8'hF0);   // read data from LD-V1000
+wire cs_tq_f1    = tq_io & ~n_rd & (io_A == 8'hF1);   // DSWB + coins + LD strobes
+wire cs_tq_f2    = tq_io & ~n_rd & (io_A == 8'hF2);   // DSWA
+wire cs_tq_irqtr = tq_io & ~n_wr & (io_A == 8'hF3);   // interrupt trigger
+wire cs_tq_ldwr  = tq_io & ~n_wr & (io_A == 8'hF4);   // write data to LD-V1000
+wire cs_tq_ldctl = tq_io & ~n_wr & (io_A == 8'hF5);   // coin counter / LD ENTER / INT-EXT
+wire cs_tq_irqst = tq_io & ~n_rd & (io_A == 8'h40);   // interrupt status register
+wire cs_tq_copg  = tq_io & ~n_wr & (io_A == 8'h20);   // -> COP G2:G0
+wire cs_tq_copwr = tq_io & ~n_wr & (io_A == 8'h80);   // -> COP L
+wire cs_tq_coprd = tq_io & ~n_rd & (io_A == 8'h80);   // <- COP L
+wire cs_tq_ackt  = tq_io & ~n_wr & (io_A == 8'hA0);   // TIMER_INT ack
+wire cs_tq_ackd  = tq_io & ~n_wr & (io_A == 8'hC0);   // DATA_RDY_INT ack
 
 //--------------------------------------------------------- CPU Data Mux -------------------------------------------------------//
 
@@ -165,6 +202,11 @@ wire [7:0] p1_bus = ~p1;
 // from the LD stub below).
 wire [7:0] system_bus = {~ld_command_strobe, ld_status_strobe, 2'b11, ~cab};
 
+// Thayer's 0xF1: b7/b6 are the LD strobes taken straight from the HLE (idle high, assert
+// low) -- unlike SYSTEM b7 above, which inverts the command strobe.  b5/b4 = coin 2/1
+// active low, b3:0 = DIP bank B (the board only returns the low nibble of that switch).
+wire [7:0] tq_f1_bus = {ld_command_strobe, ld_status_strobe, ~cab[3], ~cab[2], dsw[11:8]};
+
 wire [7:0] cpu_Din =
     cs_rom            ? rom_D       :
     (cs_ram & ~n_rd)  ? workram_D   :
@@ -172,6 +214,11 @@ wire [7:0] cpu_Din =
     cs_p1             ? p1_bus      :
     cs_system         ? system_bus  :
     cs_ld_r           ? ld_status   :   // 0xC020 laserdisc_r
+    cs_tq_ldrd        ? ld_status   :   // 0xF0 laserdisc data
+    cs_tq_f1          ? tq_f1_bus   :   // 0xF1
+    cs_tq_f2          ? dsw[7:0]    :   // 0xF2 DSWA
+    cs_tq_irqst       ? irq_status  :   // 0x40 interrupt status
+    cs_tq_coprd       ? cop_rd      :   // 0x80 COP data
     8'hFF;
 
 //----------------------------------------------------- AY 1 T-state WAIT ------------------------------------------------------//
@@ -225,18 +272,21 @@ dpram_dc #(.widthad_a(16)) prog_rom
 
 //---------------------------------------------------------- Work RAM ----------------------------------------------------------//
 
-// 2KB work RAM at 0xA000-0xA7FF.  Port B unused (hiscore removed).
-dpram_dc #(.widthad_a(11)) work_ram
+// 16KB work RAM.  Dragon's Lair / Space Ace use only the low 2KB (A[10:0], so 0xA000-0xBFFF
+// still mirrors x4 exactly as before); Thayer's uses all of it linearly across 0x8000-0xBFFF.
+wire [13:0] ram_A = is_thayers ? cpu_A[13:0] : {3'b000, cpu_A[10:0]};
+
+dpram_dc #(.widthad_a(14)) work_ram
 (
     .clock_a(clk_sys),
     .wren_a(cs_ram & ~n_wr),
-    .address_a(cpu_A[10:0]),
+    .address_a(ram_A),
     .data_a(cpu_Dout),
     .q_a(workram_D),
 
     .clock_b(clk_sys),
     .wren_b(1'b0),
-    .address_b(11'b0),
+    .address_b(14'b0),
     .data_b(8'b0),
     .q_b()
 );
@@ -322,6 +372,8 @@ reg [7:0] misc_reg       = 8'd0;
 reg [7:0] ld_data_latch  = 8'd0;
 reg [7:0] ld_cmd_captured= 8'd0;   // last byte strobed to the LD (misc b5 1->0)
 reg       ld_cmd_stb     = 1'b0;   // 1-cyc pulse -> LDV1000 controller (byte = ld_data_latch)
+reg       tq_wr_busy     = 1'b0;   // OUT 0xF4 spans many clk_sys cycles; latch once per access
+reg       tq_send        = 1'b0;   // defers the strobe a cycle so cmd_byte is settled
 
 always_ff @(posedge clk_sys) begin
     if (!reset) begin
@@ -329,6 +381,8 @@ always_ff @(posedge clk_sys) begin
         ld_data_latch   <= 8'd0;
         ld_cmd_captured <= 8'd0;
         ld_cmd_stb      <= 1'b0;
+        tq_wr_busy      <= 1'b0;
+        tq_send         <= 1'b0;
     end
     else begin
         ld_cmd_stb <= 1'b0;                            // default: no strobe this cycle
@@ -340,6 +394,66 @@ always_ff @(posedge clk_sys) begin
             end
             misc_reg <= cpu_Dout;
         end
+
+        // Thayer's sends on the data write itself (Daphne port 0xF4 -> write_ldv1000);
+        // the 0xF5 latch carries the coin counter / ENTER / INT-EXT bits but does not gate it.
+        if (cs_tq_ldwr) begin
+            if (~tq_wr_busy) begin
+                ld_data_latch <= cpu_Dout;
+                tq_wr_busy    <= 1'b1;
+                tq_send       <= 1'b1;
+            end
+        end
+        else tq_wr_busy <= 1'b0;
+
+        if (tq_send) begin
+            tq_send         <= 1'b0;
+            ld_cmd_captured <= ld_data_latch;
+            ld_cmd_stb      <= 1'b1;
+        end
+
+        if (cs_tq_ldctl) misc_reg <= cpu_Dout;
+    end
+end
+
+//--------------------------------------------------- Thayer's COP421 MCU ------------------------------------------------------//
+// The COP is the machine's only interrupt source: D0 = timer tick, D1 = keyboard
+// data ready, both active low (Daphne thayers_write_d_port).
+wire [3:0] cop_d;
+wire [7:0] cop_rd;
+
+// PARKED 2026-09-05: Thayer's Quest shelved. The COP421 is out of the build so Dragon's
+// Lair / Space Ace do not carry its area. Re-enable = uncomment this instance, restore
+// rtl/Thayers_COP.sv + the rtl/cpu/t400 block in files.qip, and drop the two tie-offs.
+// Thayers_COP #(.CLK_HZ(CLK_HZ)) u_cop
+// (
+//     .clk_sys    (clk_sys),
+//     .reset_n    (reset),
+//     .rom_cs_i   (cop_rom_cs_i),
+//     .ioctl_addr (ioctl_addr),
+//     .ioctl_data (ioctl_data),
+//     .ioctl_wr   (ioctl_wr),
+//     .z80_dout   (cpu_Dout),
+//     .wr_g       (cs_tq_copg),
+//     .wr_data    (cs_tq_copwr),
+//     .rd_data    (cop_rd),
+//     .cop_d      (cop_d)
+// );
+assign cop_d  = 4'hF;   // no COP: timer / data-ready both inactive (active low)
+assign cop_rd = 8'hFF;
+
+// Interrupt status at IN (0x40), active LOW per bit, reset value 0x3F:
+//   b2 SSI-263 request data (not implemented, stays inactive)
+//   b3 always high   b4 /TIMER INT   b5 /DATA RDY INT   b6 /CART PRES
+// The COP asserts b4/b5; the Z80 acks them with OUT (0xA0) / OUT (0xC0).
+reg [7:0] irq_status = 8'h3F;
+always_ff @(posedge clk_sys) begin
+    if (!reset) irq_status <= 8'h3F;
+    else begin
+        if (!cop_d[0]) irq_status[4] <= 1'b0;   // timer
+        if (!cop_d[1]) irq_status[5] <= 1'b0;   // data ready
+        if (cs_tq_ackt) irq_status[4] <= 1'b1;
+        if (cs_tq_ackd) irq_status[5] <= 1'b1;
     end
 end
 
@@ -398,7 +512,8 @@ always_ff @(posedge clk_sys) begin
         // Only the TIMER freezes. The INTA clear below stays ungated: if the hold happened to
         // assert during an interrupt-acknowledge cycle, gating it would drop the clear and the
         // Z80 would re-enter the ISR on resume.
-        if (!disc_hold) begin
+        // Thayer's has no clock-driven IRQ at all -- the game raises its own via OUT 0xF3.
+        if (!disc_hold && !is_thayers) begin
             if (irq_cnt >= IRQ_PERIOD - 22'd1) begin
                 irq_cnt <= 22'd0;
                 n_irq   <= 1'b0;              // assert (hold)
@@ -407,6 +522,10 @@ always_ff @(posedge clk_sys) begin
                 irq_cnt <= irq_cnt + 22'd1;
             end
         end
+        // Thayer's: the COP raises the IRQ whenever it asserts timer or data-ready;
+        // OUT 0xF3 is the game's own software trigger.
+        if (is_thayers & (cop_d[1:0] != 2'b11)) n_irq <= 1'b0;
+        if (cs_tq_irqtr)     n_irq <= 1'b0;  // Thayer's OUT 0xF3 = interrupt trigger
         if (~n_m1 & ~n_iorq) n_irq <= 1'b1;  // INTA clears the hold
     end
 end
