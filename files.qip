@@ -4,9 +4,34 @@ set_global_assignment -name SYSTEMVERILOG_FILE Arcade-LaserdiscGames.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_CPU.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_LDV1000.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/Thayers_COP.sv
 set_global_assignment -name QIP_FILE rtl/cpu/T80/T80.qip
 
 set_global_assignment -name QIP_FILE rtl/sound/v_sound.qip
+
+# --- freecores/t400 COP400 uController (COP421 for Thayer's keyboard/timer MCU) ---
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_pack-p.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_opt_pack-p.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_clkgen.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_reset.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_pmem_ctrl.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_dmem_ctrl.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_mnemonic_pack-p.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_decoder.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_skip.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_alu.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_stack.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_io_pack-p.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_io_l.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_io_d.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_io_g.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_io_in.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_sio.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_timer.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_core.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/tech/generic/generic_ram_ena.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/tech/cyclone/t400_por.vhd
+
 
 set_global_assignment -name VERILOG_FILE rtl/pause.v
 

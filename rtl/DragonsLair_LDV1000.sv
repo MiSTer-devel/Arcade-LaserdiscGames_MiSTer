@@ -25,6 +25,14 @@ module DragonsLair_LDV1000
     output reg [7:0]  status,         // -> 0xC020 laserdisc_r
     output reg        status_strobe,  // -> SYSTEM b6   (idle 1, asserts low)
     output reg        command_strobe, // SYSTEM b7 = ~command_strobe (idle 1 => b7=0 ready)
+    // Player select: 0 = Pioneer LD-V1000, 1 = Pioneer PR-7820.  The PR-7820's command set is a
+    // SUBSET of the LD-V1000's (same digit encoding, same F7/FD/FB/F3/F4/FC/F9/A3 opcodes), so
+    // only the status layer differs: it has no strobes and no status byte, just one /READY line
+    // on SYSTEM b7 (Daphne ldp-in/pr7820.cpp + lair.cpp).  Everything else -- frame counter,
+    // film tick, post-seek tail drain, autostop, audio gating, search_cmd_o / play_end_o -- is
+    // shared transport, so the Behaviour Options apply identically to both players.
+    input             pr7820,
+    output            ready_n,        // PR-7820 /READY: 1 = busy, 0 = ready. -> SYSTEM b7
     // 1-cycle pulse when a SEARCH command is ACCEPTED -- the command itself, not a frame-delta guess.
     output reg        search_cmd_o,
     // 1-cycle pulse when playback stops by any mechanism (CMD_STOP, CMD_REJECT, 0X, next SEARCH).
@@ -87,8 +95,11 @@ module DragonsLair_LDV1000
     reg  [16:0] search_frame;
     // Busy-report countdown in frame_ticks, holding Daphne's 0.5 s search fiction (ticks are
     // 59.94 Hz, so 30).  Times the STATUS report only -- the disc POSITION lands atomically.
-    localparam [4:0] SEARCH_TICKS = 5'd30;   // 0.5 s at 59.94 Hz
-    reg  [4:0]  search_delay;
+    // 0.5 s at 59.94 Hz.  Both players use the same figure: the PR-7820 is the slower mechanism
+    // in reality, but no seek-time spec has been sourced, and inventing one gave the ROM a
+    // latency it did not expect.  Behaviour Options > Seek Delay is the place to lengthen it.
+    localparam [5:0] SEARCH_TICKS = 6'd30;
+    reg  [5:0]  search_delay;
 
     // ---- POST-SEEK TAIL DRAIN ----
     // When CMD_SEARCH (0xF7) is received the Z80 protocol requires status to immediately
@@ -117,6 +128,11 @@ module DragonsLair_LDV1000
 
     // MAME's update_audio_enable() only unmutes at mode==PLAY && speed==1.0
     // Also stay "playing" during the post-seek tail drain so audio doesn't mute prematurely.
+    // PR-7820 /READY is a LEVEL, not a latch: busy only while the head is actually moving.
+    // The ROM's PR-7820 wait loop ($01F9) spins on this bit alone with no status byte to fall
+    // back on, so a latch that only clears on search-success leaves it stuck busy at power-up.
+    assign ready_n = (mode == M_SEARCH);
+
     assign playing = ((mode == M_PLAY) || (mode == M_SEARCH && seek_tail_cnt != 4'd0))
                      && (play_speed_q4 == 5'd4) && audio_en1 && audio_en2;
 
@@ -202,7 +218,7 @@ module DragonsLair_LDV1000
             mode <= M_PARK; status <= ST_PARK | ST_READY;   // 0xFC
             number <= 17'd0; search_frame <= 17'd0; stop_frame <= 17'd0;
             stop_valid <= 1'b0; curr_frame <= 17'd0; fcnt <= 22'd0;   // fcnt/vcnt widened 21->22
-            search_delay <= 5'd0;
+            search_delay <= 6'd0;
             vcnt <= 22'd0;
             disc_moving_q <= 1'b0;  // (rev 2)
             status_strobe <= 1'b1; command_strobe <= 1'b1;
@@ -269,9 +285,9 @@ module DragonsLair_LDV1000
                     // streamer fetches and primes during this wait; it is not a deadlock.
                     // fb_seek_hold's own SEEK_TMO (~1 s) is the backstop if priming never completes.
                     M_SEARCH: begin
-                        if (search_delay != 5'd0 || disc_hold) begin
-                            if (search_delay != 5'd0)
-                                search_delay <= search_delay - 5'd1; // still "busy": status stays ST_SEARCH (0x50)
+                        if (search_delay != 6'd0 || disc_hold) begin
+                            if (search_delay != 6'd0)
+                                search_delay <= search_delay - 6'd1; // still "busy": status stays ST_SEARCH (0x50)
                         end else begin
                             mode <= M_STOP; status <= ST_SEARCH_FIN;   // 0xd0 (ready) -- Daphne's "search succeeded d0"
                         end
@@ -287,11 +303,13 @@ module DragonsLair_LDV1000
     // bit 7, and only 0xFF re-arms it.  0xFF is the handshake ACK, not idle filler -- it must be
     // fully inert and must not touch `number` or `has_digit`, or a multi-digit SEARCH accumulates
     // wrong.  A real SEARCH is 0xBF, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, 0xF7.
+    // The PR-7820 has no ready window: the ROM's send routine emits the raw byte with no 0xFF
+    // prefix, so the gate is bypassed in that mode and 0xFF is inert (Daphne pr7820.cpp).
             if (cmd_stb) begin
                 if (cmd_byte == CMD_NO_ENTRY) begin
                     // Daphne: 0xFF always ends READY, in both the ready and not-ready paths.
-                    status <= status | ST_READY;
-                end else if (!status[7]) begin
+                    if (!pr7820) status <= status | ST_READY;
+                end else if (!status[7] && !pr7820) begin
                     // NOT READY + non-0xFF => ignore the byte ENTIRELY (Daphne lines 431-435).
                     status <= status & 8'h7f;
                 end else if (dig != 4'hf) begin
@@ -308,7 +326,8 @@ module DragonsLair_LDV1000
         // Arms the busy countdown for all M_SEARCH entry points at once.  The `mode != M_SEARCH`
         // guard is required: re-arming mid-search pins status busy, ST_SEARCH_FIN never fires and
         // the core hangs waiting for a completion that cannot arrive.
-                    if (mode != M_SEARCH) search_delay <= SEARCH_TICKS;
+                    if (mode != M_SEARCH)
+                        search_delay <= SEARCH_TICKS;
                     case (cmd_byte)
                         CMD_CLEAR:   begin number <= 17'd0; dig_sr <= 20'd0; end   // restart digit capture
                         CMD_SEARCH: begin

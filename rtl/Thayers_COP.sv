@@ -121,7 +121,9 @@ t400_core #(.opt_type_g(1), .opt_ck_div_g(3), .opt_cko_g(0)) u_cop
     .io_g_en_o (g_en),
 
     .io_in_i   (4'hF),
-    .si_i      (1'b0),
+    // SI is the keyboard data line (MAME read_si -> kbdata_r).  It resets HIGH there; tying it
+    // low can stall the COP's own scan loop.  No keyboard yet, so hold it idle-high.
+    .si_i      (1'b1),
     .so_o      (),
     .so_en_o   (),
     .sk_o      (),

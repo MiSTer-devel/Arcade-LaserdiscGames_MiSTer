@@ -52,10 +52,10 @@
 
     <!-- Index 0: Main Z80 program ROMs. Rev F2 = 4x 8KB @ 0x0000-0x7FFF (region is 0xA000; 0x8000-0x9FFF unused on F2). -->
     <rom index="0" md5="none" zip="dle11.zip">
-        <part crc="3d1f44f7" name="dle11u1l.bin"/>
-        <part crc="875d4329" name="dle11u2l.bin"/>
-        <part crc="185e7c3d" name="dle11u3l.bin"/>
-        <part crc="90fa4db2" name="dle11u4l.bin"/>
+        <part crc="9e65b33d" name="dle11u1l.bin"/>
+        <part crc="f16fa36f" name="dle11u2l.bin"/>
+        <part crc="b8d07a16" name="dle11u3l.bin"/>
+        <part crc="20fc79b7" name="dle11u4l.bin"/>
     </rom>
 
     <remark>Dragon's Lair Enhanced (Cinematronics)</remark>

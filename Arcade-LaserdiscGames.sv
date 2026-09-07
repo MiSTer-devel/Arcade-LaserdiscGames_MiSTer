@@ -314,6 +314,7 @@ reg         fb_seek_hold;      // high while a seek holds the picture and audio
 reg   [1:0] fb_tail_adopt;     // vblanks in which PRE-seek frames may still be adopted
 reg         seek_was_play;     // real playback has ended since the last seek
 reg         seek_is_seg;       // captured at the seek: this hold follows a SEGMENT, not a hold frame
+reg         seek_black;        // blank-the-picture flag, updated ONLY at vblank (see below)
 // Hold Frame Seek (status[8]): does a hold-frame seek get the seek pause at all?  Off = segment
 // ends only.  When it does pause, Seek Behaviour decides what that pause looks like.
 wire        seek_pause = seek_is_seg | status[8];
@@ -327,7 +328,9 @@ wire        band_lit = led_lit & ~band_off;
 // Seek Behaviour (status[4]): 0 = hold the last frame, 1 = go black like a real player with no
 // sync.  Only during a SEARCH hold, never a still/pause, and only once fb_tail_adopt has burned
 // down -- those frames are real content of the segment that just ended.
-wire        seek_black = status[4] & fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0);
+// fb_seek_hold changes at arbitrary points in the frame, so this is LATCHED at vblank in the
+// framebuffer block below: switching the mask mid-raster tears the picture across the screen.
+wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0);
 wire  [7:0] comp_r = band_lit ? 8'hFF : (seek_black ? 8'h00 : rr_r);  // band text, video below
 wire  [7:0] comp_g = band_lit ? 8'h00 : (seek_black ? 8'h00 : rr_g);
 wire  [7:0] comp_b = band_lit ? 8'h00 : (seek_black ? 8'h00 : rr_b);
@@ -428,6 +431,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	// dsw[7:0] = DSW1 (AY port A), dsw[15:8] = DSW2 (AY port B)
 	.dsw(dsw),
 	.is_thayers(is_thayers),
+	.is_spaceace(is_spaceace),
 
 	.sound_l(audio_l),
 	.sound_r(audio_r),
@@ -614,6 +618,7 @@ always @(posedge CLK_CORE) begin
         dec_reset_q  <= 1'b0;
         fb_seek_q    <= 1'b0;
         fb_seek_hold <= 1'b0;
+        seek_black   <= 1'b0;
         fb_dly_cnt   <= 28'd0;
         fb_prime_cnt <= 3'd0;
         fb_seek_tmr  <= 28'd0;   // 28 bits: 80 MHz needs 27
@@ -621,6 +626,8 @@ always @(posedge CLK_CORE) begin
         fb_tail_adopt<= 2'd0;
     end else begin
         fb_seek_q <= fb_seek_pulse;
+        // Frame-boundary only: the blank must never appear or lift part-way down the raster.
+        if (fb_vbl_rise) seek_black <= seek_black_w;
         // The tail window burns down on VBLANKS, not adoptions, so a frame still decoding gets its
         // chance and one that never arrives cannot hold the window open.
         if (fb_vbl_rise && (fb_tail_adopt != 2'd0)) fb_tail_adopt <= fb_tail_adopt - 2'd1;

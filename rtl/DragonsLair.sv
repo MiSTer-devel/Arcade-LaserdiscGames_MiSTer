@@ -28,6 +28,8 @@ module DragonsLair
 
     // Board select: 0 = Dragon's Lair / Space Ace, 1 = Thayer's Quest
     input                is_thayers,
+    // Set for Space Ace: its ROM selects the LD player on a different DIP bit than DL's.
+    input                is_spaceace,
 
     // Audio
     output signed [15:0] sound_l,
@@ -73,6 +75,7 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
     .cab(cab),
     .dsw(dsw),
     .is_thayers(is_thayers),
+    .is_spaceace(is_spaceace),
 
     .sound(snd),
 
