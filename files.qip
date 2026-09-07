@@ -11,6 +11,8 @@ set_global_assignment -name SEARCH_PATH rtl/ldp
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_transport.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_ldv1000.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_pr7820.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_pr8210.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_ldp1450.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_top.sv
 
 # CPU - Z80

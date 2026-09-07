@@ -364,6 +364,8 @@ ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (   // thread the core clock down
     .status_strobe  (ld_status_strobe),
     .command_strobe (ld_command_strobe),
     .player_sel     ({3'd0, pr7820_mode}),   // 0 = LD-V1000, 1 = PR-7820
+    .blip           (1'b0),                 // PR-8210 only
+    .tx_pop         (1'b0),                 // LDP-1450 only
     .ready_n        (ld_ready_n),
     .search_cmd_o   (search_cmd_o),
     .play_end_o     (play_end_o),
