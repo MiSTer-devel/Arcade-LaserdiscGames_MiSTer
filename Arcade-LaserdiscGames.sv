@@ -74,7 +74,8 @@ assign LED_DISK  = 0;
 assign LED_POWER = 0;
 wire dbg_led;
 wire dbg_led_dl;
-assign LED_USER  = dbg_led;  // ~0.6 Hz "core alive" heartbeat from DragonsLair_CPU
+assign LED_USER  = dbg_led;  // DL: ~0.6 Hz "core alive" heartbeat from DragonsLair_CPU.
+                             // Cliff: the real PCB's test LED (port 0x6E on / 0x6F off).
 assign BUTTONS = 0;
 
 
@@ -210,7 +211,10 @@ localparam [31:0] CORE_CLK_HZ = 32'd80_000_000;   // single source of truth for 
 
 // Deliberately frequency-agnostic: CORE_CLK_HZ is the one place the number appears.
 wire CLK_CORE;                  // the core clock: CORE_CLK_HZ (80 MHz), = DDRAM_CLK = CLK_VIDEO
-wire CLK_10M;                   // PLL outclk_1, genuinely 10 MHz, UNUSED by the core (Kangaroo leftover)
+wire CLK_100M;                  // PLL outclk_1, 100 MHz. Was an unused 10 MHz Kangaroo leftover;
+                                // retargeted for MCL86's CORE_CLK_INT, which the MCL86 datasheet
+                                // says must be 100 MHz for its timing to track a real 8088.
+                                // VCO stays at 800 MHz; only the C1 divider changed (80 -> 8).
 wire locked;
 
 pll pll
@@ -218,7 +222,7 @@ pll pll
     .refclk(CLK_50M),
     .rst(0),
     .outclk_0(CLK_CORE),
-    .outclk_1(CLK_10M),
+    .outclk_1(CLK_100M),
     .locked(locked)
 );
 
@@ -402,6 +406,7 @@ end
 wire is_spaceace = (game_mod == 8'd1);
 wire is_thayers  = (game_mod == 8'd2);
 wire is_cliff    = (game_mod == 8'd3);   // Cliff Hanger: its own board, see rtl/cliff/
+wire is_dl2      = (game_mod == 8'd4);   // Dragon's Lair II: 8088 board, see rtl/dlair2/
 // Cliff reads five DIP banks through port 0x62; the OSD already delivers eight bytes.
 wire [39:0] dsw40 = {dip_sw[4], dip_sw[3], dip_sw[2], dip_sw[1], dip_sw[0]};
 wire [1:0] skill_level;   // from DragonsLair_CPU's scoreboard snoop
@@ -472,6 +477,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 wire signed [15:0] audio_l_cl, audio_r_cl;
 wire        [16:0] ld_frame_cl;
 wire               seek_pulse_cl, play_end_cl, ld_playing_cl, dbg_led_cl;
+wire        [63:0] led_digits_cl;   // DIAG-REVERT-2026-09-07: PR-8210 telemetry
 
 CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 (
@@ -499,19 +505,88 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 	.ld_play_end_o(play_end_cl),
 	.ld_frame_o(ld_frame_cl),
 	.ld_playing_o(ld_playing_cl),
-	.dbg_led(dbg_led_cl)
+	.dbg_led(dbg_led_cl),
+	.led_digits_o(led_digits_cl)   // DIAG-REVERT-2026-09-07
+);
+
+//------------------------------------------------------------------------------
+// Dragon's Lair II (Leland) — 8088 board. No video hardware of its own: the
+// LDP-1450 renders DL2's text itself. RAM is too large for block RAM (the core
+// is at 75% of its M10K) so it lives in DDR, using ddram.sv's spare "rom" port.
+// Everything here is in the CLK_CORE domain -- see DragonsLair2.sv on why the
+// CPU is not given its own 100 MHz clock.
+//------------------------------------------------------------------------------
+wire        [27:1] d2_mem_addr;
+wire        [15:0] d2_mem_din, d2_mem_dout;
+wire         [1:0] d2_mem_be;
+wire               d2_mem_we, d2_mem_req, d2_mem_ack;
+wire        [16:0] ld_frame_d2;
+wire               seek_pulse_d2, play_end_d2, ld_playing_d2;
+wire        [23:0] d2_ram_addr;
+wire         [7:0] d2_ram_din, d2_ram_dout;
+wire               d2_ram_rd, d2_ram_wr, d2_ram_busy;
+wire               d2_tx_stb, d2_rx_valid, d2_rx_pop;
+wire         [7:0] d2_tx_byte, d2_rx_byte;
+
+DragonsLair2 dl2_inst
+(
+	.core_clk(CLK_CORE),
+	.reset_n(~reset & is_dl2),
+
+	.ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
+	.ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
+
+	.ram_addr(d2_ram_addr), .ram_din(d2_ram_din),
+	.ram_rd(d2_ram_rd), .ram_wr(d2_ram_wr),
+	.ram_dout(d2_ram_dout), .ram_busy(d2_ram_busy),
+
+	.ld_tx_stb(d2_tx_stb), .ld_tx_byte(d2_tx_byte),
+	.ld_rx_valid(d2_rx_valid), .ld_rx_byte(d2_rx_byte), .ld_rx_pop(d2_rx_pop),
+
+	.dbg_addr(), .dbg_type(), .dbg_halt()
+);
+
+// DL2's main RAM in DDR, through the port the framebuffer does not use.
+ddram_byte_port #(.BASE(28'h1000000)) dl2_ram
+(
+	.clk(CLK_CORE), .reset_n(~reset & is_dl2),
+	.cpu_addr(d2_ram_addr), .cpu_din(d2_ram_din),
+	.cpu_rd(d2_ram_rd), .cpu_wr(d2_ram_wr),
+	.cpu_dout(d2_ram_dout), .busy(d2_ram_busy),
+	.mem_addr(d2_mem_addr), .mem_din(d2_mem_din), .mem_be(d2_mem_be),
+	.mem_we(d2_mem_we), .mem_req(d2_mem_req), .mem_ack(d2_mem_ack),
+	.mem_dout(d2_mem_dout)
+);
+
+// DL2's Sony LDP-1450, in the core domain so its strobes are never crossed.
+ldp_top #(.CLK_HZ(CORE_CLK_HZ)) dl2_ldp
+(
+	.clk(CLK_CORE), .reset_n(~reset & is_dl2),
+	.player_sel(4'd3),                       // PLAYER_LDP1450
+	.cmd_stb(d2_tx_stb), .cmd_byte(d2_tx_byte),
+	.blip(1'b0),
+	.status(), .status_strobe(), .command_strobe(), .ready_n(), .frame_valid(),
+	.tx_valid(d2_rx_valid), .tx_byte(d2_rx_byte), .tx_pop(d2_rx_pop),
+	.search_cmd_o(seek_pulse_d2), .play_end_o(play_end_d2),
+	.curr_frame(ld_frame_d2),
+	.pause(pause_cpu), .disc_hold(fb_seek_hold), .playing(ld_playing_d2),
+	.dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
+	.post_seek_frames(post_seek_eff)
 );
 
 // ---- shared outputs: whichever board is running ----
-assign audio_l           = is_cliff ? audio_l_cl    : audio_l_dl;
-assign audio_r           = is_cliff ? audio_r_cl    : audio_r_dl;
-assign ld_curr_frame_top = is_cliff ? ld_frame_cl   : ld_frame_dl;
-assign fb_seek_pulse     = is_cliff ? seek_pulse_cl : seek_pulse_dl;
-assign fb_play_end       = is_cliff ? play_end_cl   : play_end_dl;
-assign ld_playing_top    = is_cliff ? ld_playing_cl : ld_playing_dl;
+assign audio_l           = is_dl2 ? 16'sd0 : is_cliff ? audio_l_cl    : audio_l_dl;
+assign audio_r           = is_dl2 ? 16'sd0 : is_cliff ? audio_r_cl    : audio_r_dl;
+assign ld_curr_frame_top = is_dl2 ? ld_frame_d2   : is_cliff ? ld_frame_cl   : ld_frame_dl;
+assign fb_seek_pulse     = is_dl2 ? seek_pulse_d2 : is_cliff ? seek_pulse_cl : seek_pulse_dl;
+assign fb_play_end       = is_dl2 ? play_end_d2   : is_cliff ? play_end_cl   : play_end_dl;
+assign ld_playing_top    = is_dl2 ? ld_playing_d2 : is_cliff ? ld_playing_cl : ld_playing_dl;
 assign dbg_led           = is_cliff ? dbg_led_cl    : dbg_led_dl;
 // Cliff has no Dragon's Lair scoreboard and no Space Ace skill select.
-assign led_digits_flat   = is_cliff ? 64'd0 : led_digits_dl;
+// DIAG-REVERT-2026-09-07: while bringing up the PR-8210 the band shows Cliff's LD
+// telemetry instead of a blank field. Original line kept directly below.
+// assign led_digits_flat   = is_cliff ? 64'd0 : led_digits_dl;
+assign led_digits_flat   = is_cliff ? led_digits_cl : led_digits_dl;
 assign skill_level       = is_cliff ? 2'd0  : skill_dl;
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
@@ -773,9 +848,10 @@ ddram ddram_fb (
     .wraddr(fb_wraddr), .din(fb_din),
     .din64(fb_din64), .be64(fb_be64),
     .we_req(fb_we_req), .we_ack(fb_we_ack),
-    // rom read/write port — unused
-    .rdaddr(27'd0), .dout(), .rom_din(16'd0), .rom_be(2'd0),
-    .rom_we(1'b0), .rom_req(1'b0), .rom_ack(),
+    // rom read/write port — Dragon's Lair II main RAM (ddram_byte_port).
+    // Unused by every other game; ddram.sv itself is unmodified.
+    .rdaddr(d2_mem_addr), .dout(d2_mem_dout), .rom_din(d2_mem_din), .rom_be(d2_mem_be),
+    .rom_we(d2_mem_we), .rom_req(d2_mem_req), .rom_ack(d2_mem_ack),
     // second read port — raster reader (DDR framebuffer -> video)
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)

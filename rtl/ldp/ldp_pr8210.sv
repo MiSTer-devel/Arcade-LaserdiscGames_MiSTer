@@ -18,9 +18,19 @@
 module ldp_pr8210
 #(
     parameter [31:0] CLK_HZ = 32'd80_000_000,
-    // Interval thresholds in microseconds. Boundary sits between the manual's
-    // 1.05 ms (0) and 2.11 ms (1); anything past the timeout aborts the word.
-    parameter [31:0] BIT_ONE_US  = 32'd1580,
+    // Interval thresholds in microseconds.
+    //
+    // NOT the manual's nominal 1.05/2.11 ms -- Cliff Hanger's ROM bit-bangs its
+    // blips and its real gaps are about half that. From the ROM: the shared
+    // delay loop at $23F4 is 33 T/iteration, entered with BC=$3C (60) for a 0
+    // and BC=$64 (100) for a 1, on top of a common ~840 T unrolled pulse in
+    // $1F8F. At the 4 MHz CPU clock that is ~705 us for a 0 and ~1035 us for a
+    // 1, so the boundary sits at their midpoint. The 330 us DIFFERENCE between
+    // them is exact (it falls out of the two BC constants); the absolute values
+    // carry an estimate of the pulse duration, so this is the number to sweep
+    // first if words fail to frame.
+    parameter [31:0] BIT_ONE_US  = 32'd870,
+    // Kept at Daphne's figure (12000 Z80 cycles @ 4 MHz); comfortably above a 1.
     parameter [31:0] TIMEOUT_US  = 32'd3000
 )
 (
@@ -41,7 +51,9 @@ module ldp_pr8210
     // Daphne's pr8210_get_current_frame() returns 0 unless the disc is playing
     // or paused; games are told to use it rather than reading the frame raw.
     output            frame_valid,
-    output     [9:0]  dbg_word          // last accepted 10-blip word
+    output     [9:0]  dbg_word,         // last accepted 10-blip word
+    output reg [15:0] dbg_blips,        // total blip pulses seen
+    output reg [7:0]  dbg_words         // total words that passed the framing check
 );
 `include "ldp_bus.svh"
 
@@ -77,7 +89,16 @@ module ldp_pr8210
     reg [9:0]  word_raw;
     assign dbg_word = word_raw;
 
-    assign frame_valid = (mode == M_PLAY) || (mode == M_STOP);
+    // A CAV laserdisc puts a Philips picture number on VBI lines 17/18 of EVERY
+    // field while the platter is spinning -- including parked on a still frame.
+    // Only an in-flight seek has no valid code.
+    //
+    // This was M_PLAY||M_STOP, which excluded the transport's M_PARK reset state
+    // and deadlocked Cliff Hanger: no valid code -> Philips bit 23 clear -> the
+    // board's IRQ never fires -> the interrupt-driven main loop never runs -> the
+    // game never issues the command that would start the disc in the first place.
+    // POST completed and then nothing happened.
+    assign frame_valid = (mode != M_SEARCH);
 
     // The bit for THIS blip comes from the interval that preceded it.
     wire [9:0] new_word = {sr[8:0], (gap >= ONE_TICKS)};
@@ -118,6 +139,7 @@ module ldp_pr8210
             last_word <= 10'd0; have_last <= 1'b0;
             number <= 17'd0; seek_armed <= 1'b0;
             word_cmd <= 5'd0; word_raw <= 10'd0;
+            dbg_blips <= 16'd0; dbg_words <= 8'd0;
         end else if (!pause) begin
             // ---- blip interval timing ----
             // The bit belongs to the interval BEFORE this blip, so a blip that
@@ -125,6 +147,7 @@ module ldp_pr8210
             // word (Daphne cliff.cpp: m_blips_count = 0, no shift).
             if (blip) begin
                 gap <= 32'd0;
+                dbg_blips <= dbg_blips + 16'd1;
                 if (gap >= TMO_TICKS) begin
                     nbits <= 4'd0;
                 end else begin
@@ -138,6 +161,7 @@ module ldp_pr8210
                                 word_raw <= new_word;
                                 word_cmd <= new_word[6:2];
                                 word_stb <= 1'b1;
+                                dbg_words <= dbg_words + 8'd1;
                             end
                         end
                         last_word <= new_word;

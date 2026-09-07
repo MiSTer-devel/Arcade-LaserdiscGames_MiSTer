@@ -25,7 +25,7 @@
     <joystick>4-way</joystick>
     <special_controls></special_controls>
     <num_buttons>2</num_buttons>
-    <buttons names="Action,Action 2,-,-,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
+    <buttons names="Hand,Foot,-,-,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
 
     <!-- Five switch bytes = MAME BANK0..BANK4 (stern/cliffhgr.cpp), read through
          port 0x62 with the bank selected by port 0x60.  BANK0 is not DIPs on the

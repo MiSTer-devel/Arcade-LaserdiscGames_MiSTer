@@ -1,0 +1,105 @@
+Dragon's Lair II Wiring:
+
+J14: (SPEAKER)  pin 1 - LEFT SPEAKER
+                pin 2 - LEFT SPEAKER RETURN
+                pin 3 - N/C
+                pin 4 - N/C
+                pin 5 - RIGHT SPEAKER
+                pin 6 - RIGHT SPEAKER RETURN
+                pin 7 - N/C
+                pin 8 - N/C
+
+J15: (COIN)     pin 1 - +5V
+                pin 2 - COIN #1
+                pin 3 - COIN #2
+                pin 4 - N/C
+                pin 5 - N/C
+                pin 6 - GND
+
+J17: (INPUTS)   pin 1 - +5V
+                pin 2 - JOYSTICK UP
+                pin 3 - JOYSTICK DOWN
+                pin 4 - JOYSTICK LEFT
+                pin 5 - JOYSTICK RIGHT
+                pin 6 - PLAYER #1 (BUTTON)
+                pin 7 - PLAYER #2 (BUTTON)
+                pin 8 - SWORD (BOTH BUTTONS)
+                pin 9 - SERVICE BUTTON
+                pin10 - GND
+
+J1: (POWER)     pin 1 - N/C
+                pin 2 - +5V
+                pin 3 - +12V
+                pin 4 - N/C
+                pin 5 - GND
+                pin 6 - GND
+                pin 7 - GND
+                pin 8 - GND
+                pin 9 - -5V
+                pin10 - +5V
+                pin11 - +5V
+                pin12 - +5V
+ 
+J2: (POWER)     pin 1 - +12V
+                pin 2 - +12V
+                pin 3 - GND
+                pin 4 - GND
+
+P3: (RS232C)    pin 1 - GND
+                pin 2 - TxD (TRANSMIT DATA) 
+                pin 3 - RxD (RECEIVE DATA)
+                pin 4 - RTS (REQUEST TO SEND)
+                pin 5 - CTS (CLEAR TO SEND)
+                pin 6 - DSR (DATA SET READY)
+                pin 7 - GND
+                pin 8 - DCD
+                pin11 - HSYNC
+                pin18 - VSYNC
+                pin20 - DTR (DATA TERMINAL READY)
+                pin21 - RI
+
+J12:            LINE AUDIO IN (RIGHT)  (from LD player)
+
+J13:            LINE AUDIO IN (LEFT)   (from LD player)
+
+J16: (COUNTER)  pin 1 - TO NEG. OF COIN COUNTER
+                pin 2 - +12V
+                pin 3 - +12V
+                pin 4 - TO NEG. OF COIN COUNTER (SAME AS PIN 1)
+
+
+RS232 null modem cable for the Sony LD player (terminal mode):
+
+    LD player             PCB P3 
+
+   pin 7 (GND)    TO    pin 1 (GND)
+   pin 2 (TxD)    TO    pin 3 (RxD)
+   pin 3 (RxD)    TO    pin 2 (TxD)
+
+ / pin 4 (RTS) \      / pin 4 (RTS) \
+ \ pin 5 (CTS) /      \ pin 5 (CTS) /
+
+ / pin 6 (DSR) \      / pin 6 (DSR) \
+ \ pin20 (DTR) /      \ pin20 (DTR) /
+
+Connect each set of two pins shown inside slashes to each other. 
+e.g., Connect pins 4 and 5 of the connector on the LD end together.
+
+
+Note: On the original harness by Leland, pin 1 was used for GND on
+the laserdisc end of the RS232 cable. Pin 1 is not connected to
+anything inside the LD player, even though it is labeled as ground
+in the Sony user manual. If pin 1 is used, the PCB will not be able
+to control the LD player unless the audio cables are connected
+between the LD player and the PCB. Use pin 7 on the LD end of the 
+RS232 connector for ground.
+
+
+Sony LDP-1450 Laserdisc Player DIP Switch Settings:
+
+- Baud rate: (9600)   #1 - DOWN
+                      #2 - DOWN
+                      #3 - DOWN
+                      #4 - UP
+
+- Optional Function Selector:  Place all six DIP switches in the down position.

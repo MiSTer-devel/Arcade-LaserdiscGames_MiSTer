@@ -33,7 +33,7 @@ module  pll_0002(
 		.output_clock_frequency0("80.000000 MHz"),   // metadata string only; the real config is c_cnt_*_div0 below
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("10.000000 MHz"),
+		.output_clock_frequency1("100.000000 MHz"),  // metadata string only; real config is c_cnt_*_div1
 		.phase_shift1("0 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("0 MHz"),
@@ -104,8 +104,8 @@ module  pll_0002(
 		.c_cnt_in_src0("ph_mux_clk"),
 		.c_cnt_bypass_en0("false"),
 		.c_cnt_odd_div_duty_en0("false"),
-		.c_cnt_hi_div1(40),
-		.c_cnt_lo_div1(40),
+		.c_cnt_hi_div1(4),
+		.c_cnt_lo_div1(4),
 		.c_cnt_prst1(1),
 		.c_cnt_ph_mux_prst1(0),
 		.c_cnt_in_src1("ph_mux_clk"),

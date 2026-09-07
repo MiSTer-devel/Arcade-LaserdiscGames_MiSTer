@@ -17,6 +17,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/bin17_to_bcd5.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/tms9928a_regs.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/CliffHanger.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dlair2/dl2_bus.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dlair2/ddram_byte_port.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dlair2/DragonsLair2.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/MCL86/EU4Kx32.sv
+set_global_assignment -name VERILOG_FILE rtl/cpu/MCL86/Core/biu_max.v
+set_global_assignment -name VERILOG_FILE rtl/cpu/MCL86/Core/eu.v
 
 # CPU - Z80
 set_global_assignment -name QIP_FILE rtl/cpu/T80/T80.qip

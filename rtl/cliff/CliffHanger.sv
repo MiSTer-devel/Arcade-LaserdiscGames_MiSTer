@@ -41,7 +41,10 @@ module CliffHanger
     output               ld_play_end_o,
     output        [16:0] ld_frame_o,
     output               ld_playing_o,
-    output               dbg_led
+    output               dbg_led,
+    // DIAG-REVERT-2026-09-07: PR-8210 telemetry for the LED band. Delete this
+    // port, its assign below, and the top's Cliff branch to go back to a blank band.
+    output        [63:0] led_digits_o
 );
     //--------------------------------------------------------- clocking ------
     // Z80 at 4 MHz (CLIFF_CPU_HZ) from the 80 MHz core clock.
@@ -132,8 +135,22 @@ module CliffHanger
     //   BANK5: b0 COIN1, b1 COIN2, b2 BTN2 P1, b3 BTN2 P2,
     //          b4 BTN1 P1, b5 BTN1 P2, b6 unused, b7 TILT
     //   BANK6: b0 UP, b1 RIGHT, b2 DOWN, b3 LEFT, b7:4 unused
-    // P2 buttons and TILT have no input here yet, so they read as not-pressed.
-    wire [7:0] bank5 = ~{1'b0, 1'b0, 1'b0, p1[4], 1'b0, p1[5], cab[3], cab[2]};
+    //
+    // Cliff's two buttons are HAND and FOOT (Daphne cliff.cpp input_enable):
+    //   BUTTON1 = HAND = bit 4  ("only press one of the hands buttons")
+    //   BUTTON2 = FOOT = bit 2  -- and START1 drives the SAME bit, which is why
+    //     Daphne notes "so player doesn't have to press start1 for feet".
+    //   START2 = bit 3.
+    // Hand is mapped to A (m_action1), Foot to B (m_skill1).
+    // P2's own hand button and TILT have no input here, so they read not-pressed.
+    wire [7:0] bank5 = ~{1'b0,            // b7 TILT
+                         1'b0,            // b6 unused
+                         1'b0,            // b5 BTN1 (hand) P2
+                         p1[4],           // b4 BTN1 (hand) P1  <- A
+                         cab[1],          // b3 BTN2 P2 / START2
+                         p1[5] | cab[0],  // b2 BTN2 (foot) P1 / START1  <- B or Start
+                         cab[3],          // b1 COIN2
+                         cab[2]};         // b0 COIN1
     wire [7:0] bank6 = ~{4'b0000, p1[2], p1[1], p1[3], p1[0]};
 
     reg [7:0] bank_bus;
@@ -153,14 +170,28 @@ module CliffHanger
     //--------------------------------------------------------- laserdisc ------
     // PR-8210: the game toggles one wire. Daphne blips on a write of 1 to
     // port 0x66 (cliff.cpp) -- that is what is known to work with these ROMs.
+    //
+    // Must be edge-triggered on the WRITE, not a level gated by cpu_ce. cpu_ce
+    // runs at the Z80 T-state rate and a Z80 OUT holds IORQ+WR for about three
+    // T-states, so gating the level emitted THREE blips per write ~250 ns apart
+    // and the 10-blip framing could never line up.
     reg ld_blip;
+    reg cs_wire_q;
     always @(posedge clk_sys) begin
         ld_blip <= 1'b0;
-        if (reset && cpu_ce && cs_wire_w && cpu_Dout[0]) ld_blip <= 1'b1;
+        if (!reset) begin
+            cs_wire_q <= 1'b0;
+        end else begin
+            cs_wire_q <= cs_wire_w;
+            if (cs_wire_w && !cs_wire_q && cpu_Dout[0]) ld_blip <= 1'b1;
+        end
     end
 
     wire [16:0] ld_curr_frame;
     wire        ld_frame_valid;
+    wire [15:0] ld_dbg_blips;
+    wire  [7:0] ld_dbg_words;
+    wire [19:0] ld_dbg_end;   // PR-8210: {10'd0, last framed 10-blip word}
 
     ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (
         .clk(clk_sys), .reset_n(reset),
@@ -169,11 +200,12 @@ module CliffHanger
         .blip(ld_blip),
         .status(), .status_strobe(), .command_strobe(), .ready_n(),
         .frame_valid(ld_frame_valid),
+        .dbg_blips(ld_dbg_blips), .dbg_words(ld_dbg_words),
         .tx_valid(), .tx_byte(), .tx_pop(1'b0),
         .search_cmd_o(ld_search_cmd_o), .play_end_o(ld_play_end_o),
         .curr_frame(ld_curr_frame),
         .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
-        .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
+        .dbg_seek_frame(), .dbg_end_frame(ld_dbg_end), .dbg_flags(),
         .post_seek_frames(post_seek_frames)
     );
     assign ld_frame_o = ld_curr_frame;
@@ -266,7 +298,33 @@ module CliffHanger
     assign sound_l = snd;
     assign sound_r = snd;
 
-    assign dbg_led = |snd_en;
+    //--------------------------------------------------------- board LED -------
+    // The real Cliff Hanger PCB has a test LED next to the reset switch, driven
+    // by a write to port 0x6E (on) or 0x6F (off); the data byte is ignored.
+    // MAME stern/cliffhgr.cpp: `m_led = offset ^ 1`, offset 0 = 0x6E = lit.
+    // Routed to the MiSTer USER LED so the board's own POST heartbeat is visible.
+    // Idempotent set/clear, so no edge detect is needed.
+    reg board_led;
+    always @(posedge clk_sys) begin
+        if (!reset)         board_led <= 1'b0;
+        else if (cs_led_w)  board_led <= ~io_A[0];   // 0x6E -> 1, 0x6F -> 0
+    end
+
+    assign dbg_led = board_led;
+
+    // DIAG-REVERT-2026-09-07: LED band readout, 16 hex nibbles, left to right:
+    //   [15:12] blips seen        (should climb the moment the game talks to the LD)
+    //   [11:10] framed words      (climbs only if the 10-blip framing actually matches)
+    //   [ 9: 8] last command      (5-bit PR-8210 opcode from the last framed word)
+    //   [ 7: 3] current disc frame (5 hex nibbles)
+    //   [ 2: 0] blank
+    // If blips climb but words stay 00, the framing/threshold is wrong.
+    // If blips stay 00, nothing is reaching the player at all.
+    assign led_digits_o = {ld_dbg_blips,          // nibbles 15..12
+                           ld_dbg_words,          // nibbles 11..10
+                           3'd0, ld_dbg_end[6:2], // nibbles  9.. 8 (last command)
+                           3'd0, ld_curr_frame,   // nibbles  7.. 3
+                           12'd0};                // nibbles  2.. 0
 
     //--------------------------------------------------------- CPU data mux ---
     always @(*) begin
@@ -281,7 +339,7 @@ module CliffHanger
     end
 
     // Unused writes, decoded so they do not fall through to a warning:
-    // 0x57 philips clear, 0x60 bank (handled), 0x64/0x6A unused, 0x68 coin
-    // counter, 0x6E/0x6F test LED.
-    wire _unused = &{1'b0, cs_philcl, cs_coin_w, cs_led_w, n_m1, 1'b0};
+    // 0x57 philips clear, 0x60 bank (handled), 0x64/0x6A unused, 0x68 coin counter.
+    // 0x6E/0x6F is the board LED and IS acted on, just above.
+    wire _unused = &{1'b0, cs_philcl, cs_coin_w, n_m1, 1'b0};
 endmodule

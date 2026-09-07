@@ -46,7 +46,6 @@ module tms9928a_regs
     reg         second;          // second-byte latch for port1 writes
     reg  [7:0]  first;
     reg         int_flag;        // status b7, set at vblank, cleared on status read
-    reg  [7:0]  read_buf;        // TMS9918 prefetch buffer
 
     assign vram_addr = addr;
     assign vram_din  = din;
@@ -58,7 +57,7 @@ module tms9928a_regs
         vram_we <= 1'b0;
         if (!reset_n) begin
             addr <= 14'd0; second <= 1'b0; first <= 8'd0;
-            int_flag <= 1'b0; read_buf <= 8'd0; dout <= 8'd0;
+            int_flag <= 1'b0; dout <= 8'd0;
             for (i = 0; i < 8; i = i + 1) regs[i] <= 8'd0;
         end else begin
             if (vblank_tick) int_flag <= 1'b1;
@@ -67,13 +66,20 @@ module tms9928a_regs
                 // ---- port 0: VRAM data ----
                 if (port0_wr) begin
                     vram_we  <= 1'b1;
-                    read_buf <= din;
                     addr     <= addr + 14'd1;
                     second   <= 1'b0;
                 end
+                // The real chip answers from a prefetch buffer loaded when the
+                // address was set. Emulating that buffer against a synchronous
+                // VRAM is a trap: `vram_dout` lags `addr` by a clock, so a same-
+                // cycle capture grabs the byte for the PREVIOUS address and every
+                // first-read-after-setup is wrong -- which is exactly what the
+                // board's video RAM self-test (beep 8) checks.
+                // `ce` runs at the Z80 T-state rate, ~20 clk_sys cycles apart, so
+                // vram_dout has long settled to mem[addr] here. Reading it
+                // directly gives what correctly-operated software observes.
                 if (port0_rd) begin
-                    dout     <= read_buf;   // prefetched byte
-                    read_buf <= vram_dout;
+                    dout     <= vram_dout;
                     addr     <= addr + 14'd1;
                     second   <= 1'b0;
                 end
@@ -85,12 +91,8 @@ module tms9928a_regs
                         second <= 1'b1;
                     end else begin
                         second <= 1'b0;
-                        if (din[7])       regs[din[2:0]] <= first;
-                        else begin
-                            addr <= {din[5:0], first};
-                            // a read setup prefetches the first byte
-                            if (!din[6]) read_buf <= vram_dout;
-                        end
+                        if (din[7]) regs[din[2:0]] <= first;
+                        else        addr <= {din[5:0], first};   // b6: 1=write, 0=read
                     end
                 end
 
