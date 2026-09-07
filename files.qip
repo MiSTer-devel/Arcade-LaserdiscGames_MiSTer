@@ -1,15 +1,25 @@
 set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 
+# Game Logic
 set_global_assignment -name SYSTEMVERILOG_FILE Arcade-LaserdiscGames.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_CPU.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_LDV1000.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/Thayers_COP.sv
+
+# Laserdisc Player Logic
+set_global_assignment -name SEARCH_PATH rtl/ldp
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_transport.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_ldv1000.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_pr7820.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_top.sv
+
+# CPU - Z80
 set_global_assignment -name QIP_FILE rtl/cpu/T80/T80.qip
 
+# Audio - AY-3-8910A
 set_global_assignment -name QIP_FILE rtl/sound/v_sound.qip
 
-# --- freecores/t400 COP400 uController (COP421 for Thayer's keyboard/timer MCU) ---
+# MCU - T400
 set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_pack-p.vhd
 set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_opt_pack-p.vhd
 set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_clkgen.vhd
@@ -32,17 +42,17 @@ set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/vhdl/t400_core.vhd
 set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/tech/generic/generic_ram_ena.vhd
 set_global_assignment -name VHDL_FILE rtl/cpu/t400/rtl/tech/cyclone/t400_por.vhd
 
-
 set_global_assignment -name VERILOG_FILE rtl/pause.v
 
 set_global_assignment -name VHDL_FILE rtl/ram_rom/dpram_dc.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/rom_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/ddram.sv
 
+# Clocks
 set_global_assignment -name VERILOG_FILE rtl/pll.v
 set_global_assignment -name VERILOG_FILE rtl/pll/pll_0002.v
 
-# --- In-fabric MJPEG video: ultraembedded/core_jpeg (Apache-2.0) + wrapper ---
+# MJPEG video - ultraembedded/core_jpeg  + wrapper
 set_global_assignment -name VERILOG_FILE rtl/video/jpeg_frame_decoder.v
 set_global_assignment -name VERILOG_FILE rtl/video/dlv_streamer.v
 set_global_assignment -name VERILOG_FILE rtl/video/fb_writer.v

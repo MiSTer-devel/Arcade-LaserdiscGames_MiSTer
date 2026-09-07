@@ -2,7 +2,7 @@
 //  Dragon's Lair / Space Ace (US set) Main CPU Board
 //  Based on MAME dlair.cpp (dlus_map / dlair_ldv1000) by Aaron Giles
 //  Single Z80 @ (real 4 MHz) + AY-3-8910 (real 2 MHz) + Pioneer LD-V1000
-//  laserdisc.  The LD is a real command/status HLE (DragonsLair_LDV1000.sv,
+//  laserdisc.  The LD is a real command/status HLE (rtl/ldp/,
 //  see "LaserDisc" section below) — replaced the
 //  earlier constant-ready stub. This module has NO video output of its own;
 //  all game video is on the LaserDisc, decoded/composited in the top file
@@ -345,8 +345,8 @@ wire signed [15:0] ay_signed = {1'b0, ay_sum, 5'd0} - 16'sd12288;
 assign sound = ay_signed;
 
 
-// Real LD-V1000 controller: processes the Z80's SEARCH/PLAY/STOP stream, tracks
-// the disc frame, and reports real status + per-frame strobe (see DragonsLair_LDV1000.sv).
+// Laserdisc player: one shared transport (rtl/ldp/ldp_transport.sv) plus a protocol
+// front-end per player, selected at runtime by player_sel (see rtl/ldp/ldp_top.sv).
 wire  [7:0] ld_status;
 wire        ld_status_strobe, ld_command_strobe, ld_ready_n;
 wire [16:0] ld_curr_frame;   // routed to the video path via ld_frame_o below (disc->film map, dlv_streamer.v)
@@ -355,7 +355,7 @@ wire [16:0] dbg_seek_frame_w;
 wire [19:0] dbg_end_frame_w;   // raw SEARCH digits (5 nibbles)   // segment start/end frame probe
 wire  [3:0] dbg_flags_w;                         // sticky autostop telemetry
 
-DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // thread the core clock down
+ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (   // thread the core clock down
     .clk            (clk_sys),
     .reset_n        (reset),          // core reset is active-low
     .cmd_stb        (ld_cmd_stb),
@@ -363,7 +363,7 @@ DragonsLair_LDV1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (   // thread the core clock do
     .status         (ld_status),
     .status_strobe  (ld_status_strobe),
     .command_strobe (ld_command_strobe),
-    .pr7820         (pr7820_mode),
+    .player_sel     ({3'd0, pr7820_mode}),   // 0 = LD-V1000, 1 = PR-7820
     .ready_n        (ld_ready_n),
     .search_cmd_o   (search_cmd_o),
     .play_end_o     (play_end_o),

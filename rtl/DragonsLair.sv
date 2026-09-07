@@ -12,7 +12,7 @@
 module DragonsLair
 #(
     // core clock rate, from CORE_CLK_HZ in Arcade-LaserdiscGames.sv.
-    // Passed straight through to DragonsLair_CPU -> DragonsLair_LDV1000.
+    // Passed straight through to DragonsLair_CPU -> ldp_top -> ldp_transport.
     parameter [31:0] CLK_HZ = 32'd80_000_000
 )
 (
