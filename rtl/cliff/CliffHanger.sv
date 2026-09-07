@@ -1,0 +1,287 @@
+//============================================================================
+//  Cliff Hanger (Stern, 1983) — top-level game module.
+//  Based on MAME stern/cliffhgr.cpp (authoritative for the I/O map and the
+//  discrete sound) and Daphne game/cliff.cpp (authoritative for PR-8210 use).
+//
+//  Z80 + TMS9928A overlay + Pioneer PR-8210. All game video is on the disc;
+//  the TMS overlay adds score/lives on top (DIP32). The overlay's RENDERER is
+//  not implemented yet -- see tms9928a_regs.sv -- so nothing is drawn over the
+//  video, but the chip's interrupt still drives the Z80 NMI as the game expects.
+//
+//  Memory map (MAME mainmem):
+//    0x0000-0x9FFF  program ROM (5 x 8KB; the map extends to 0xBFFF, unpopulated)
+//    0xE000-0xE7FF  battery-backed NVRAM (5126)   -- volatile here, see note
+//    0xE800-0xEFFF  RAM (2128)
+//============================================================================
+module CliffHanger
+#(
+    parameter [31:0] CLK_HZ = 32'd80_000_000
+)
+(
+    input                reset,        // active LOW
+    input                clk_sys,
+
+    input          [7:0] p1,           // {b3,b2,b1,action, right,left,down,up} active HIGH
+    input          [3:0] cab,          // {coin2, coin1, start2, start1} active HIGH
+    input         [39:0] dsw,          // DIP banks 0..4, one byte each
+
+    output signed [15:0] sound_l,
+    output signed [15:0] sound_r,
+
+    input         [24:0] ioctl_addr,
+    input          [7:0] ioctl_data,
+    input                ioctl_wr,
+    input          [7:0] ioctl_index,
+
+    input                pause,
+    input                disc_hold,
+    input          [3:0] post_seek_frames,
+
+    output               ld_search_cmd_o,
+    output               ld_play_end_o,
+    output        [16:0] ld_frame_o,
+    output               ld_playing_o,
+    output               dbg_led
+);
+    //--------------------------------------------------------- clocking ------
+    // Z80 at 4 MHz (CLIFF_CPU_HZ) from the 80 MHz core clock.
+    localparam [5:0] CDIV = CLK_HZ / 32'd4_000_000;
+    reg [5:0] cdiv;
+    reg       cpu_ce;
+    always @(posedge clk_sys) begin
+        if (!reset) begin cdiv <= 6'd0; cpu_ce <= 1'b0; end
+        else if (pause) cpu_ce <= 1'b0;
+        else begin
+            cpu_ce <= (cdiv == CDIV - 6'd1);
+            cdiv   <= (cdiv == CDIV - 6'd1) ? 6'd0 : cdiv + 6'd1;
+        end
+    end
+
+    //--------------------------------------------------------- Z80 ------------
+    wire [15:0] cpu_A;
+    wire  [7:0] cpu_Dout;
+    reg   [7:0] cpu_Din;
+    wire        n_rd, n_wr, n_mreq, n_iorq, n_m1;
+    reg         n_irq, n_nmi;
+
+    T80s cpu (
+        .RESET_n(reset), .CLK(clk_sys), .CEN(cpu_ce),
+        .WAIT_n(1'b1), .INT_n(n_irq), .NMI_n(n_nmi), .BUSRQ_n(1'b1),
+        .M1_n(n_m1), .MREQ_n(n_mreq), .IORQ_n(n_iorq),
+        .RD_n(n_rd), .WR_n(n_wr),
+        .A(cpu_A), .DI(cpu_Din), .DO(cpu_Dout)
+    );
+
+    wire mem_access = ~n_mreq;
+    wire io_access  = ~n_iorq & n_m1;      // M1 high excludes the interrupt ack
+    wire [7:0] io_A = cpu_A[7:0];
+
+    //--------------------------------------------------------- memory ---------
+    // ROM 0x0000-0x9FFF (40KB), RAM+NVRAM as one 4KB block at 0xE000-0xEFFF.
+    // NOTE: the 0xE000-0xE7FF half is battery-backed on real hardware. It is
+    // plain RAM here, so high scores and bookkeeping do not survive a reset.
+    wire cs_rom = mem_access & (cpu_A < 16'hA000);
+    wire cs_ram = mem_access & (cpu_A[15:12] == 4'hE);
+
+    wire [7:0] rom_D, ram_D;
+    wire rom_ld = (ioctl_index == 8'd0) & ioctl_wr;
+
+    dpram_dc #(.widthad_a(16)) u_rom (
+        .clock_a(clk_sys), .address_a(cpu_A), .q_a(rom_D),
+        .wren_a(1'b0), .data_a(8'd0),
+        .clock_b(clk_sys), .address_b(ioctl_addr[15:0]), .data_b(ioctl_data),
+        .wren_b(rom_ld), .q_b()
+    );
+
+    dpram_dc #(.widthad_a(12)) u_ram (
+        .clock_a(clk_sys), .address_a(cpu_A[11:0]), .q_a(ram_D),
+        .wren_a(cs_ram & ~n_wr), .data_a(cpu_Dout),
+        .clock_b(clk_sys), .address_b(12'd0), .data_b(8'd0), .wren_b(1'b0), .q_b()
+    );
+
+    //--------------------------------------------------------- I/O decode -----
+    // MAME mainport (global mask 0xFF).
+    wire cs_vram_w = io_access & ~n_wr & (io_A == 8'h44);
+    wire cs_vram_r = io_access & ~n_rd & (io_A == 8'h45);
+    wire cs_snd_w  = io_access & ~n_wr & (io_A == 8'h46);
+    wire cs_phil_r = io_access & ~n_rd & (io_A[7:2] == 6'b010100) & (io_A[1:0] != 2'b11); // 0x50-0x52
+    wire cs_irqack = io_access & ~n_rd & (io_A == 8'h53);
+    wire cs_vreg_w = io_access & ~n_wr & (io_A == 8'h54);
+    wire cs_vreg_r = io_access & ~n_rd & (io_A == 8'h55);
+    wire cs_philcl = io_access & ~n_wr & (io_A == 8'h57);
+    wire cs_bank_w = io_access & ~n_wr & (io_A == 8'h60);
+    wire cs_port_r = io_access & ~n_rd & (io_A == 8'h62);
+    wire cs_wire_w = io_access & ~n_wr & (io_A == 8'h66);
+    wire cs_coin_w = io_access & ~n_wr & (io_A == 8'h68);
+    wire cs_led_w  = io_access & ~n_wr & (io_A[7:1] == 7'b0110111);  // 0x6E-0x6F
+
+    //--------------------------------------------------------- input banks ----
+    // MAME port_r: banks 0..6 are mapped, anything above reads pulled-up 0xFF.
+    // Banks 0-4 are DIP switches from the MRA; 5 and 6 are the controls.
+    reg [3:0] bank_sel;
+    always @(posedge clk_sys) begin
+        if (!reset) bank_sel <= 4'd0;
+        else if (cpu_ce && cs_bank_w)
+            // writing 0x0F clears the LS174; only D3-D0 are connected
+            bank_sel <= (cpu_Dout == 8'h0F) ? 4'd0 : cpu_Dout[3:0];
+    end
+
+    // Active-low, like every switch and button on the board.
+    // Bit assignments are MAME's (INPUT_PORTS_START(cliffhgr) BANK5/BANK6);
+    // Daphne only labels these "button data" / "joystick data".
+    //   BANK5: b0 COIN1, b1 COIN2, b2 BTN2 P1, b3 BTN2 P2,
+    //          b4 BTN1 P1, b5 BTN1 P2, b6 unused, b7 TILT
+    //   BANK6: b0 UP, b1 RIGHT, b2 DOWN, b3 LEFT, b7:4 unused
+    // P2 buttons and TILT have no input here yet, so they read as not-pressed.
+    wire [7:0] bank5 = ~{1'b0, 1'b0, 1'b0, p1[4], 1'b0, p1[5], cab[3], cab[2]};
+    wire [7:0] bank6 = ~{4'b0000, p1[2], p1[1], p1[3], p1[0]};
+
+    reg [7:0] bank_bus;
+    always @(*) begin
+        case (bank_sel)
+            4'd0: bank_bus = dsw[7:0];
+            4'd1: bank_bus = dsw[15:8];
+            4'd2: bank_bus = dsw[23:16];
+            4'd3: bank_bus = dsw[31:24];
+            4'd4: bank_bus = dsw[39:32];
+            4'd5: bank_bus = bank5;
+            4'd6: bank_bus = bank6;
+            default: bank_bus = 8'hFF;
+        endcase
+    end
+
+    //--------------------------------------------------------- laserdisc ------
+    // PR-8210: the game toggles one wire. Daphne blips on a write of 1 to
+    // port 0x66 (cliff.cpp) -- that is what is known to work with these ROMs.
+    reg ld_blip;
+    always @(posedge clk_sys) begin
+        ld_blip <= 1'b0;
+        if (reset && cpu_ce && cs_wire_w && cpu_Dout[0]) ld_blip <= 1'b1;
+    end
+
+    wire [16:0] ld_curr_frame;
+    wire        ld_frame_valid;
+
+    ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (
+        .clk(clk_sys), .reset_n(reset),
+        .player_sel(4'd2),              // PLAYER_PR8210
+        .cmd_stb(1'b0), .cmd_byte(8'd0),
+        .blip(ld_blip),
+        .status(), .status_strobe(), .command_strobe(), .ready_n(),
+        .frame_valid(ld_frame_valid),
+        .tx_valid(), .tx_byte(), .tx_pop(1'b0),
+        .search_cmd_o(ld_search_cmd_o), .play_end_o(ld_play_end_o),
+        .curr_frame(ld_curr_frame),
+        .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
+        .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
+        .post_seek_frames(post_seek_frames)
+    );
+    assign ld_frame_o = ld_curr_frame;
+
+    // ---- Philips VBI picture code (MAME philips_code_r) ----
+    // 24 bits: 0xF in the top nibble marks a valid picture number, so bit 23 is
+    // set and the IRQ fires; the low 20 bits are the frame as 5 BCD digits.
+    wire [19:0] frame_bcd;
+    bin17_to_bcd5 u_bcd (.clk(clk_sys), .reset_n(reset), .bin(ld_curr_frame), .bcd(frame_bcd));
+
+    wire [23:0] philips_code = ld_frame_valid ? {4'hF, frame_bcd} : 24'd0;
+    reg  [7:0]  phil_bus;
+    always @(*) begin
+        case (io_A[1:0])
+            2'd0:    phil_bus = philips_code[7:0];
+            2'd1:    phil_bus = philips_code[15:8];
+            default: phil_bus = philips_code[23:16];
+        endcase
+    end
+
+    //--------------------------------------------------------- TMS9928A -------
+    wire [13:0] vram_A;
+    wire  [7:0] vram_D, vram_Q;
+    wire        vram_we;
+    wire  [7:0] tms_dout;
+    wire        tms_int_n;
+
+    dpram_dc #(.widthad_a(14)) u_vram (
+        .clock_a(clk_sys), .address_a(vram_A), .q_a(vram_Q),
+        .wren_a(vram_we), .data_a(vram_D),
+        .clock_b(clk_sys), .address_b(14'd0), .data_b(8'd0), .wren_b(1'b0), .q_b()
+    );
+
+    // 59.94 Hz field tick for the VDP's vblank interrupt.
+    localparam [21:0] FIELD_PERIOD = (64'd1001 * CLK_HZ) / 64'd60000;
+    reg [21:0] fcnt;
+    wire       vblank_tick = (fcnt == FIELD_PERIOD - 22'd1);
+    always @(posedge clk_sys) begin
+        if (!reset) fcnt <= 22'd0;
+        else fcnt <= vblank_tick ? 22'd0 : fcnt + 22'd1;
+    end
+
+    tms9928a_regs u_tms (
+        .clk(clk_sys), .reset_n(reset), .ce(cpu_ce),
+        .port0_rd(cs_vram_r), .port0_wr(cs_vram_w),
+        .port1_rd(cs_vreg_r), .port1_wr(cs_vreg_w),
+        .din(cpu_Dout), .dout(tms_dout),
+        .vblank_tick(vblank_tick), .irq_n(tms_int_n),
+        .vram_addr(vram_A), .vram_din(vram_D), .vram_we(vram_we), .vram_dout(vram_Q)
+    );
+
+    //--------------------------------------------------------- interrupts -----
+    // IRQ: asserted when a valid Philips code arrives each field, cleared by
+    // reading port 0x53 (MAME irq_ack_r). NMI follows the TMS interrupt.
+    always @(posedge clk_sys) begin
+        if (!reset) n_irq <= 1'b1;
+        else begin
+            if (vblank_tick && ld_frame_valid) n_irq <= 1'b0;
+            else if (cpu_ce && cs_irqack)      n_irq <= 1'b1;
+        end
+    end
+    always @(posedge clk_sys) n_nmi <= tms_int_n;
+
+    //--------------------------------------------------------- sound ----------
+    // Discrete: two gated 555 astables mixed (MAME cliffhgr_a.cpp).
+    //   f = 1.44 / ((R1 + 2*R2) * C), R1 = 24k, R2 = 10k
+    //   C = 0.047uF -> ~696 Hz ; C = 0.1uF -> ~327 Hz ; duty (R1+R2)/(R1+2R2) = 77%
+    localparam [31:0] SND1_PERIOD = CLK_HZ / 32'd696;
+    localparam [31:0] SND2_PERIOD = CLK_HZ / 32'd327;
+    reg [31:0] s1_cnt, s2_cnt;
+    reg        s1_out, s2_out;
+    reg  [1:0] snd_en;
+
+    always @(posedge clk_sys) begin
+        if (!reset) begin
+            s1_cnt <= 32'd0; s2_cnt <= 32'd0; s1_out <= 1'b0; s2_out <= 1'b0;
+            snd_en <= 2'd0;
+        end else begin
+            if (cpu_ce && cs_snd_w) snd_en <= cpu_Dout[1:0];
+            // 77% duty, matching the 555's charge/discharge ratio
+            s1_cnt <= (s1_cnt >= SND1_PERIOD - 32'd1) ? 32'd0 : s1_cnt + 32'd1;
+            s2_cnt <= (s2_cnt >= SND2_PERIOD - 32'd1) ? 32'd0 : s2_cnt + 32'd1;
+            s1_out <= (s1_cnt < ((SND1_PERIOD * 32'd77) / 32'd100));
+            s2_out <= (s2_cnt < ((SND2_PERIOD * 32'd77) / 32'd100));
+        end
+    end
+
+    wire signed [15:0] snd = ((snd_en[0] & s1_out) ? 16'sd6000 : 16'sd0)
+                           + ((snd_en[1] & s2_out) ? 16'sd6000 : 16'sd0);
+    assign sound_l = snd;
+    assign sound_r = snd;
+
+    assign dbg_led = |snd_en;
+
+    //--------------------------------------------------------- CPU data mux ---
+    always @(*) begin
+        if      (cs_rom)    cpu_Din = (cpu_A < 16'hA000) ? rom_D : 8'hFF;
+        else if (cs_ram)    cpu_Din = ram_D;
+        else if (cs_vram_r) cpu_Din = tms_dout;
+        else if (cs_vreg_r) cpu_Din = tms_dout;
+        else if (cs_phil_r) cpu_Din = phil_bus;
+        else if (cs_port_r) cpu_Din = bank_bus;
+        else if (cs_irqack) cpu_Din = 8'h00;      // MAME returns 0
+        else                cpu_Din = 8'hFF;
+    end
+
+    // Unused writes, decoded so they do not fall through to a warning:
+    // 0x57 philips clear, 0x60 bank (handled), 0x64/0x6A unused, 0x68 coin
+    // counter, 0x6E/0x6F test LED.
+    wire _unused = &{1'b0, cs_philcl, cs_coin_w, cs_led_w, n_m1, 1'b0};
+endmodule

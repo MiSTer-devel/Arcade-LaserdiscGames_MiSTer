@@ -39,6 +39,7 @@ assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
 wire signed [15:0] audio_l, audio_r;
+wire signed [15:0] audio_l_dl, audio_r_dl;
 // AY beeps mixed with the .dlv PCM, saturating.  The AY arrives biased by -12288, so gain is
 // applied to the SWING and the bias re-applied.
 wire [1:0]         beep_vol = status[19:18];
@@ -72,6 +73,7 @@ assign AUDIO_MIX = 0; // no mix, true stereo
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 wire dbg_led;
+wire dbg_led_dl;
 assign LED_USER  = dbg_led;  // ~0.6 Hz "core alive" heartbeat from DragonsLair_CPU
 assign BUTTONS = 0;
 
@@ -304,6 +306,7 @@ pause #(8,8,8,CORE_CLK_HZ/32'd1_000_000) pause
 
 // ---- Raster video path (DDR framebuffer -> arcade_video) ----
 wire [63:0] led_digits_flat;
+wire [63:0] led_digits_dl;
 wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
 wire  [7:0] rr_r, rr_g, rr_b;
@@ -398,7 +401,13 @@ always @(posedge CLK_CORE) begin
 end
 wire is_spaceace = (game_mod == 8'd1);
 wire is_thayers  = (game_mod == 8'd2);
+wire is_cliff    = (game_mod == 8'd3);   // Cliff Hanger: its own board, see rtl/cliff/
+// Cliff reads five DIP banks through port 0x62; the OSD already delivers eight bytes.
+wire [39:0] dsw40 = {dip_sw[4], dip_sw[3], dip_sw[2], dip_sw[1], dip_sw[0]};
 wire [1:0] skill_level;   // from DragonsLair_CPU's scoreboard snoop
+wire [1:0] skill_dl;
+wire [16:0] ld_frame_dl;
+wire        seek_pulse_dl, play_end_dl, ld_playing_dl;
 wire [16:0] ld_curr_frame_top;   // LD disc frame from DragonsLair -> dlv_streamer
 
 // ---- Seek hold ----
@@ -420,7 +429,7 @@ wire        ld_playing_top;      // LD mode==PLAY from DragonsLair -> dlv_stream
 //Instantiate Dragon's Lair top-level game module
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 (
-	.reset(~reset),       // MiSTer reset is active-high; invert for active-low game modules
+	.reset(~reset & ~is_cliff),   // active-low; also held in reset while Cliff runs
 
 	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)
 
@@ -433,8 +442,8 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	.is_thayers(is_thayers),
 	.is_spaceace(is_spaceace),
 
-	.sound_l(audio_l),
-	.sound_r(audio_r),
+	.sound_l(audio_l_dl),
+	.sound_r(audio_r_dl),
 
 	.ioctl_addr(ioctl_addr),
 	.ioctl_data(ioctl_dout),
@@ -446,14 +455,64 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 // has not shown yet.  fb_seek_hold is already in the CLK_CORE domain, so no CDC is needed.
 	.disc_hold(fb_seek_hold),
 
-	.led_digits_o(led_digits_flat),
-	.skill_o(skill_level),
-	.dbg_led(dbg_led),
-	.ld_frame_o(ld_curr_frame_top), .ld_search_cmd_o(fb_seek_pulse),   // HLE-DRIVE /
-	.ld_play_end_o(fb_play_end),
-	.ld_playing_o(ld_playing_top),
+	.led_digits_o(led_digits_dl),
+	.skill_o(skill_dl),
+	.dbg_led(dbg_led_dl),
+	.ld_frame_o(ld_frame_dl), .ld_search_cmd_o(seek_pulse_dl),   // HLE-DRIVE /
+	.ld_play_end_o(play_end_dl),
+	.ld_playing_o(ld_playing_dl),
 	.post_seek_frames(post_seek_eff)
 );
+
+//------------------------------------------------------------------------------
+// Cliff Hanger (Stern) — separate board: Z80 + TMS9928A overlay + Pioneer PR-8210.
+// Only one of the two game modules is out of reset at a time; every shared output
+// below is muxed on is_cliff so the idle board cannot drive the video or audio path.
+//------------------------------------------------------------------------------
+wire signed [15:0] audio_l_cl, audio_r_cl;
+wire        [16:0] ld_frame_cl;
+wire               seek_pulse_cl, play_end_cl, ld_playing_cl, dbg_led_cl;
+
+CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
+(
+	.reset(~reset & is_cliff),
+	.clk_sys(CLK_CORE),
+
+	// p1: {b3,b2,b1,action, right,left,down,up}; Cliff uses action=BUTTON1, skill1(B)=BUTTON2
+	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
+	.cab({m_coin2, m_coin1, m_start2, m_start1}),
+	.dsw(dsw40),
+
+	.sound_l(audio_l_cl),
+	.sound_r(audio_r_cl),
+
+	.ioctl_addr(ioctl_addr),
+	.ioctl_data(ioctl_dout),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_index(ioctl_index),
+
+	.pause(pause_cpu),
+	.disc_hold(fb_seek_hold),
+	.post_seek_frames(post_seek_eff),
+
+	.ld_search_cmd_o(seek_pulse_cl),
+	.ld_play_end_o(play_end_cl),
+	.ld_frame_o(ld_frame_cl),
+	.ld_playing_o(ld_playing_cl),
+	.dbg_led(dbg_led_cl)
+);
+
+// ---- shared outputs: whichever board is running ----
+assign audio_l           = is_cliff ? audio_l_cl    : audio_l_dl;
+assign audio_r           = is_cliff ? audio_r_cl    : audio_r_dl;
+assign ld_curr_frame_top = is_cliff ? ld_frame_cl   : ld_frame_dl;
+assign fb_seek_pulse     = is_cliff ? seek_pulse_cl : seek_pulse_dl;
+assign fb_play_end       = is_cliff ? play_end_cl   : play_end_dl;
+assign ld_playing_top    = is_cliff ? ld_playing_cl : ld_playing_dl;
+assign dbg_led           = is_cliff ? dbg_led_cl    : dbg_led_dl;
+// Cliff has no Dragon's Lair scoreboard and no Space Ace skill select.
+assign led_digits_flat   = is_cliff ? 64'd0 : led_digits_dl;
+assign skill_level       = is_cliff ? 2'd0  : skill_dl;
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
 // module.  It was the sole driver of ioctl_din and ioctl_upload_req -- tied off to keep hps_io happy.

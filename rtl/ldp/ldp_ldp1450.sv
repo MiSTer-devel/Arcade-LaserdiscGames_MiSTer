@@ -54,7 +54,7 @@ module ldp_ldp1450
     localparam [7:0] ACK = 8'h0a;
 
     // ACK latencies from the LDP-1000A programming manual (ldp1000.cpp:99-102).
-    localparam [31:0] US = CLK_HZ / 32'd1_000_000;
+    localparam [31:0] US = CLK_HZ / 64'd1_000_000;
     localparam [31:0] T_CLEAR = US * 32'd4300;
     localparam [31:0] T_NUM   = US * 32'd1200;
     localparam [31:0] T_ENTER = US * 32'd2600;

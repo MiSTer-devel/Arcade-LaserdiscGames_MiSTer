@@ -59,8 +59,10 @@ module ldp_pr8210
         endcase
     endfunction
 
-    localparam [31:0] ONE_TICKS = (CLK_HZ / 32'd1_000_000) * BIT_ONE_US;
-    localparam [31:0] TMO_TICKS = (CLK_HZ / 32'd1_000_000) * TIMEOUT_US;
+    // Multiply before dividing, and divide by a literal -- the idiom the rest of
+    // the LD modules use. Dividing first truncates CLK_HZ to whole MHz.
+    localparam [31:0] ONE_TICKS = (BIT_ONE_US * CLK_HZ) / 64'd1_000_000;
+    localparam [31:0] TMO_TICKS = (TIMEOUT_US * CLK_HZ) / 64'd1_000_000;
 
     reg [31:0] gap;            // clocks since the previous blip
     reg [9:0]  sr;             // blip shift register
