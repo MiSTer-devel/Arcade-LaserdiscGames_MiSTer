@@ -20,7 +20,11 @@ module led_band #(
     parameter        DIAG_HEX_F = 1'b0,
     // X origin when the Space Ace skill field is shown. The band grows
     // from 33 to 39 slots, so it is recentred: (512 - 39*6*2)/2 = 22.  Only used when skill_en=1.
-    parameter [15:0] X_START_SKILL = 16'd22
+    parameter [15:0] X_START_SKILL = 16'd22,
+    // 1 = draw true 7-segment shapes (what the real cabinet's LED scoreboard is);
+    // 0 = the original hand-drawn 5x7 pixel font, kept so this is one-parameter
+    // revertible -- it is a visual change that cannot be verified in simulation.
+    parameter        SEVEN_SEG = 1'b1
 )(
     input      [15:0] hc,
     input      [15:0] vc,
@@ -130,5 +134,61 @@ module led_band #(
     endcase
 
     wire pix = (fx < 3'd5) & rowbits[4 - fx];
-    assign seg_lit = in_band & pix;
+
+    //------------------------------------------------------------------------
+    // True 7-segment rendering.  The scoreboard on a real DL/SA cabinet is an
+    // LED display, not a dot-matrix one, so the digits are segments -- and a
+    // 5x7 cell is exactly the classic 7-segment layout:
+    //
+    //     .###.      a = row 0, cols 1-3       f = rows 1-2, col 0
+    //     #...#      b = rows 1-2, col 4       g = row 3,    cols 1-3
+    //     .###.      e = rows 4-5, col 0       c = rows 4-5, col 4
+    //     #...#      d = row 6,    cols 1-3
+    //     .###.
+    //
+    // Corners stay dark, which is what a real display looks like: the segments
+    // have bevelled ends and do not meet.  Costs no font table at all.
+    // Bit order is {a,b,c,d,e,f,g}, a = MSB.
+    function [6:0] segmask(input [4:0] c);
+        case (c)
+            5'd0:  segmask = 7'b1111110; // 0
+            5'd1:  segmask = 7'b0110000; // 1
+            5'd2:  segmask = 7'b1101101; // 2
+            5'd3:  segmask = 7'b1111001; // 3
+            5'd4:  segmask = 7'b0110011; // 4
+            5'd5:  segmask = 7'b1011011; // 5
+            5'd6:  segmask = 7'b1011111; // 6
+            5'd7:  segmask = 7'b1110000; // 7
+            5'd8:  segmask = 7'b1111111; // 8
+            5'd9:  segmask = 7'b1111011; // 9
+            5'd10: segmask = 7'b1110111; // A
+            5'd11: segmask = 7'b0011111; // b
+            5'd12: segmask = 7'b1001110; // C
+            5'd13: segmask = 7'b0111101; // d
+            5'd14: segmask = 7'b1001111; // E
+            5'd15: segmask = DIAG_HEX_F ? 7'b1000111   // F
+                                        : 7'b0000000;  // stock: blank
+            5'd16: segmask = 7'b1100111; // P
+            5'd17: segmask = 7'b0001110; // L
+            5'd18: segmask = 7'b0000101; // r
+            default: segmask = 7'b0000000;
+        endcase
+    endfunction
+
+    wire [6:0] sm    = segmask(ch);
+    wire       h_mid = (fx >= 3'd1) && (fx <= 3'd3);   // horizontal segment span
+    wire       v_lft = (fx == 3'd0);
+    wire       v_rgt = (fx == 3'd4);
+    wire       r_up  = (fy == 3'd1) || (fy == 3'd2);
+    wire       r_dn  = (fy == 3'd4) || (fy == 3'd5);
+
+    wire pix7 = (h_mid && (fy == 3'd0) && sm[6]) |   // a
+                (v_rgt && r_up            && sm[5]) |   // b
+                (v_rgt && r_dn            && sm[4]) |   // c
+                (h_mid && (fy == 3'd6) && sm[3]) |   // d
+                (v_lft && r_dn            && sm[2]) |   // e
+                (v_lft && r_up            && sm[1]) |   // f
+                (h_mid && (fy == 3'd3) && sm[0]);      // g
+
+    assign seg_lit = in_band & (SEVEN_SEG ? pix7 : pix);
 endmodule

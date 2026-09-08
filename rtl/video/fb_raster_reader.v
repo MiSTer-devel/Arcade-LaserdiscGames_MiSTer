@@ -74,6 +74,10 @@ module fb_raster_reader #(
     output reg        vblank,
     output reg [15:0] hpos,           // aligned (x,y) of the pixel now on vid_*
     output reg [15:0] vpos,           //   (for the LED-band compositor)
+    // The band height ACTUALLY in force this frame. v_band is adopted only at a
+    // frame boundary, so any overlay positioning relative to the video must use
+    // this, not the raw input, or an OSD toggle shifts it mid-raster.
+    output     [15:0] v_band_act,
     output     [7:0]  vid_r,
     output     [7:0]  vid_g,
     output     [7:0]  vid_b
@@ -87,6 +91,7 @@ module fb_raster_reader #(
 
     // Latched once per frame: a mid-frame OSD toggle must not move the raster under itself.
     reg  [15:0] v_band_q = V_BAND;
+    assign v_band_act = v_band_q;
     reg         crt_q    = 1'b0;
     reg         flip_q   = 1'b0;
 

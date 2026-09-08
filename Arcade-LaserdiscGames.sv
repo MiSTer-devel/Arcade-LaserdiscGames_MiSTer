@@ -95,7 +95,12 @@ wire is_dl2      = (game_mod == 8'd4);   // Dragon's Lair II: 8088 board, see rt
 // LED bar off -> the video gets the band's rows back (full screen).
 // Cliff Hanger has no scoreboard at all: it draws lives and score through the
 // TMS9928A overlay, so the band is meaningless there and is forced off.
-wire band_off = status[20] | is_cliff;
+// Dragon's Lair II has NO scoreboard: the original scored nothing, Daphne's
+// lair2.cpp contains no scoreboard code at all (unlike lair.cpp) and MAME's
+// dlair2.cpp instantiates no such device. Credits appear in the LDP-1450 text
+// overlay when the game wants them seen. Turning the band off also returns its
+// BAND_H rows to the picture and switches VIDEO_ARY back to 480.
+wire band_off = status[20] | is_cliff | is_dl2;
 wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
@@ -332,6 +337,7 @@ wire [63:0] led_digits_flat;
 wire [63:0] led_digits_dl;
 wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
+wire [15:0] rr_band_act;      // band height in force this frame, from the reader
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
 
@@ -385,12 +391,39 @@ wire        band_lit = led_lit & ~band_off;
 // fb_seek_hold changes at arbitrary points in the frame, so this is LATCHED at vblank in the
 // framebuffer block below: switching the mask mid-raster tears the picture across the screen.
 wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0);
-// Priority: LED band (DL/SA only) > Cliff's TMS overlay > seek black > disc video.
+//------------------------------------------------------------------------------
+// SHARED OVERLAY COORDINATE SPACE.
+// Every Daphne game in this core declares a 320x240 overlay surface (DL2, Cliff/
+// TMS9128NL, Dragon's Lair, Thayer's), so that is the space every overlay source
+// positions in. This is the ONE place our 512x480 raster is converted -- both
+// overlays had independently got this wrong before it lived here.
+//   x: 512 -> 320  is *5/8      y: 480 -> 240 is /2  (1:1 in 240p CRT mode)
+// vpos counts from the top of the whole active display INCLUDING the LED band
+// (that is why led_band tests vc >= BAND_Y0), and video row = vpos - v_band, so
+// the band height is subtracted here to make the space VIDEO-relative. Without
+// it, turning the band off slides every overlay down by BAND_H rows.
+wire [18:0] ovl_sx_mul = rr_hpos * 16'd5;
+wire [15:0] ovl_sx     = ovl_sx_mul[18:3];
+// rr_band_act, not band_h_w: the reader adopts an OSD toggle only at a frame
+// boundary, so using the raw value would slide the overlay mid-raster.
+wire [15:0] ovl_vrel   = (rr_vpos >= rr_band_act) ? (rr_vpos - rr_band_act) : 16'd0;
+wire [15:0] ovl_sy     = crt_mode ? ovl_vrel : {1'b0, ovl_vrel[15:1]};
+
+// Priority: LED band (DL/SA only) > DL2 text overlay > Cliff's TMS overlay >
+// seek black > disc video.  Each term is inert outside its own game.
 // cliff_ovl_opaque is low for every other game and whenever the VDP is blanked
 // or not in text mode, so this line is inert outside Cliff Hanger.
-wire  [7:0] comp_r = band_lit ? 8'hFF : cliff_ovl_opaque ? ovl_rgb[23:16] : (seek_black ? 8'h00 : rr_r);
-wire  [7:0] comp_g = band_lit ? 8'h00 : cliff_ovl_opaque ? ovl_rgb[15:8]  : (seek_black ? 8'h00 : rr_g);
-wire  [7:0] comp_b = band_lit ? 8'h00 : cliff_ovl_opaque ? ovl_rgb[7:0]   : (seek_black ? 8'h00 : rr_b);
+// ONE OVERLAY BUS. Each source presents rgb + opaque already in this space;
+// only one game runs at a time so the terms are mutually exclusive. Adding an
+// overlay means adding a source here, not another leg of a priority chain.
+//   DL2  : LDP-1450 text, white (the real player draws white only)
+//   Cliff: TMS9928A, through the VDP palette
+wire [23:0] ovl_bus_rgb    = d2_txt_lit ? 24'hFFFFFF : ovl_rgb;
+wire        ovl_bus_opaque = d2_txt_lit | cliff_ovl_opaque;
+
+wire  [7:0] comp_r = band_lit ? 8'hFF : ovl_bus_opaque ? ovl_bus_rgb[23:16] : (seek_black ? 8'h00 : rr_r);
+wire  [7:0] comp_g = band_lit ? 8'h00 : ovl_bus_opaque ? ovl_bus_rgb[15:8]  : (seek_black ? 8'h00 : rr_g);
+wire  [7:0] comp_b = band_lit ? 8'h00 : ovl_bus_opaque ? ovl_bus_rgb[7:0]   : (seek_black ? 8'h00 : rr_b);
 wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
 wire [63:0] rr_dout2_64;    // whole cached word from ddram read port 2
@@ -479,7 +512,7 @@ wire        ld_playing_top;      // LD mode==PLAY from DragonsLair -> dlv_stream
 //Instantiate Dragon's Lair top-level game module
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 (
-	.reset(~reset & ~is_cliff),   // active-low; also held in reset while Cliff runs
+	.reset(~reset & ~is_cliff & ~is_dl2),   // active-low; held in reset while Cliff or DL2 runs
 
 	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)
 
@@ -552,7 +585,7 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 	.dbg_led(dbg_led_cl),
 
 	// TMS9928A overlay -> composited into comp_r/g/b above
-	.ovl_hpos(rr_hpos), .ovl_vpos(rr_vpos), .ovl_ce_pix(rr_ce_pix),
+	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
 	.ovl_color(cliff_ovl_color), .ovl_opaque(cliff_ovl_opaque)
 );
 
@@ -575,6 +608,10 @@ wire               d2_ram_rd, d2_ram_wr, d2_ram_busy;
 wire               d2_tx_stb, d2_rx_valid, d2_rx_pop;
 wire         [7:0] d2_tx_byte, d2_rx_byte;
 wire signed [15:0] d2_audio;              // PC speaker: DL2's boot/attract beeps
+wire               d2_txt_we, d2_txt_on;
+wire         [1:0] d2_txt_line;
+wire         [5:0] d2_txt_col;
+wire         [7:0] d2_txt_glyph, d2_txt_x, d2_txt_y;
 
 DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 (
@@ -626,7 +663,10 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ)) dl2_ldp
 	.curr_frame(ld_frame_d2),
 	.pause(pause_cpu), .disc_hold(fb_seek_hold), .playing(ld_playing_d2),
 	.dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
-	.post_seek_frames(post_seek_eff)
+	.post_seek_frames(post_seek_eff),
+	.txt_we(d2_txt_we), .txt_line(d2_txt_line), .txt_col(d2_txt_col),
+	.txt_glyph(d2_txt_glyph), .txt_on(d2_txt_on),
+	.txt_x(d2_txt_x), .txt_y(d2_txt_y)
 );
 
 // D6/D7 on the DL2 controller board are the Comm2 activity LEDs to and from the
@@ -658,7 +698,7 @@ assign fb_play_end       = is_dl2 ? play_end_d2   : is_cliff ? play_end_cl   : p
 assign ld_playing_top    = is_dl2 ? ld_playing_d2 : is_cliff ? ld_playing_cl : ld_playing_dl;
 assign dbg_led           = is_cliff ? dbg_led_cl    : dbg_led_dl;
 // Cliff has no Dragon's Lair scoreboard and no Space Ace skill select.
-assign led_digits_flat   = is_cliff ? 64'd0 : led_digits_dl;
+assign led_digits_flat   = (is_cliff | is_dl2) ? 64'd0 : led_digits_dl;
 assign skill_level       = is_cliff ? 2'd0  : skill_dl;
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
@@ -955,11 +995,39 @@ fb_raster_reader #(
     .fill_idle(rr_fill_idle),               // (delete on revert)
     .ce_pix(rr_ce_pix),
     .hsync(rr_hs), .vsync(rr_vs), .hblank(rr_hblank), .vblank(rr_vblank),
-    .hpos(rr_hpos), .vpos(rr_vpos),
+    .hpos(rr_hpos), .vpos(rr_vpos), .v_band_act(rr_band_act),
     .vid_r(rr_r), .vid_g(rr_g), .vid_b(rr_b)
 );
 
 // X_START centres the 33-slot band; X_START_SKILL centres Space Ace's 39-slot version.
+// DL2's on-screen text. The board has NO video hardware -- title, credits,
+// "insert coin" and the whole operator menu are LDP-1450 overlay text, so this
+// is the only way any of it is visible.
+//
+// org_* converts the player's placement bytes into the 320x240 space every
+// Daphne overlay in this core uses. The multipliers are Daphne's (3.3 / 3.8,
+// as x422>>7 and x486>>7) and are its own hand-tuning, NOT a documented
+// coordinate system -- CALIBRATE against Screenshots/1-4 rather than trusting
+// them. They are localparams precisely so that is a one-line change.
+localparam [15:0] TXT_XM = 16'd422, TXT_XSUB = 16'd19;   // x3.297, then -19
+localparam [15:0] TXT_YM = 16'd486, TXT_YSUB = 16'd10;   // x3.797, then -10
+wire [23:0] d2_org_xm = {16'd0, d2_txt_x} * TXT_XM;
+wire [23:0] d2_org_ym = {16'd0, d2_txt_y} * TXT_YM;
+wire [15:0] d2_org_xs = d2_org_xm[23:7];
+wire [15:0] d2_org_ys = d2_org_ym[23:7];
+wire  [8:0] d2_org_x  = (d2_org_xs > TXT_XSUB) ? d2_org_xs[8:0] - TXT_XSUB[8:0] : 9'd0;
+wire  [8:0] d2_org_y  = (d2_org_ys > TXT_YSUB) ? d2_org_ys[8:0] - TXT_YSUB[8:0] : 9'd0;
+wire        d2_txt_lit;
+
+text_overlay #(.FONT_HEX("rtl/video/ldp1450_font.hex")) dl2_text (
+    .clk(CLK_CORE),
+    .sx(ovl_sx), .sy(ovl_sy),
+    .wr(d2_txt_we), .wr_line(d2_txt_line), .wr_col(d2_txt_col), .wr_glyph(d2_txt_glyph),
+    .org_x(d2_org_x), .org_y(d2_org_y),
+    .enable(is_dl2 & d2_txt_on),
+    .lit(d2_txt_lit)
+);
+
 led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
     .hc(rr_hpos), .vc(rr_vpos), .crt_240p(crt_mode),
     .led_digits(led_digits_flat),   // real score/lives, restored

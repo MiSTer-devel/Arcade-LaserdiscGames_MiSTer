@@ -45,7 +45,18 @@ module ldp_ldp1450
     output     [7:0]  tx_byte,
     input             tx_pop,
 
-    output     [19:0] dbg_digits
+    output     [19:0] dbg_digits,
+
+    // ---- text overlay feed ----------------------------------------------
+    // Glyph INDICES, not ASCII: the character set belongs to this player, so
+    // the renderer downstream stays font- and game-agnostic.
+    output reg        txt_we,
+    output reg  [1:0] txt_line,
+    output reg  [5:0] txt_col,
+    output reg  [7:0] txt_glyph,
+    output            txt_on,
+    output      [7:0] txt_x,
+    output      [7:0] txt_y
 );
 `include "ldp_bus.svh"
 
@@ -74,6 +85,18 @@ module ldp_ldp1450
     // here as text. Without this state machine those payload bytes fall through
     // to the command decoder, where 'O' is STILL, 'V' is C.L. and ':' is PLAY --
     // so the game's own title screen stops and resets the disc.
+    // Daphne draw_singleline_LDP1450's character map, reproduced exactly. Note
+    // 0x3A..0x40 (': ; < = > ? @') all fall through to space -- which is why a
+    // real cabinet renders "VERS 3.19" when the wire carries "VERS:3.19". The
+    // font HAS glyphs at 0, 21 and 22 that no character can ever select.
+    localparam [7:0] G_SPACE = 8'd49, G_INV = 8'd50;
+    function [7:0] glyph_of(input [7:0] c);
+        if      (c >= 8'h26 && c <= 8'h39) glyph_of = c - 8'h25;   //  & ' ( ) * + , - . / 0-9
+        else if (c >= 8'h41 && c <= 8'h5A) glyph_of = c - 8'h2A;   //  A-Z
+        else if (c == 8'h13)               glyph_of = G_INV;       //  inversed space
+        else                               glyph_of = G_SPACE;
+    endfunction
+
     localparam [1:0] TX_NONE = 2'd0, TX_XY = 2'd1, TX_STR = 2'd2, TX_WIN = 2'd3;
     reg  [1:0]  tmode;
     reg         tcmd;              // 0x80 seen; the next byte picks the sub-mode
@@ -82,6 +105,15 @@ module ldp_ldp1450
     reg  [7:0]  text_x, text_y, text_scale;
     reg  [1:0]  text_line;
     reg         text_on;
+    reg  [5:0]  tcol;               // write cursor within the current line
+    reg  [5:0]  space_cnt;          // spaces seen in the current string
+    reg  [5:0]  fill_i;             // blank-fill cursor after a string ends
+    reg  [1:0]  fill_line;
+    reg         clear_all;          // fill spans all three lines, not just a tail
+    reg         filling;
+    assign txt_on = text_on;
+    assign txt_x  = text_x;
+    assign txt_y  = text_y;
     reg  [19:0] dig_sr, dig_latched;
     assign dbg_digits = dig_latched;
 
@@ -152,12 +184,37 @@ module ldp_ldp1450
             qw <= 3'd0; qr <= 3'd0; qn <= 4'd0;
             number <= 17'd0; search_armed <= 1'b0;
             tmode <= TX_NONE; tcmd <= 1'b0; xy_i <= 2'd0; got_line <= 1'b0;
+            tcol <= 6'd0; space_cnt <= 6'd0;
+            fill_i <= 6'd0; fill_line <= 2'd0; clear_all <= 1'b0; filling <= 1'b0;
+            txt_we <= 1'b0; txt_line <= 2'd0; txt_col <= 6'd0; txt_glyph <= G_SPACE;
             text_x <= 8'd0; text_y <= 8'd0; text_scale <= 8'd0;
             text_line <= 2'd0; text_on <= 1'b0;
             dig_sr <= 20'd0; dig_latched <= 20'd0;
             ack_timer <= 32'd0; ack_pending <= 1'b0;
             seq <= S_IDLE; seq_i <= 3'd0; bcd <= 20'd0; bin <= 17'd0; bcd_i <= 5'd0;
         end else if (!pause) begin
+            txt_we <= 1'b0;
+
+            // Blank-fill, one cell per clock: pads a finished line's tail, or walks
+            // all three lines for a clear-all. Worst case is 96 clocks; serial
+            // bytes arrive ~160,000 clocks apart at 4800 baud, so it always
+            // completes between bytes. A byte landing mid-fill would win the
+            // shared write port for that cycle -- it cannot happen at this baud,
+            // but that is the assumption, not a guarantee of the logic.
+            if (filling) begin
+                txt_we    <= 1'b1;
+                txt_line  <= fill_line;
+                txt_col   <= fill_i;
+                txt_glyph <= G_SPACE;
+                if (fill_i == 6'd31) begin
+                    // A clear-all walks on into the next line; a tail pad stops.
+                    if (clear_all && (fill_line != 2'd2)) begin
+                        fill_line <= fill_line + 2'd1;
+                        fill_i    <= 6'd0;
+                    end else filling <= 1'b0;
+                end else fill_i <= fill_i + 6'd1;
+            end
+
             // ---- queue maintenance: push and pop are independent ----
             if (q_push) begin q[qw] <= push_val; qw <= qw + 3'd1; end
             if (q_pop)  qr <= qr + 3'd1;
@@ -228,10 +285,34 @@ module ldp_ldp1450
                         text_line <= (cmd_byte == 8'h00) ? 2'd0 :
                                      (cmd_byte == 8'h0A) ? 2'd1 : 2'd2;
                         got_line  <= 1'b1;
+                        tcol      <= 6'd0;             // cursor to start of line
+                        space_cnt <= 6'd0;
                     end else if (cmd_byte == 8'h1A) begin
-                        tmode <= TX_NONE; got_line <= 1'b0;
+                        tmode   <= TX_NONE; got_line <= 1'b0;
+                        filling <= 1'b1;
+                        // A MOSTLY-BLANK STRING IS NOT A WRITE. Daphne counts the
+                        // spaces in the completed string and, above 20, clears all
+                        // three lines instead of storing to the addressed one.
+                        // DL2 sends a 31-space string between screens, so without
+                        // this the other two lines linger on screen.
+                        if (space_cnt > 6'd20) begin
+                            clear_all <= 1'b1; fill_line <= 2'd0; fill_i <= 6'd0;
+                        end else begin
+                            // ordinary string: pad its tail so a longer previous
+                            // line cannot show through
+                            clear_all <= 1'b0; fill_line <= text_line; fill_i <= tcol;
+                        end
+                    end else if (cmd_byte >= 8'h20 || cmd_byte == 8'h13) begin
+                        // Daphne stores only these; anything lower is dropped
+                        // WITHOUT advancing the cursor.
+                        txt_we    <= 1'b1;
+                        txt_line  <= text_line;
+                        txt_col   <= tcol;
+                        txt_glyph <= glyph_of(cmd_byte);
+                        if (cmd_byte == 8'h20 && space_cnt != 6'd63)
+                            space_cnt <= space_cnt + 6'd1;
+                        if (tcol != 6'd63) tcol <= tcol + 6'd1;
                     end
-                    // any other byte is string payload: consumed, not rendered yet
                 end else if (is_digit) begin
                     number      <= (number * 17'd10) + {13'd0, dig};
                     dig_sr      <= {dig_sr[15:0], dig};

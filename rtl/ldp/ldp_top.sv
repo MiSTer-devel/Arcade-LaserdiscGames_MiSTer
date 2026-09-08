@@ -50,7 +50,18 @@ module ldp_top
     output     [16:0] dbg_seek_frame,
     output     [19:0] dbg_end_frame,
     output      [3:0] dbg_flags,
-    input       [3:0] post_seek_frames
+    input       [3:0] post_seek_frames,
+
+    // ---- text overlay feed (LDP-1450 family only; inert for the others) ----
+    // The character generator belongs to the PLAYER, not the game: any board on
+    // an LDP-1450 gets on-screen text without contributing anything.
+    output            txt_we,
+    output      [1:0] txt_line,
+    output      [5:0] txt_col,
+    output      [7:0] txt_glyph,
+    output            txt_on,
+    output      [7:0] txt_x,
+    output      [7:0] txt_y
 );
     localparam [3:0] PLAYER_LDV1000 = 4'd0,
                      PLAYER_PR7820  = 4'd1,
@@ -140,8 +151,15 @@ module ldp_top
         .cmd_action(act_sony), .cmd_op(op_sony), .cmd_arg(arg_sony),
         .mode(mode), .curr_frame(curr_frame),
         .tx_valid(txv_sony), .tx_byte(txb_sony), .tx_pop(tx_pop && sel_ldp1450),
-        .dbg_digits(digits_sony)
+        .dbg_digits(digits_sony),
+        .txt_we(txt_we_sony), .txt_line(txt_line), .txt_col(txt_col),
+        .txt_glyph(txt_glyph), .txt_on(txt_on_sony),
+        .txt_x(txt_x), .txt_y(txt_y)
     );
+    // Gate on selection so a non-Sony game can never be given text to draw.
+    wire txt_we_sony, txt_on_sony;
+    assign txt_we = txt_we_sony & sel_ldp1450;
+    assign txt_on = txt_on_sony & sel_ldp1450;
 
     // ---- CPU-side muxes ----
     // A player without strobes idles them high; one without /READY idles it low
