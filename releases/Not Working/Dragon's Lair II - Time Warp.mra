@@ -25,7 +25,7 @@
     <joystick>4-way</joystick>
     <special_controls></special_controls>
     <num_buttons>1</num_buttons>
-    <buttons names="Sword,-,-,-,Coin,Start 1P,Start 2P,Pause" default="A,Select,Start,R,L"/>
+    <buttons names="Sword,-,-,Service,Coin,Start 1P,Start 2P,Pause" default="A,Y,Select,Start,R,L"/>
 
     <!-- NO SWITCHES DEFINED ON PURPOSE.
          MAME's cinematronics/dlair2.cpp is a skeleton: every PORT_DIPNAME in it is

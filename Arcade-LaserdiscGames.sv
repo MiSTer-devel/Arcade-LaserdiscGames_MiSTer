@@ -70,12 +70,16 @@ assign AUDIO_R = pause_cpu ? 16'd0 : sat_r;
 assign AUDIO_S = 1;   // signed
 assign AUDIO_MIX = 0; // no mix, true stereo
 
-assign LED_DISK  = 0;
 assign LED_POWER = 0;
 wire dbg_led;
 wire dbg_led_dl;
-assign LED_USER  = dbg_led;  // DL: ~0.6 Hz "core alive" heartbeat from DragonsLair_CPU.
-                             // Cliff: the real PCB's test LED (port 0x6E on / 0x6F off).
+// Driven in the Dragon's Lair II section below, where DL2 mirrors the controller
+// board's D6/D7 Comm2 activity LEDs onto these two.
+wire [1:0] led_disk_w;
+wire       led_user_w;
+assign LED_DISK  = led_disk_w;
+assign LED_USER  = led_user_w;  // DL: ~0.6 Hz "core alive" heartbeat from DragonsLair_CPU.
+                                // Cliff: the real PCB's test LED (port 0x6E on / 0x6F off).
 assign BUTTONS = 0;
 
 
@@ -301,6 +305,10 @@ wire m_start2   = btn_2p_start  | joystick_0[10];
 wire m_coin1    = btn_coin1     | joystick_0[8];
 wire m_coin2    = btn_coin2     | joystick_1[8];
 wire m_pause    = btn_pause     | joystick_0[11];
+// DL2 service switch: keyboard 9, or pad button 4 (Y). Daphne lair2.cpp
+// SWITCH_SERVICE clears bit 7 of banks[0], i.e. port 0x201 bit 7, active low.
+// Without it service mode is unreachable and the EEPROM cannot be initialised.
+wire m_service  = btn_service   | joystick_0[7];
 
 // PAUSE SYSTEM
 wire pause_cpu;
@@ -566,8 +574,9 @@ wire         [7:0] d2_ram_din, d2_ram_dout;
 wire               d2_ram_rd, d2_ram_wr, d2_ram_busy;
 wire               d2_tx_stb, d2_rx_valid, d2_rx_pop;
 wire         [7:0] d2_tx_byte, d2_rx_byte;
+wire signed [15:0] d2_audio;              // PC speaker: DL2's boot/attract beeps
 
-DragonsLair2 dl2_inst
+DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 (
 	.core_clk(CLK_CORE),
 	.reset_n(~reset & is_dl2),
@@ -575,6 +584,7 @@ DragonsLair2 dl2_inst
 	// DL2 has no DIPs (EEPROM-configured); controls only.
 	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
 	.cab({m_coin2, m_coin1, m_start2, m_start1}),
+	.service(m_service),
 
 	.ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
 	.ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
@@ -585,6 +595,8 @@ DragonsLair2 dl2_inst
 
 	.ld_tx_stb(d2_tx_stb), .ld_tx_byte(d2_tx_byte),
 	.ld_rx_valid(d2_rx_valid), .ld_rx_byte(d2_rx_byte), .ld_rx_pop(d2_rx_pop),
+
+	.audio(d2_audio),
 
 	.dbg_addr(), .dbg_type(), .dbg_halt()
 );
@@ -617,9 +629,29 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ)) dl2_ldp
 	.post_seek_frames(post_seek_eff)
 );
 
+// D6/D7 on the DL2 controller board are the Comm2 activity LEDs to and from the
+// disc player (owner's manual p.5). Stretched to ~105 ms so a single byte shows.
+reg [22:0] d2_led_tx_cnt, d2_led_rx_cnt;
+reg        d2_rx_valid_q;
+always @(posedge CLK_CORE) begin
+	if (reset) begin
+		d2_led_tx_cnt <= 23'd0; d2_led_rx_cnt <= 23'd0; d2_rx_valid_q <= 1'b0;
+	end else begin
+		d2_rx_valid_q <= d2_rx_valid;
+		if (d2_tx_stb)                    d2_led_tx_cnt <= 23'h7FFFFF;
+		else if (|d2_led_tx_cnt)          d2_led_tx_cnt <= d2_led_tx_cnt - 23'd1;
+		if (d2_rx_valid & ~d2_rx_valid_q) d2_led_rx_cnt <= 23'h7FFFFF;
+		else if (|d2_led_rx_cnt)          d2_led_rx_cnt <= d2_led_rx_cnt - 23'd1;
+	end
+end
+// LED_DISK[1] high takes the LED off the system's own activity indicator
+// (sys_top.v: led_disk[1] ? ~led_disk[0] : ~(led_disk[0] | gp_out[29])).
+assign led_disk_w = is_dl2 ? {1'b1, |d2_led_rx_cnt} : 2'b00;  // D7, Comm2 RX from the player
+assign led_user_w = is_dl2 ? |d2_led_tx_cnt : dbg_led;   // D6, Comm2 TX to the player
+
 // ---- shared outputs: whichever board is running ----
-assign audio_l           = is_dl2 ? 16'sd0 : is_cliff ? audio_l_cl    : audio_l_dl;
-assign audio_r           = is_dl2 ? 16'sd0 : is_cliff ? audio_r_cl    : audio_r_dl;
+assign audio_l           = is_dl2 ? d2_audio : is_cliff ? audio_l_cl    : audio_l_dl;
+assign audio_r           = is_dl2 ? d2_audio : is_cliff ? audio_r_cl    : audio_r_dl;
 assign ld_curr_frame_top = is_dl2 ? ld_frame_d2   : is_cliff ? ld_frame_cl   : ld_frame_dl;
 assign fb_seek_pulse     = is_dl2 ? seek_pulse_d2 : is_cliff ? seek_pulse_cl : seek_pulse_dl;
 assign fb_play_end       = is_dl2 ? play_end_d2   : is_cliff ? play_end_cl   : play_end_dl;

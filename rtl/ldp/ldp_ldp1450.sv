@@ -13,8 +13,12 @@
 // 0x40 (Enter) executes. The ACK latencies are real protocol -- Daphne notes
 // Bega's Battle depends on the delay after a clear -- so they are modelled.
 //
-// NOT implemented, deliberately: the LDP-1450 text overlay (0x00/0x01/0x02,
-// 0x0a/0x14/0x1a, 0x80/0x81/0x82) and Repeat (0x44). They ACK and are inert.
+// The text overlay (0x80/0x81/0x82 + 0x00/0x01/0x02 sub-modes, 0x1a terminator)
+// is FRAMED but not rendered: its bytes are consumed so they cannot be mistaken
+// for commands, and position/scale/on-off are latched. Drawing the characters
+// needs a video overlay that does not exist yet. Repeat (0x44) still ACKs and is
+// inert. ACK policy follows Daphne exactly -- a real player answers many
+// commands with silence, and ACKing those injects bytes the game never expects.
 //============================================================================
 module ldp_ldp1450
 #(
@@ -64,6 +68,20 @@ module ldp_ldp1450
 
     reg  [16:0] number;
     reg         search_armed;
+
+    // ---- text overlay framing (Daphne ldp1000.cpp write_ldp1000) ----
+    // The DL2 board has NO video hardware: everything it puts on screen is sent
+    // here as text. Without this state machine those payload bytes fall through
+    // to the command decoder, where 'O' is STILL, 'V' is C.L. and ':' is PLAY --
+    // so the game's own title screen stops and resets the disc.
+    localparam [1:0] TX_NONE = 2'd0, TX_XY = 2'd1, TX_STR = 2'd2, TX_WIN = 2'd3;
+    reg  [1:0]  tmode;
+    reg         tcmd;              // 0x80 seen; the next byte picks the sub-mode
+    reg  [1:0]  xy_i;              // X, then Y, then scale
+    reg         got_line;          // the 00/0a/14 line byte of a string
+    reg  [7:0]  text_x, text_y, text_scale;
+    reg  [1:0]  text_line;
+    reg         text_on;
     reg  [19:0] dig_sr, dig_latched;
     assign dbg_digits = dig_latched;
 
@@ -108,7 +126,10 @@ module ldp_ldp1450
         cmd_action = 1'b0;
         cmd_op     = OP_NOP;
         cmd_arg    = 17'd0;
-        if (sel && cmd_stb && !is_digit) begin
+        // Text payload must not reach the transport either: this block is
+        // separate from the sequential decoder, so gating only there still let
+        // 'O' in "CORP." issue OP_STOP and ':' in "VERS:3.19" issue OP_PLAY.
+        if (sel && cmd_stb && !is_digit && (tmode == TX_NONE)) begin
             case (cmd_byte)
                 C_PLAY:    begin cmd_action = 1'b1; cmd_op = OP_PLAY; end
                 C_STILL:   begin cmd_action = 1'b1; cmd_op = OP_STOP; end
@@ -130,6 +151,9 @@ module ldp_ldp1450
         if (!reset_n) begin
             qw <= 3'd0; qr <= 3'd0; qn <= 4'd0;
             number <= 17'd0; search_armed <= 1'b0;
+            tmode <= TX_NONE; tcmd <= 1'b0; xy_i <= 2'd0; got_line <= 1'b0;
+            text_x <= 8'd0; text_y <= 8'd0; text_scale <= 8'd0;
+            text_line <= 2'd0; text_on <= 1'b0;
             dig_sr <= 20'd0; dig_latched <= 20'd0;
             ack_timer <= 32'd0; ack_pending <= 1'b0;
             seq <= S_IDLE; seq_i <= 3'd0; bcd <= 20'd0; bin <= 17'd0; bcd_i <= 5'd0;
@@ -191,7 +215,24 @@ module ldp_ldp1450
 
             // ---- command reception ----
             if (sel && cmd_stb) begin
-                if (is_digit) begin
+                // Text framing runs FIRST and consumes its bytes without ACKing:
+                // the real player answers none of them.
+                if (tmode == TX_XY) begin
+                    if      (xy_i == 2'd0) begin text_x <= cmd_byte; xy_i <= 2'd1; end
+                    else if (xy_i == 2'd1) begin text_y <= cmd_byte; xy_i <= 2'd2; end
+                    else    begin text_scale <= cmd_byte; tmode <= TX_NONE; end
+                end else if (tmode == TX_WIN) begin
+                    tmode <= TX_NONE;                  // argument accepted and ignored
+                end else if (tmode == TX_STR) begin
+                    if (!got_line && (cmd_byte == 8'h00 || cmd_byte == 8'h0A || cmd_byte == 8'h14)) begin
+                        text_line <= (cmd_byte == 8'h00) ? 2'd0 :
+                                     (cmd_byte == 8'h0A) ? 2'd1 : 2'd2;
+                        got_line  <= 1'b1;
+                    end else if (cmd_byte == 8'h1A) begin
+                        tmode <= TX_NONE; got_line <= 1'b0;
+                    end
+                    // any other byte is string payload: consumed, not rendered yet
+                end else if (is_digit) begin
                     number      <= (number * 17'd10) + {13'd0, dig};
                     dig_sr      <= {dig_sr[15:0], dig};
                     ack_pending <= 1'b1; ack_timer <= T_NUM;
@@ -219,12 +260,24 @@ module ldp_ldp1450
                         C_STATUS_INQ: begin
                             seq <= S_STATUS; seq_i <= 3'd0;
                         end
-                        C_PLAY, C_STILL, C_CH1_ON, C_CH1_OFF, C_CH2_ON, C_CH2_OFF,
-                        C_MUTE_ON, C_MUTE_OFF: begin
+                        C_PLAY, C_STILL, C_CH1_ON, C_CH1_OFF, C_CH2_ON, C_CH2_OFF: begin
                             number <= 17'd0;
                             push_en <= 1'b1; push_val <= ACK;   // immediate
                         end
-                        // Text overlay and Repeat: ACK and do nothing (see header).
+                        8'h80: tcmd    <= 1'b1;                 // USER INDEX CONTROL
+                        8'h81: text_on <= 1'b1;                 // USER INDEX ON
+                        8'h82: text_on <= 1'b0;                 // USER INDEX OFF
+                        // Text sub-mode selectors, only meaningful right after
+                        // 0x80. Daphne leaves the flag set through 0x02.
+                        8'h00: if (tcmd) begin tmode <= TX_XY;  xy_i <= 2'd0;    tcmd <= 1'b0; end
+                        8'h01: if (tcmd) begin tmode <= TX_STR; got_line <= 1'b0; tcmd <= 1'b0; end
+                        8'h02: if (tcmd)       tmode <= TX_WIN;
+                        // Answered by silence on a real player, so no ACK here:
+                        // stray text framing bytes, audio mute, video on, stop
+                        // codes, frame mode, motor on, CX on.
+                        8'h0A, 8'h14, 8'h1A,
+                        C_MUTE_ON, C_MUTE_OFF,
+                        8'h27, 8'h28, 8'h29, 8'h55, 8'h62, 8'h6E: ;
                         default: begin
                             push_en <= 1'b1; push_val <= ACK;
                         end
