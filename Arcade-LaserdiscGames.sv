@@ -80,7 +80,18 @@ assign BUTTONS = 0;
 
 
 wire [1:0] ar = status[14:13];
-wire band_off = status[20];   // LED bar off -> the video gets the band's rows back (full screen)
+// Game identity, declared here because band_off below depends on it.
+// Loaded from the MRA <rom index="1"> mod byte, in the always block further down.
+reg [7:0] game_mod = 8'd0;
+wire is_spaceace = (game_mod == 8'd1);
+wire is_thayers  = (game_mod == 8'd2);
+wire is_cliff    = (game_mod == 8'd3);   // Cliff Hanger: its own board, see rtl/cliff/
+wire is_dl2      = (game_mod == 8'd4);   // Dragon's Lair II: 8088 board, see rtl/dlair2/
+
+// LED bar off -> the video gets the band's rows back (full screen).
+// Cliff Hanger has no scoreboard at all: it draws lives and score through the
+// TMS9928A overlay, so the band is meaningless there and is forced off.
+wire band_off = status[20] | is_cliff;
 wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
@@ -315,6 +326,34 @@ wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
+
+// Cliff Hanger's TMS9928A overlay: score, lives, and the "ACTION" gameplay cue.
+wire  [3:0] cliff_ovl_color;
+wire        cliff_ovl_opaque;
+
+// TMS9918/9928 fixed 16-colour palette. Index 0 is transparent and never
+// reaches here (ovl_opaque is low for it), so it is mapped to black.
+function [23:0] tms_rgb(input [3:0] c);
+    case (c)
+        4'd0:  tms_rgb = 24'h000000;   // transparent (unused)
+        4'd1:  tms_rgb = 24'h000000;   // black
+        4'd2:  tms_rgb = 24'h21C842;   // medium green
+        4'd3:  tms_rgb = 24'h5EDC78;   // light green
+        4'd4:  tms_rgb = 24'h5455ED;   // dark blue
+        4'd5:  tms_rgb = 24'h7D76FC;   // light blue
+        4'd6:  tms_rgb = 24'hD4524D;   // dark red
+        4'd7:  tms_rgb = 24'h42EBF5;   // cyan
+        4'd8:  tms_rgb = 24'hFC5554;   // medium red
+        4'd9:  tms_rgb = 24'hFF7978;   // light red
+        4'd10: tms_rgb = 24'hD4C154;   // dark yellow
+        4'd11: tms_rgb = 24'hE6CE80;   // light yellow
+        4'd12: tms_rgb = 24'h21B03B;   // dark green
+        4'd13: tms_rgb = 24'hC95BBA;   // magenta
+        4'd14: tms_rgb = 24'hCCCCCC;   // grey
+        default: tms_rgb = 24'hFFFFFF; // white
+    endcase
+endfunction
+wire [23:0] ovl_rgb = tms_rgb(cliff_ovl_color);
 // Seek state. Declared up here because the compositor below reads it; both are DRIVEN in the
 // framebuffer block further down.
 reg         fb_seek_hold;      // high while a seek holds the picture and audio
@@ -338,9 +377,12 @@ wire        band_lit = led_lit & ~band_off;
 // fb_seek_hold changes at arbitrary points in the frame, so this is LATCHED at vblank in the
 // framebuffer block below: switching the mask mid-raster tears the picture across the screen.
 wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0);
-wire  [7:0] comp_r = band_lit ? 8'hFF : (seek_black ? 8'h00 : rr_r);  // band text, video below
-wire  [7:0] comp_g = band_lit ? 8'h00 : (seek_black ? 8'h00 : rr_g);
-wire  [7:0] comp_b = band_lit ? 8'h00 : (seek_black ? 8'h00 : rr_b);
+// Priority: LED band (DL/SA only) > Cliff's TMS overlay > seek black > disc video.
+// cliff_ovl_opaque is low for every other game and whenever the VDP is blanked
+// or not in text mode, so this line is inert outside Cliff Hanger.
+wire  [7:0] comp_r = band_lit ? 8'hFF : cliff_ovl_opaque ? ovl_rgb[23:16] : (seek_black ? 8'h00 : rr_r);
+wire  [7:0] comp_g = band_lit ? 8'h00 : cliff_ovl_opaque ? ovl_rgb[15:8]  : (seek_black ? 8'h00 : rr_g);
+wire  [7:0] comp_b = band_lit ? 8'h00 : cliff_ovl_opaque ? ovl_rgb[7:0]   : (seek_black ? 8'h00 : rr_b);
 wire [26:0] rr_rdaddr2;
 wire [15:0] rr_dout2;
 wire [63:0] rr_dout2_64;    // whole cached word from ddram read port 2
@@ -385,7 +427,6 @@ wire [15:0] dsw = {dip_sw[1], dip_sw[0]};
 
 // MRA <rom index="1"> mod byte: absent (Dragon's Lair) => 0, Space Ace's MRA writes 01.
 // This is the ONLY thing that enables the skill field on the LED band.
-reg [7:0] game_mod = 8'd0;
 // MRA index 1, byte 1: post-seek tail drain length (film ticks).
 // 0 = instant flush (old behaviour), 5 ≈ 208 ms ≈ 5 film frames.
 // Write the desired value in the MRA <rom index="1"> as the second byte.
@@ -403,10 +444,6 @@ always @(posedge CLK_CORE) begin
         if (ioctl_addr == 25'd1) post_seek_frames_r <= ioctl_dout[3:0];
     end
 end
-wire is_spaceace = (game_mod == 8'd1);
-wire is_thayers  = (game_mod == 8'd2);
-wire is_cliff    = (game_mod == 8'd3);   // Cliff Hanger: its own board, see rtl/cliff/
-wire is_dl2      = (game_mod == 8'd4);   // Dragon's Lair II: 8088 board, see rtl/dlair2/
 // Cliff reads five DIP banks through port 0x62; the OSD already delivers eight bytes.
 wire [39:0] dsw40 = {dip_sw[4], dip_sw[3], dip_sw[2], dip_sw[1], dip_sw[0]};
 wire [1:0] skill_level;   // from DragonsLair_CPU's scoreboard snoop
@@ -477,7 +514,6 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 wire signed [15:0] audio_l_cl, audio_r_cl;
 wire        [16:0] ld_frame_cl;
 wire               seek_pulse_cl, play_end_cl, ld_playing_cl, dbg_led_cl;
-wire        [63:0] led_digits_cl;   // DIAG-REVERT-2026-09-07: PR-8210 telemetry
 
 CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 (
@@ -506,7 +542,10 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 	.ld_frame_o(ld_frame_cl),
 	.ld_playing_o(ld_playing_cl),
 	.dbg_led(dbg_led_cl),
-	.led_digits_o(led_digits_cl)   // DIAG-REVERT-2026-09-07
+
+	// TMS9928A overlay -> composited into comp_r/g/b above
+	.ovl_hpos(rr_hpos), .ovl_vpos(rr_vpos), .ovl_ce_pix(rr_ce_pix),
+	.ovl_color(cliff_ovl_color), .ovl_opaque(cliff_ovl_opaque)
 );
 
 //------------------------------------------------------------------------------
@@ -532,6 +571,10 @@ DragonsLair2 dl2_inst
 (
 	.core_clk(CLK_CORE),
 	.reset_n(~reset & is_dl2),
+
+	// DL2 has no DIPs (EEPROM-configured); controls only.
+	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
+	.cab({m_coin2, m_coin1, m_start2, m_start1}),
 
 	.ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
 	.ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
@@ -583,10 +626,7 @@ assign fb_play_end       = is_dl2 ? play_end_d2   : is_cliff ? play_end_cl   : p
 assign ld_playing_top    = is_dl2 ? ld_playing_d2 : is_cliff ? ld_playing_cl : ld_playing_dl;
 assign dbg_led           = is_cliff ? dbg_led_cl    : dbg_led_dl;
 // Cliff has no Dragon's Lair scoreboard and no Space Ace skill select.
-// DIAG-REVERT-2026-09-07: while bringing up the PR-8210 the band shows Cliff's LD
-// telemetry instead of a blank field. Original line kept directly below.
-// assign led_digits_flat   = is_cliff ? 64'd0 : led_digits_dl;
-assign led_digits_flat   = is_cliff ? led_digits_cl : led_digits_dl;
+assign led_digits_flat   = is_cliff ? 64'd0 : led_digits_dl;
 assign skill_level       = is_cliff ? 2'd0  : skill_dl;
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore

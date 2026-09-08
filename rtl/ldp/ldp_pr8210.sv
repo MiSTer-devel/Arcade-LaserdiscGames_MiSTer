@@ -12,8 +12,10 @@
 // Two behaviours that look like bugs but are not:
 //   * A word identical to the previous one is IGNORED. Cliff Hanger relies on
 //     this and sends the all-zero filler word to separate two equal commands.
-//   * SEEK (0x1A) is a TOGGLE, not a command: the first one opens digit entry,
-//     the second executes the search. A second seek with no digits is a reset.
+//   * SEEK (0x1A) is not a plain command. The FIRST one ever seen only opens
+//     digit entry; every one after that executes the accumulated digits. The
+//     arming latch is never cleared (Daphne g_pr8210_seek_received), so
+//     treating it as a toggle drops every other seek.
 //============================================================================
 module ldp_pr8210
 #(
@@ -51,9 +53,7 @@ module ldp_pr8210
     // Daphne's pr8210_get_current_frame() returns 0 unless the disc is playing
     // or paused; games are told to use it rather than reading the frame raw.
     output            frame_valid,
-    output     [9:0]  dbg_word,         // last accepted 10-blip word
-    output reg [15:0] dbg_blips,        // total blip pulses seen
-    output reg [7:0]  dbg_words         // total words that passed the framing check
+    output     [9:0]  dbg_word          // last accepted 10-blip word
 );
 `include "ldp_bus.svh"
 
@@ -83,7 +83,13 @@ module ldp_pr8210
     reg        have_last;
 
     reg [16:0] number;
-    reg        seek_armed;     // first SEEK seen, collecting digits
+    reg        have_digits;    // digits arrived since the last execute (Daphne digit_count > 0)
+    // STICKY. Daphne's g_pr8210_seek_received is set by the first SEEK ever and
+    // is never cleared again (only reset_pr8210 clears it). So the first SEEK
+    // merely opens digit entry; EVERY later SEEK executes. Toggling this off
+    // after an execute makes only every OTHER seek land, and the disc then sails
+    // past its stop points -- it plays straight through, deaths and all.
+    reg        seek_received;
     reg        word_stb;       // 1-cyc: a framed word was accepted
     reg [4:0]  word_cmd;
     reg [9:0]  word_raw;
@@ -122,7 +128,9 @@ module ldp_pr8210
                     C_AUDIO2:   cmd_op = OP_AUDIO2;
                     // Second SEEK with digits executes; everything else inert.
                     // Reject is ignored on purpose (pr8210.cpp: it would eject).
-                    C_SEEK: if (seek_armed && number != 17'd0) begin
+                    // Execute on any SEEK once the first one has been seen and
+                    // at least one digit has arrived (Daphne: digit_count > 0).
+                    C_SEEK: if (seek_received && have_digits) begin
                                 cmd_op  = OP_SEARCH;
                                 cmd_arg = number;
                             end
@@ -137,9 +145,8 @@ module ldp_pr8210
         if (!reset_n) begin
             gap <= 32'd0; sr <= 10'd0; nbits <= 4'd0;
             last_word <= 10'd0; have_last <= 1'b0;
-            number <= 17'd0; seek_armed <= 1'b0;
+            number <= 17'd0; seek_received <= 1'b0; have_digits <= 1'b0;
             word_cmd <= 5'd0; word_raw <= 10'd0;
-            dbg_blips <= 16'd0; dbg_words <= 8'd0;
         end else if (!pause) begin
             // ---- blip interval timing ----
             // The bit belongs to the interval BEFORE this blip, so a blip that
@@ -147,7 +154,6 @@ module ldp_pr8210
             // word (Daphne cliff.cpp: m_blips_count = 0, no shift).
             if (blip) begin
                 gap <= 32'd0;
-                dbg_blips <= dbg_blips + 16'd1;
                 if (gap >= TMO_TICKS) begin
                     nbits <= 4'd0;
                 end else begin
@@ -161,7 +167,6 @@ module ldp_pr8210
                                 word_raw <= new_word;
                                 word_cmd <= new_word[6:2];
                                 word_stb <= 1'b1;
-                                dbg_words <= dbg_words + 8'd1;
                             end
                         end
                         last_word <= new_word;
@@ -175,13 +180,17 @@ module ldp_pr8210
             // ---- digit accumulator / seek toggle ----
             if (sel && word_stb) begin
                 if (dig != 4'hf) begin
-                    if (seek_armed) number <= (number * 17'd10) + {13'd0, dig};
-                end else if (word_cmd == C_SEEK) begin
-                    if (!seek_armed) begin
-                        seek_armed <= 1'b1; number <= 17'd0;   // open digit entry
-                    end else begin
-                        seek_armed <= 1'b0; number <= 17'd0;   // executed (or reset)
+                    // Daphne gates pr8210_add_digit on seek_received too.
+                    if (seek_received) begin
+                        number      <= (number * 17'd10) + {13'd0, dig};
+                        have_digits <= 1'b1;
                     end
+                end else if (word_cmd == C_SEEK) begin
+                    // First SEEK ever: just open digit entry, and latch forever.
+                    // Every SEEK after that executes (above) and clears the digits.
+                    seek_received <= 1'b1;
+                    number        <= 17'd0;
+                    have_digits   <= 1'b0;
                 end
             end
         end

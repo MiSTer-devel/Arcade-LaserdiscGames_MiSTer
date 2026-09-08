@@ -76,8 +76,18 @@ module tms9928a_render
 
     // ---- live combinational decode of the CURRENT px/py --------------------
     // Only valid/used while in S_ISSUE_NAME (that's when px/py get sampled).
-    wire [8:0] col_now         = px / 9'd6;      // 0..39 for px<240
-    wire [2:0] pix_in_cell_now = px % 9'd6;      // 0..5
+    // NO `/` or `%` here. Quartus 17.0 does no CSE between them, so `px/6` and
+    // `px%6` would infer TWO separate lpm_divide instances -- see the vault note
+    // "Divide and modulo infer two separate dividers", where that cost thousands
+    // of ALMs. px is at most 255, and (px*171)>>10 equals px/6 exactly over that
+    // whole range (verified for 0..255), so one small multiply replaces both:
+    // the remainder then falls out as px - col*6, and *6 is just shifts.
+    wire [15:0] col_mul         = {7'd0, px} * 16'd171;
+    wire  [8:0] col_now         = col_mul[15:10];                   // = px / 6
+    wire  [8:0] col_x6          = {col_now[6:0], 2'b00}             // col*4
+                                + {col_now[7:0], 1'b0};             // + col*2
+    wire  [8:0] rem9            = px - col_x6;                      // 0..5
+    wire  [2:0] pix_in_cell_now = rem9[2:0];
     wire [4:0] row_now         = py[7:3];        // 0..23
     wire [2:0] line_now        = py[2:0];        // 0..7
     wire       border_now      = (px >= 9'd240); // outside the 40-column active area

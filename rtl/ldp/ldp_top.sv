@@ -36,8 +36,6 @@ module ldp_top
     output            command_strobe,  // LD-V1000: SYSTEM b7 = ~command_strobe
     output            ready_n,         // PR-7820:  SYSTEM b7 /READY
     output            frame_valid,     // PR-8210:  curr_frame is meaningful
-    output     [15:0] dbg_blips,       // PR-8210 telemetry: blips seen
-    output      [7:0] dbg_words,       // PR-8210 telemetry: framed words accepted
     output            tx_valid,        // LDP-1450: reply queue
     output     [7:0]  tx_byte,
     input             tx_pop,
@@ -129,8 +127,7 @@ module ldp_top
         .blip(blip),
         .cmd_action(act_pr82), .cmd_op(op_pr82), .cmd_arg(arg_pr82),
         .mode(mode),
-        .frame_valid(fvalid_pr82), .dbg_word(word_pr82),
-        .dbg_blips(dbg_blips), .dbg_words(dbg_words)
+        .frame_valid(fvalid_pr82), .dbg_word(word_pr82)
     );
 
     // ---- Sony LDP-1450 ----

@@ -39,6 +39,13 @@ module DragonsLair2
     input                core_clk,        // CLK_CORE, 80 MHz
     input                reset_n,
 
+    // ---- controls ----
+    // DL2 has NO DIP switches: its settings live in an EEPROM (port 0x202 b0),
+    // which is why MAME's dlair2 DIPs are explicit dummies and the OSD shows no
+    // DIP page. Only these inputs exist.
+    input          [7:0] p1,              // {b3,b2,b1,sword, right,left,down,up} active HIGH
+    input          [3:0] cab,             // {coin2, coin1, start2, start1} active HIGH
+
     // ---- ROM download ----
     input         [24:0] ioctl_addr,
     input          [7:0] ioctl_data,
@@ -184,7 +191,25 @@ module DragonsLair2
     wire in_icr  = (io_a == 16'h0020);
 
     // COM2 -> LDP-1450. 0x2F8 is the data register; 0x2FD is line status.
-    assign ld_tx_stb  = req & is_iowr & in_com2 & (io_a[2:0] == 3'd0) & ~ram_started;
+    // Must be gated on req_ack (a 1-cycle pulse), NOT on req alone. `req` is a
+    // LEVEL held until the cycle is answered, and ldp_ldp1450 treats cmd_stb as
+    // a level, so a single OUT would post the same byte on every clock the
+    // request was outstanding. Same shape as the Cliff Hanger blip bug, where
+    // `cs_wire_w & cpu_ce` emitted three blips per write.
+    assign ld_tx_stb  = req & req_ack & is_iowr & in_com2 & (io_a[2:0] == 3'd0);
+
+    //--------------------------------------------------- EEPROM --------------
+    // Port 0x202 carries the serial EEPROM lines. DL2 has no DIPs; every
+    // operator setting lives in this chip and is written from service mode.
+    // Strobe on req_ack so one OUT clocks the EEPROM exactly once.
+    wire eep_wr_stb = req & req_ack & is_iowr & in_io & (io_a[1:0] == 2'd2);
+    wire eep_do;
+
+    dl2_eeprom u_eeprom (
+        .clk(core_clk), .reset_n(reset_n),
+        .wr_stb(eep_wr_stb), .wr_data(req_wdata),
+        .do_bit(eep_do)
+    );
     assign ld_tx_byte = req_wdata;
     assign ld_rx_pop  = req & is_iord & in_com2 & (io_a[2:0] == 3'd0) & req_ack;
 
@@ -196,7 +221,30 @@ module DragonsLair2
                 3'd5:    io_rdata = {2'b01, 4'b0000, 1'b0, ld_rx_valid}; // LSR: THR empty, RX ready
                 default: io_rdata = 8'h00;
             endcase
-        end else if (in_io)  io_rdata = 8'hFF;   // coin / eeprom / controls: not wired yet
+        end else if (in_io) begin
+            // Bit assignments from Daphne lair2::input_enable:
+            //   banks[0] (0x201, ACTIVE LOW): b0 UP, b1 DOWN, b2 LEFT, b3 RIGHT,
+            //                                 b4 START1, b5 START2, b6 SWORD
+            //   banks[1] (0x202, ACTIVE HIGH): b0 EEP data, b2-b5 coin 1-4
+            // 0x200-0x203. These are NOT all pull-ups -- returning 0xFF for the
+            // lot makes the game see four coins permanently inserted, which is
+            // how it ended up somewhere unsupported. Daphne lair2.cpp:
+            //   0x201 = banks[0], init 0xFF, ACTIVE LOW  (player controls)
+            //   0x202 = banks[1], init 0x01, ACTIVE HIGH:
+            //           b0 EEP data, b1 unknown, b2-b5 coin 1-4, b6-b7 unknown
+            case (io_a[1:0])
+                2'd1:    io_rdata = ~{1'b0, p1[4],   // b6 SWORD
+                                      cab[1], cab[0],// b5 START2, b4 START1
+                                      p1[3], p1[2],  // b3 RIGHT, b2 LEFT
+                                      p1[1], p1[0]}; // b1 DOWN,  b0 UP
+                2'd2:    io_rdata = {2'b00,          // b7:6 unknown
+                                     2'b00,          // b5:4 coin 4, coin 3 (unwired)
+                                     cab[3], cab[2], // b3 coin 2, b2 coin 1
+                                     1'b0,           // b1 unknown
+                                     eep_do};        // b0 EEPROM DO / not-busy
+                default: io_rdata = 8'h00;
+            endcase
+        end
         else if (in_icr)     io_rdata = 8'h00;
         else                 io_rdata = 8'hFF;
     end

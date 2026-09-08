@@ -42,9 +42,15 @@ module CliffHanger
     output        [16:0] ld_frame_o,
     output               ld_playing_o,
     output               dbg_led,
-    // DIAG-REVERT-2026-09-07: PR-8210 telemetry for the LED band. Delete this
-    // port, its assign below, and the top's Cliff branch to go back to a blank band.
-    output        [63:0] led_digits_o
+
+    // ---- TMS9928A overlay, composited over the disc video by the core top ----
+    // Cliff draws its score, lives and the "ACTION" gameplay cue through the VDP,
+    // so without this the game is effectively unplayable.
+    input         [15:0] ovl_hpos,     // raster position, core's active area
+    input         [15:0] ovl_vpos,
+    input                ovl_ce_pix,   // pixel clock enable, samples the result
+    output reg     [3:0] ovl_color,    // TMS colour index (0 = transparent)
+    output reg           ovl_opaque    // 1 = draw ovl_color, 0 = show video
 );
     //--------------------------------------------------------- clocking ------
     // Z80 at 4 MHz (CLIFF_CPU_HZ) from the 80 MHz core clock.
@@ -189,9 +195,6 @@ module CliffHanger
 
     wire [16:0] ld_curr_frame;
     wire        ld_frame_valid;
-    wire [15:0] ld_dbg_blips;
-    wire  [7:0] ld_dbg_words;
-    wire [19:0] ld_dbg_end;   // PR-8210: {10'd0, last framed 10-blip word}
 
     ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (
         .clk(clk_sys), .reset_n(reset),
@@ -200,12 +203,11 @@ module CliffHanger
         .blip(ld_blip),
         .status(), .status_strobe(), .command_strobe(), .ready_n(),
         .frame_valid(ld_frame_valid),
-        .dbg_blips(ld_dbg_blips), .dbg_words(ld_dbg_words),
         .tx_valid(), .tx_byte(), .tx_pop(1'b0),
         .search_cmd_o(ld_search_cmd_o), .play_end_o(ld_play_end_o),
         .curr_frame(ld_curr_frame),
         .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
-        .dbg_seek_frame(), .dbg_end_frame(ld_dbg_end), .dbg_flags(),
+        .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
         .post_seek_frames(post_seek_frames)
     );
     assign ld_frame_o = ld_curr_frame;
@@ -233,10 +235,14 @@ module CliffHanger
     wire  [7:0] tms_dout;
     wire        tms_int_n;
 
+    // Port A is the CPU side; port B is the display side, read-only.
+    wire [13:0] vram_rd_A;
+    wire  [7:0] vram_rd_Q;
     dpram_dc #(.widthad_a(14)) u_vram (
         .clock_a(clk_sys), .address_a(vram_A), .q_a(vram_Q),
         .wren_a(vram_we), .data_a(vram_D),
-        .clock_b(clk_sys), .address_b(14'd0), .data_b(8'd0), .wren_b(1'b0), .q_b()
+        .clock_b(clk_sys), .address_b(vram_rd_A), .data_b(8'd0),
+        .wren_b(1'b0), .q_b(vram_rd_Q)
     );
 
     // 59.94 Hz field tick for the VDP's vblank interrupt.
@@ -248,14 +254,61 @@ module CliffHanger
         else fcnt <= vblank_tick ? 22'd0 : fcnt + 22'd1;
     end
 
+    wire [63:0] tms_regs;
+
     tms9928a_regs u_tms (
         .clk(clk_sys), .reset_n(reset), .ce(cpu_ce),
         .port0_rd(cs_vram_r), .port0_wr(cs_vram_w),
         .port1_rd(cs_vreg_r), .port1_wr(cs_vreg_w),
         .din(cpu_Dout), .dout(tms_dout),
         .vblank_tick(vblank_tick), .irq_n(tms_int_n),
+        .regs_o(tms_regs),
         .vram_addr(vram_A), .vram_din(vram_D), .vram_we(vram_we), .vram_dout(vram_Q)
     );
+
+    //--------------------------------------------------------- overlay --------
+    // Text mode is 40x24 cells of 6x8 = 240x192 active pixels; the core's active
+    // area is 320x240, so centre it. Cliff's LED band is forced off in the top,
+    // so vpos maps straight onto the picture with no band rows to skip.
+    localparam [15:0] OVL_X0 = 16'd40;   // (320 - 240) / 2
+    localparam [15:0] OVL_Y0 = 16'd24;   // (240 - 192) / 2
+
+    wire in_ovl = (ovl_hpos >= OVL_X0) && (ovl_hpos < OVL_X0 + 16'd240) &&
+                  (ovl_vpos >= OVL_Y0) && (ovl_vpos < OVL_Y0 + 16'd192);
+    wire [15:0] ovl_x = ovl_hpos - OVL_X0;
+    wire [15:0] ovl_y = ovl_vpos - OVL_Y0;
+
+    wire [3:0] rnd_color;
+    wire       rnd_transparent;
+
+    // ce is tied high: the renderer takes 3 core clocks per query and there are
+    // ~13 per pixel, so it re-resolves the current pixel several times over and
+    // the answer is settled well before ovl_ce_pix samples it below.
+    tms9928a_render u_tms_render (
+        .clk(clk_sys), .reset_n(reset), .ce(1'b1),
+        .reg0(tms_regs[7:0]),   .reg1(tms_regs[15:8]),
+        .reg2(tms_regs[23:16]), .reg3(tms_regs[31:24]),
+        .reg4(tms_regs[39:32]), .reg5(tms_regs[47:40]),
+        .reg6(tms_regs[55:48]), .reg7(tms_regs[63:56]),
+        .px(in_ovl ? ovl_x[8:0] : 9'd255),    // 255 = border -> backdrop
+        .py(in_ovl ? ovl_y[7:0] : 8'd0),
+        .color(rnd_color), .transparent(rnd_transparent),
+        .vram_addr(vram_rd_A), .vram_data(vram_rd_Q)
+    );
+
+    // Sample once per pixel. Only TEXT mode is rendered; in any other mode the
+    // overlay stays fully transparent rather than drawing garbage.
+    // M1 = reg1[4], M2 = reg1[3], M3 = reg0[1]; text is 1,0,0.
+    wire text_mode = tms_regs[12] & ~tms_regs[11] & ~tms_regs[1];
+
+    always @(posedge clk_sys) begin
+        if (!reset) begin
+            ovl_color <= 4'd0; ovl_opaque <= 1'b0;
+        end else if (ovl_ce_pix) begin
+            ovl_color  <= rnd_color;
+            ovl_opaque <= in_ovl & text_mode & ~rnd_transparent;
+        end
+    end
 
     //--------------------------------------------------------- interrupts -----
     // IRQ: asserted when a valid Philips code arrives each field, cleared by
@@ -312,19 +365,6 @@ module CliffHanger
 
     assign dbg_led = board_led;
 
-    // DIAG-REVERT-2026-09-07: LED band readout, 16 hex nibbles, left to right:
-    //   [15:12] blips seen        (should climb the moment the game talks to the LD)
-    //   [11:10] framed words      (climbs only if the 10-blip framing actually matches)
-    //   [ 9: 8] last command      (5-bit PR-8210 opcode from the last framed word)
-    //   [ 7: 3] current disc frame (5 hex nibbles)
-    //   [ 2: 0] blank
-    // If blips climb but words stay 00, the framing/threshold is wrong.
-    // If blips stay 00, nothing is reaching the player at all.
-    assign led_digits_o = {ld_dbg_blips,          // nibbles 15..12
-                           ld_dbg_words,          // nibbles 11..10
-                           3'd0, ld_dbg_end[6:2], // nibbles  9.. 8 (last command)
-                           3'd0, ld_curr_frame,   // nibbles  7.. 3
-                           12'd0};                // nibbles  2.. 0
 
     //--------------------------------------------------------- CPU data mux ---
     always @(*) begin
