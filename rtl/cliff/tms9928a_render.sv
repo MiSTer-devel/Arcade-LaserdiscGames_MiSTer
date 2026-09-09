@@ -85,13 +85,25 @@ module tms9928a_render
     //---------------------------------------------------------------------
     wire [8:0] px_pf = px + (mode_gfx2 ? 9'd8 : 9'd6);
 
+    // With the overlay full-bleed there is no border to prefetch cell 0 in: px
+    // restarts at 0 every line while pf_* still describes the previous one. So
+    // the prefetch CARRIES A TAG (pf_cell/pf_py) and is only adopted when it
+    // actually describes the cell being entered. When it does not -- a line
+    // start, a mode change, a py that did not move because 480p halves it --
+    // `catchup` aims one pass at the CURRENT cell and loads it straight into
+    // cur_*. 4 clocks against a ~13-clock source pixel, so it lands before the
+    // mixer's first sample. Do NOT gate this on py alone: px restarts on every
+    // line, but py only moves on every other one at 480p.
+    reg        catchup;
+    wire [8:0] px_fetch = catchup ? px : px_pf;
+
     // NO `/` or `%` anywhere. Quartus 17.0 does no CSE between them, so `px/6`
     // and `px%6` would infer TWO separate lpm_divide instances -- see the vault
     // note "Divide and modulo infer two separate dividers". (px*171)>>10 equals
     // px/6 exactly over the whole 9-bit range (verified 0..511), so one small
     // multiply replaces both; the remainder falls out as px - col*6.
-    wire [15:0] pf_col_mul = {7'd0, px_pf} * 16'd171;
-    wire  [8:0] pf_col     = pf_col_mul[15:10];        // = px_pf / 6
+    wire [15:0] pf_col_mul = {7'd0, px_fetch} * 16'd171;
+    wire  [8:0] pf_col     = pf_col_mul[15:10];        // = px_fetch / 6
 
     wire [15:0] cur_col_mul = {7'd0, px} * 16'd171;
     wire  [8:0] cur_col     = cur_col_mul[15:10];      // = px / 6
@@ -110,7 +122,7 @@ module tms9928a_render
     // = row*40+col (text) or row*32+col (graphics II, a concatenation).
     wire [13:0] row_x40    = {9'd0, row_now} * 14'd40;
     wire [13:0] name_off14 = row_x40 + {5'd0, pf_col};
-    wire  [9:0] name_off   = mode_gfx2 ? {row_now, px_pf[7:3]} : name_off14[9:0];
+    wire  [9:0] name_off   = mode_gfx2 ? {row_now, px_fetch[7:3]} : name_off14[9:0];
     wire [13:0] name_addr  = {reg2[3:0], name_off};
 
     // ---- Graphics II tables ------------------------------------------------
@@ -129,8 +141,14 @@ module tms9928a_render
 
     // charcode = name byte + ((y >> 6) << 8); py[7:6] IS the 0/1/2 bank index.
     wire  [9:0] charcode_now = {py[7:6], vram_data};
-    wire  [9:0] cc_pat       = charcode_l & patternmask;
-    wire  [9:0] cc_col       = charcode_l & colourmask;
+    // The pattern address is formed in S_WAIT_NAME, the same cycle the name byte
+    // is on the bus -- so it must use the LIVE charcode, not charcode_l, which
+    // does not latch until the end of that cycle. Free-running this went unseen
+    // (the pass repeated on one cell until the register caught up), but a
+    // one-shot catch-up pass would have read the previous cell's pattern. The
+    // colour address is formed a cycle later, by which time charcode_l is valid.
+    wire  [9:0] cc_pat       = charcode_now & patternmask;
+    wire  [9:0] cc_col       = charcode_l   & colourmask;
 
     // pattern_addr: text = {base[2:0], charcode[7:0], line}; graphics II uses
     // the masked 10-bit charcode against a single A13 base bit.
@@ -160,9 +178,22 @@ module tms9928a_render
     wire [3:0] g2_fg = (vram_data[7:4] != 4'd0) ? vram_data[7:4] : reg7[3:0];
     wire [3:0] g2_bg = (vram_data[3:0] != 4'd0) ? vram_data[3:0] : reg7[3:0];
 
+    // What a completed pass resolved to. In S_DECODE text has the pattern byte
+    // live on the bus; graphics II has the colour byte there and its pattern in
+    // the hold register.
+    wire [7:0] dec_pat = gfx2_l ? pattern_hold : vram_data;
+    wire [3:0] dec_fg  = gfx2_l ? g2_fg : reg7[7:4];
+    wire [3:0] dec_bg  = gfx2_l ? g2_bg : reg7[3:0];
+
     //---------------------------------------------------------------------
     // Displayed cell
     //---------------------------------------------------------------------
+    // Which cell pf_* describes, latched through the pass alongside the data.
+    wire [5:0] fetch_cell_now = mode_gfx2 ? px_fetch[8:3] : pf_col[5:0];
+    reg  [5:0] fetch_cell, pf_cell;
+    reg  [7:0] fetch_py,   pf_py;
+    wire       pf_matches = (pf_cell == cell_now) && (pf_py == py);
+
     reg [7:0] cur_pat;
     reg [3:0] cur_fg, cur_bg;
     reg [5:0] cell_q;
@@ -209,6 +240,11 @@ module tms9928a_render
             charcode_l   <= 10'd0;
             pattern_hold <= 8'd0;
             gfx2_l       <= 1'b0;
+            catchup      <= 1'b1;
+            fetch_cell   <= 6'd0;
+            fetch_py     <= 8'd0;
+            pf_cell      <= 6'd0;
+            pf_py        <= 8'd0;
             pf_pat       <= 8'd0;
             pf_fg        <= 4'd0;
             pf_bg        <= 4'd0;
@@ -223,10 +259,12 @@ module tms9928a_render
             // ---- free-running prefetch of the NEXT cell --------------------
             case (state)
                 S_ISSUE_NAME: begin
-                    // name_addr (built from px_pf/py) is on the bus this cycle.
-                    line_l <= line_now;
-                    gfx2_l <= mode_gfx2;
-                    state  <= S_WAIT_NAME;
+                    // name_addr (built from px_fetch/py) is on the bus now.
+                    line_l     <= line_now;
+                    gfx2_l     <= mode_gfx2;
+                    fetch_cell <= fetch_cell_now;
+                    fetch_py   <= py;
+                    state      <= S_WAIT_NAME;
                 end
                 S_WAIT_NAME: begin
                     // vram_data == name byte; the pattern address it feeds is
@@ -241,12 +279,12 @@ module tms9928a_render
                     state        <= S_DECODE;
                 end
                 default: begin   // S_DECODE
-                    // text: vram_data == pattern byte, colours come from reg7.
-                    // gfx2: vram_data == colour byte, pattern is in the hold reg.
-                    pf_pat <= gfx2_l ? pattern_hold : vram_data;
-                    pf_fg  <= gfx2_l ? g2_fg : reg7[7:4];
-                    pf_bg  <= gfx2_l ? g2_bg : reg7[3:0];
-                    state  <= S_ISSUE_NAME;
+                    pf_pat  <= dec_pat;
+                    pf_fg   <= dec_fg;
+                    pf_bg   <= dec_bg;
+                    pf_cell <= fetch_cell;
+                    pf_py   <= fetch_py;
+                    state   <= S_ISSUE_NAME;
                 end
             endcase
 
@@ -254,9 +292,20 @@ module tms9928a_render
             cell_q <= cell_now;
             py_q   <= py;
             if (cell_changed) begin
-                cur_pat <= pf_pat;
-                cur_fg  <= pf_fg;
-                cur_bg  <= pf_bg;
+                if (pf_matches) begin
+                    cur_pat <= pf_pat;
+                    cur_fg  <= pf_fg;
+                    cur_bg  <= pf_bg;
+                end else begin
+                    // pf_* is for some other cell -- go fetch this one directly.
+                    catchup <= 1'b1;
+                    state   <= S_ISSUE_NAME;
+                end
+            end else if (catchup && (state == S_DECODE)) begin
+                cur_pat <= dec_pat;
+                cur_fg  <= dec_fg;
+                cur_bg  <= dec_bg;
+                catchup <= 1'b0;
             end
 
             // ---- pixel out (combinational select, registered once) ---------
