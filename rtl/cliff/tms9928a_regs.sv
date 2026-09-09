@@ -25,7 +25,10 @@ module tms9928a_regs
     input             reset_n,
     input             ce,            // CPU-rate clock enable
 
-    input             port0_rd,      // 1-cyc strobe
+    // Chip selects. These are LEVELS from CliffHanger, not pulses -- the module
+    // edge-detects them internally. dout still uses the level, because the CPU
+    // samples it combinationally during the same IO cycle.
+    input             port0_rd,
     input             port0_wr,
     input             port1_rd,
     input             port1_wr,
@@ -67,34 +70,56 @@ module tms9928a_regs
     assign dout = port1_rd ? {int_flag, 7'd0}   // status: sprite flags not modelled
                            : vram_dout;
 
+    // The chip selects arrive as LEVELS -- CliffHanger builds them combinationally
+    // (io_access & ~n_wr & addr match), so they stay high for the whole Z80 IO
+    // cycle, which is several `ce` ticks. Acting on the level walks the
+    // first/second byte machine more than once per write: `first` gets clobbered
+    // by the select byte and every register ends up holding 0x80|index. That is
+    // why R7 read back 0x87, painting the backdrop cyan instead of the real red.
+    // Act on the RISING EDGE only. Same shape as ld_tx_stb in DragonsLair2.sv.
+    reg  p0w_q, p0r_q, p1w_q, p1r_q;
+    wire p0w = port0_wr & ~p0w_q;
+    wire p0r = port0_rd & ~p0r_q;
+    wire p1w = port1_wr & ~p1w_q;
+    wire p1r = port1_rd & ~p1r_q;
+    // ...and the END of each port-0 access. The auto-increment must happen when
+    // the access finishes, NOT when it starts: vram_addr is `addr` combinationally
+    // and vram_we is registered, so incrementing at the start puts the write one
+    // byte past where the CPU aimed, and makes a read return addr+1's data.
+    wire p0w_end = ~port0_wr & p0w_q;
+    wire p0r_end = ~port0_rd & p0r_q;
+
     integer i;
     always @(posedge clk) begin
         vram_we <= 1'b0;
         if (!reset_n) begin
             addr <= 14'd0; second <= 1'b0; first <= 8'd0;
             int_flag <= 1'b0;
+            p0w_q <= 1'b0; p0r_q <= 1'b0; p1w_q <= 1'b0; p1r_q <= 1'b0;
             for (i = 0; i < 8; i = i + 1) regs[i] <= 8'd0;
         end else begin
             if (vblank_tick) int_flag <= 1'b1;
 
             if (ce) begin
+                p0w_q <= port0_wr; p0r_q <= port0_rd;
+                p1w_q <= port1_wr; p1r_q <= port1_rd;
+
                 // ---- port 0: VRAM data ----
-                if (port0_wr) begin
-                    vram_we  <= 1'b1;
-                    addr     <= addr + 14'd1;
+                if (p0w) begin
+                    vram_we  <= 1'b1;      // written AT addr, which still holds
                     second   <= 1'b0;
                 end
                 // The data itself is driven combinationally above; only the
                 // auto-increment happens here. `ce` runs at the Z80 T-state rate,
                 // ~20 clk_sys cycles apart, so vram_dout has long settled to
                 // mem[addr] before the CPU samples it.
-                if (port0_rd) begin
-                    addr     <= addr + 14'd1;
-                    second   <= 1'b0;
-                end
+                if (p0r) second <= 1'b0;
+
+                // Pointer advances once the access is over, for both directions.
+                if (p0w_end || p0r_end) addr <= addr + 14'd1;
 
                 // ---- port 1: address / register setup ----
-                if (port1_wr) begin
+                if (p1w) begin
                     if (!second) begin
                         first  <= din;
                         second <= 1'b1;
@@ -106,7 +131,7 @@ module tms9928a_regs
                 end
 
                 // ---- port 1: status read ----
-                if (port1_rd) begin
+                if (p1r) begin
                     int_flag <= 1'b0;               // reading status clears F
                     second   <= 1'b0;               // ...and the byte latch
                 end

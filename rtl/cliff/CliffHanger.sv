@@ -270,10 +270,18 @@ module CliffHanger
     // Text mode is 40x24 cells of 6x8 = 240x192 active pixels; the core's active
     // area is 320x240, so centre it. Cliff's LED band is forced off in the top,
     // so vpos maps straight onto the picture with no band rows to skip.
-    localparam [15:0] OVL_X0 = 16'd40;   // (320 - 240) / 2
-    localparam [15:0] OVL_Y0 = 16'd24;   // (240 - 192) / 2
+    // ovl_hpos/ovl_vpos arrive in the SHARED 320x240 overlay space (converted
+    // once at the top level), so these centring constants are in that space too.
+    // Text is 40x24 of 6x8 = 240x192; Graphics II is 32x24 of 8x8 = 256x192.
+    // M1 = reg1[4] = tms_regs[12], M2 = reg1[3] = tms_regs[11], M3 = reg0[1].
+    wire text_mode = tms_regs[12] & ~tms_regs[11] & ~tms_regs[1];
+    wire gfx2_mode = ~tms_regs[12] & ~tms_regs[11] & tms_regs[1];
 
-    wire in_ovl = (ovl_hpos >= OVL_X0) && (ovl_hpos < OVL_X0 + 16'd240) &&
+    wire [15:0] OVL_W  = gfx2_mode ? 16'd256 : 16'd240;
+    wire [15:0] OVL_X0 = gfx2_mode ? 16'd32  : 16'd40;   // (320 - W) / 2
+    localparam [15:0] OVL_Y0 = 16'd24;                   // (240 - 192) / 2
+
+    wire in_ovl = (ovl_hpos >= OVL_X0) && (ovl_hpos < OVL_X0 + OVL_W) &&
                   (ovl_vpos >= OVL_Y0) && (ovl_vpos < OVL_Y0 + 16'd192);
     wire [15:0] ovl_x = ovl_hpos - OVL_X0;
     wire [15:0] ovl_y = ovl_vpos - OVL_Y0;
@@ -290,23 +298,28 @@ module CliffHanger
         .reg2(tms_regs[23:16]), .reg3(tms_regs[31:24]),
         .reg4(tms_regs[39:32]), .reg5(tms_regs[47:40]),
         .reg6(tms_regs[55:48]), .reg7(tms_regs[63:56]),
-        .px(in_ovl ? ovl_x[8:0] : 9'd255),    // 255 = border -> backdrop
-        .py(in_ovl ? ovl_y[7:0] : 8'd0),
+        .px(ovl_x[8:0]), .py(ovl_y[7:0]),
+        .active(in_ovl),                      // the window, not a magic px value
         .color(rnd_color), .transparent(rnd_transparent),
         .vram_addr(vram_rd_A), .vram_data(vram_rd_Q)
     );
 
-    // Sample once per pixel. Only TEXT mode is rendered; in any other mode the
-    // overlay stays fully transparent rather than drawing garbage.
-    // M1 = reg1[4], M2 = reg1[3], M3 = reg0[1]; text is 1,0,0.
-    wire text_mode = tms_regs[12] & ~tms_regs[11] & ~tms_regs[1];
-
+    // Sample once per pixel. Text and Graphics II are rendered; any other mode
+    // (Graphics I, Multicolor) stays fully transparent rather than drawing
+    // garbage -- the ROM never selects them.
     always @(posedge clk_sys) begin
         if (!reset) begin
             ovl_color <= 4'd0; ovl_opaque <= 1'b0;
         end else if (ovl_ce_pix) begin
             ovl_color  <= rnd_color;
-            ovl_opaque <= in_ovl & text_mode & ~rnd_transparent;
+            // NOT gated on in_ovl. A real TMS drives the WHOLE screen: the
+            // cell area, and the backdrop colour everywhere around it. Gating
+            // on the cell window let the disc show through the border, which is
+            // why the logo screen looked centred instead of edge to edge.
+            // in_ovl now only tells the renderer where the cells are (`active`);
+            // outside it the renderer emits the backdrop, and transparency comes
+            // from colour 0 alone -- exactly as the hardware does it.
+            ovl_opaque <= (text_mode | gfx2_mode) & ~rnd_transparent;
         end
     end
 

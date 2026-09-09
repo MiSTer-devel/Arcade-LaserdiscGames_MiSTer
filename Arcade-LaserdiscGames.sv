@@ -344,6 +344,11 @@ wire        led_lit;
 // Cliff Hanger's TMS9928A overlay: score, lives, and the "ACTION" gameplay cue.
 wire  [3:0] cliff_ovl_color;
 wire        cliff_ovl_opaque;
+// Declared HERE, not down in the DL2 block: the compositor below references it,
+// and a forward reference makes Verilog conjure an implicit 1-bit wire at the
+// point of use. That leaves comp_r/g/b driven by an undriven net -- no picture
+// at all, on every game. Verilator does not flag it.
+wire        d2_txt_lit;
 
 // TMS9918/9928 fixed 16-colour palette. Index 0 is transparent and never
 // reaches here (ovl_opaque is low for it), so it is mapped to black.
@@ -1010,15 +1015,17 @@ fb_raster_reader #(
 // coordinate system -- CALIBRATE against Screenshots/1-4 rather than trusting
 // them. They are localparams precisely so that is a one-line change.
 localparam [15:0] TXT_XM = 16'd422, TXT_XSUB = 16'd19;   // x3.297, then -19
-localparam [15:0] TXT_YM = 16'd486, TXT_YSUB = 16'd10;   // x3.797, then -10
+// -10 is Daphne's; the other -10 is the LED band. Removing the band for DL2
+// moved the picture up BAND_H(20) raster rows = 10 units of 320-space, and the
+// band term in ovl_sy CANNOT cover it: DL2's band is permanently off, so that
+// subtraction is identically zero here. It only helps a game that keeps its band.
+localparam [15:0] TXT_YM = 16'd486, TXT_YSUB = 16'd20;   // x3.797, -10 Daphne, -10 band
 wire [23:0] d2_org_xm = {16'd0, d2_txt_x} * TXT_XM;
 wire [23:0] d2_org_ym = {16'd0, d2_txt_y} * TXT_YM;
 wire [15:0] d2_org_xs = d2_org_xm[23:7];
 wire [15:0] d2_org_ys = d2_org_ym[23:7];
 wire  [8:0] d2_org_x  = (d2_org_xs > TXT_XSUB) ? d2_org_xs[8:0] - TXT_XSUB[8:0] : 9'd0;
 wire  [8:0] d2_org_y  = (d2_org_ys > TXT_YSUB) ? d2_org_ys[8:0] - TXT_YSUB[8:0] : 9'd0;
-wire        d2_txt_lit;
-
 text_overlay #(.FONT_HEX("rtl/video/ldp1450_font.hex")) dl2_text (
     .clk(CLK_CORE),
     .sx(ovl_sx), .sy(ovl_sy),
