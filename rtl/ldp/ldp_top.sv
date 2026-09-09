@@ -51,6 +51,7 @@ module ldp_top
     output     [19:0] dbg_end_frame,
     output      [3:0] dbg_flags,
     input       [3:0] post_seek_frames,
+    input             disc_2997,       // .dlv encode rate -> transport film tick
 
     // ---- text overlay feed (LDP-1450 family only; inert for the others) ----
     // The character generator belongs to the PLAYER, not the game: any board on
@@ -101,6 +102,7 @@ module ldp_top
         .search_busy(search_busy), .search_done(search_done), .autostop_done(autostop_done),
         .field_phase(field_phase), .frame_tick(frame_tick), .film_tick(film_tick),
         .pause(pause), .disc_hold(disc_hold), .post_seek_frames(post_seek_frames),
+        .disc_2997(disc_2997),
         .search_cmd_o(search_cmd_o), .play_end_o(play_end_o), .playing(playing),
         .dbg_seek_frame(dbg_seek_frame)
     );

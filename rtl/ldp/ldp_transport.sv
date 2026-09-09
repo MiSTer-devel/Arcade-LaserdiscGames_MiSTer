@@ -31,12 +31,13 @@ module ldp_transport
     output reg        autostop_done,    // 1-cyc: the autostop frame compare fired
     output     [21:0] field_phase,      // fcnt, for front-ends that generate strobes
     output            frame_tick,       // 59.94 Hz field tick
-    output            film_tick,        // 23.976 Hz disc-frame tick
+    output            film_tick,        // disc-frame tick; rate per the .dlv header
 
     // ---- core-side controls ----
     input             pause,            // freeze disc motion + phase
     input             disc_hold,        // video path priming; freezes motion, not the phase
     input      [3:0]  post_seek_frames, // MRA-tunable tail drain length
+    input             disc_2997,        // .dlv encode rate: 1 = 29.97 fps, 0 = 23.976
 
     // ---- video / audio contract ----
     output reg        search_cmd_o,     // 1-cyc when a SEARCH commits (after the tail drain)
@@ -71,14 +72,19 @@ module ldp_transport
     localparam [21:0] PARK_PERIOD = (64'd1001 * CLK_HZ) / 64'd60000;
     localparam [21:0] PLAY_PERIOD = (64'd1001 * CLK_HZ) / 64'd60000;
     localparam [21:0] SCAN_PERIOD = (64'd20000 * CLK_HZ) / 64'd40_000_000;
-    localparam [21:0] FILM_PERIOD = (64'd1001 * CLK_HZ) / 64'd24000;
+    // The disc frame rate is a property of the .dlv, not of the board: film-sourced
+    // discs (DL, Space Ace, Thayer's, DL2) are 23.976, video-sourced ones
+    // (Cliff Hanger, Super Don Quixote, Goal To Go) are 29.97.
+    localparam [21:0] FILM_PERIOD_2398 = (64'd1001 * CLK_HZ) / 64'd24000;
+    localparam [21:0] FILM_PERIOD_2997 = (64'd1001 * CLK_HZ) / 64'd30000;
+    wire       [21:0] film_period = disc_2997 ? FILM_PERIOD_2997 : FILM_PERIOD_2398;
 
     wire [21:0] period = (mode==M_PARK) ? PARK_PERIOD :
                          ((mode==M_SCAN_FWD || mode==M_SCAN_REV) ? SCAN_PERIOD : PLAY_PERIOD);
     reg  [21:0] fcnt;
     reg  [21:0] vcnt;
     assign frame_tick  = (fcnt >= period - 22'd1);
-    assign film_tick   = (vcnt >= FILM_PERIOD - 22'd1);
+    assign film_tick   = (vcnt >= film_period - 22'd1);
     assign field_phase = fcnt;
 
     // Written as the SAME expression as the advance gate below so the two cannot drift apart.

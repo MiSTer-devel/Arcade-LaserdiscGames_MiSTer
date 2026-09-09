@@ -70,7 +70,10 @@ module dlv_streamer #(
     input             hold_play,    // 1 = freeze audio playout (silence + HOLD aud_rd)
     // 1-cycle pulse on the Z80's SEARCH: EMPTIES the audio ring so the old segment's buffered
     // tail is discarded and the ring refills with only the new segment.
-    input             seek_flush
+    input             seek_flush,
+
+    // .dlv encode rate -> ldp_transport film tick.  1 = 29.97 fps disc, 0 = 23.976.
+    output            disc_2997
 );
     //------------------------------------------------------------------------
     // Compressed-frame BRAM (video)
@@ -266,27 +269,34 @@ module dlv_streamer #(
     wire [13:0] samp_per_frame = (header_valid && spf_q >= 32'd256 && spf_q <= 32'd8191)
                                  ? spf_q[13:0] : 14'd1842;   // fallback = DL's 1842
 
+    // Header field 96 is the ONE source for the disc rate: samples-per-frame and the
+    // disc-frame period are the same quantity and must never disagree.  Never the spf_q
+    // divide above -- Space Ace's audio blob is short, so its data-count reads 1069
+    // samp/frame on a disc that is really 23.976.
+    wire        spf_hdr_ok = header_valid && (spf_q16_hdr >= 32'd1048576)      // >= 16.0 samp/frame
+                                          && (spf_q16_hdr <  32'd134217728);   // <  2048.0
+    wire [29:0] spf_q16    = spf_hdr_ok ? spf_q16_hdr[29:0] : {samp_per_frame, 16'd0};
+    wire [13:0] samp_per_tick = spf_hdr_ok ? spf_q16[29:16] : 14'd1839;
+    assign      disc_2997     = spf_hdr_ok && (spf_q16 < 30'd108_134_400);   // < 1650.0 samp/frame
+
     // Slave the audio drain to the DISC FRAME POSITION rather than a free-running 44.1 kHz clock,
     // so audio and video share one master (the disc, which the Z80 controls) and cannot drift.
     reg  [16:0] aud_prev_frame;
     reg  [13:0] aud_credit;                       // samples the disc position currently permits
-    // (coupled): 4 * SAMP_PER_TICK.
-    localparam [13:0] AUD_CREDIT_MAX = 14'd7356;  // 4 frames -- anti-burst cap on catch-up
+    // (coupled): 4 * samp_per_tick.
+    wire [13:0] aud_credit_max = {samp_per_tick[11:0], 2'b00};  // 4 frames -- anti-burst cap
     wire [16:0] aud_fadv  = ld_curr_frame - aud_prev_frame;    // unsigned; a large value = a jump
     wire        aud_jump  = (aud_fadv > 17'd2);                // >2 frames/cycle = seek, not 1x play
     wire        aud_muted = hold_play || !ld_playing || on_leader || !header_valid;
     wire        aud_drain = samp_tick && (aud_wr != aud_rd) && (aud_credit != 14'd0) && !aud_muted;
 
     // ---- audio drain rate ----------------------------------------------------------------
-    // SAMP_PER_TICK must be the FILM rate, not the container's nominal rate.
-    localparam [13:0] SAMP_PER_TICK = 14'd1839;   // 44100/23.976
-    //                         (aud_fadv == 17'd1) ? {1'b0, samp_per_frame} :
-    //                         (aud_fadv == 17'd2) ? {samp_per_frame, 1'b0} : 15'd0;
-    wire [14:0] aud_add   = (aud_jump)          ? 15'd0 :                  // SAMP_PER_TICK per frame
-                            (aud_fadv == 17'd1) ? {1'b0, SAMP_PER_TICK} :
-                            (aud_fadv == 17'd2) ? {SAMP_PER_TICK, 1'b0} : 15'd0;
+    // The film rate comes from the .dlv header: 1839 on a 23.976 disc, 1471 on a 29.97 one.
+    wire [14:0] aud_add   = (aud_jump)          ? 15'd0 :                  // samp_per_tick per frame
+                            (aud_fadv == 17'd1) ? {1'b0, samp_per_tick} :
+                            (aud_fadv == 17'd2) ? {samp_per_tick, 1'b0} : 15'd0;
     wire [15:0] aud_cred_nx  = {2'b0, aud_credit} + {1'b0, aud_add} - (aud_drain ? 16'd1 : 16'd0);
-    wire [13:0] aud_cred_cap = (aud_cred_nx > {2'b0, AUD_CREDIT_MAX}) ? AUD_CREDIT_MAX : aud_cred_nx[13:0];
+    wire [13:0] aud_cred_cap = (aud_cred_nx > {2'b0, aud_credit_max}) ? aud_credit_max : aud_cred_nx[13:0];
 
     always @(posedge clk) begin
         if (reset) begin
@@ -339,10 +349,7 @@ module dlv_streamer #(
 
     // EXACT audio seek re-point: samp_per_frame is an integer divide, so re-pointing by
     // multiplication accumulates its error linearly with frame number (~6 ms per 1000 frames).
-    // Use the Q16 fractional form instead.
-    wire        spf_hdr_ok = header_valid && (spf_q16_hdr >= 32'd1048576)      // >= 16.0 samp/frame
-                                          && (spf_q16_hdr <  32'd134217728);   // <  2048.0
-    wire [29:0] spf_q16    = spf_hdr_ok ? spf_q16_hdr[29:0] : {samp_per_frame, 16'd0};
+    // Use the Q16 fractional form instead (spf_q16 declared with the audio rate above).
 
     // audio target sector = aud_lba_start + (disc_rel * samples_per_frame) / 128 samples-per-sector
     // >>16 undoes the Q16 scaling and >>7 converts samples to sectors, hence >>23.

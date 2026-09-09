@@ -36,6 +36,7 @@ module CliffHanger
     input                pause,
     input                disc_hold,
     input          [3:0] post_seek_frames,
+    input                disc_2997,      // .dlv encode rate -> LD transport
 
     output               ld_search_cmd_o,
     output               ld_play_end_o,
@@ -208,7 +209,8 @@ module CliffHanger
         .curr_frame(ld_curr_frame),
         .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
         .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
-        .post_seek_frames(post_seek_frames)
+        .post_seek_frames(post_seek_frames),
+        .disc_2997(disc_2997)
     );
     assign ld_frame_o = ld_curr_frame;
 

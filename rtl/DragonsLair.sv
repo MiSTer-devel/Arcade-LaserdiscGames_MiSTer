@@ -52,7 +52,8 @@ module DragonsLair
     output        [16:0] ld_frame_o,   // LD disc frame -> streamer
     output               ld_playing_o,  // LD playing flag -> streamer audio gate
     // MRA-tunable post-seek tail drain (index 1, byte 1). 0 = instant flush.
-    input          [3:0] post_seek_frames
+    input          [3:0] post_seek_frames,
+    input                disc_2997    // .dlv encode rate -> LD transport
 );
 
 //------------------------------------------------------- ROM Selector --------------------------------------------------------//
@@ -95,7 +96,8 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
     .play_end_o(ld_play_end_o),
     .ld_frame_o(ld_frame_o),
     .ld_playing_o(ld_playing_o),
-    .post_seek_frames(post_seek_frames)
+    .post_seek_frames(post_seek_frames),
+    .disc_2997(disc_2997)
 );
 
 // Mono -> stereo

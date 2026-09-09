@@ -95,7 +95,8 @@ module DragonsLair_CPU
     // LDV1000 HLE playing flag -> streamer audio ring gate
     output        ld_playing_o,
     // MRA-tunable post-seek tail drain (index 1, byte 1). 0 = instant flush.
-    input   [3:0] post_seek_frames
+    input   [3:0] post_seek_frames,
+    input         disc_2997       // .dlv encode rate -> LD transport
 );
 
 //------------------------------------------------------- Clock Enables -------------------------------------------------------//
@@ -376,7 +377,8 @@ ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (   // thread the core clock down
     .dbg_seek_frame (dbg_seek_frame_w), // segment START frame
     .dbg_end_frame  (dbg_end_frame_w), // segment END frame
     .dbg_flags      (dbg_flags_w),     // autostop armed/fired
-    .post_seek_frames(post_seek_frames)
+    .post_seek_frames(post_seek_frames),
+    .disc_2997      (disc_2997)
 );
 
 // expose disc frame to the top (streamer maps -> mjpeg frame + audio sample)

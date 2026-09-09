@@ -513,6 +513,7 @@ wire       fb_seek_edge = fb_seek_pulse & ~fb_seek_q;   // if the source ever st
 wire       fb_aud_primed;      // from dlv_streamer (ring >= SEEK_FILL)
 
 wire        ld_playing_top;      // LD mode==PLAY from DragonsLair -> dlv_streamer
+wire        disc_2997_w;         // .dlv encode rate from the header -> LD transports
 
 //Instantiate Dragon's Lair top-level game module
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
@@ -549,7 +550,8 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	.ld_frame_o(ld_frame_dl), .ld_search_cmd_o(seek_pulse_dl),   // HLE-DRIVE /
 	.ld_play_end_o(play_end_dl),
 	.ld_playing_o(ld_playing_dl),
-	.post_seek_frames(post_seek_eff)
+	.post_seek_frames(post_seek_eff),
+	.disc_2997(disc_2997_w)
 );
 
 //------------------------------------------------------------------------------
@@ -582,6 +584,7 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 	.pause(pause_cpu),
 	.disc_hold(fb_seek_hold),
 	.post_seek_frames(post_seek_eff),
+	.disc_2997(disc_2997_w),
 
 	.ld_search_cmd_o(seek_pulse_cl),
 	.ld_play_end_o(play_end_cl),
@@ -669,6 +672,7 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ)) dl2_ldp
 	.pause(pause_cpu), .disc_hold(fb_seek_hold), .playing(ld_playing_d2),
 	.dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
 	.post_seek_frames(post_seek_eff),
+	.disc_2997(disc_2997_w),
 	.txt_we(d2_txt_we), .txt_line(d2_txt_line), .txt_col(d2_txt_col),
 	.txt_glyph(d2_txt_glyph), .txt_on(d2_txt_on),
 	.txt_x(d2_txt_x), .txt_y(d2_txt_y)
@@ -752,7 +756,8 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .pcm_l(pcm_l), .pcm_r(pcm_r),
     .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),
     .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
-    .ld_playing(ld_playing_top)
+    .ld_playing(ld_playing_top),
+    .disc_2997(disc_2997_w)
 );
 
 // ---- JPEG frame decoder: byte stream -> px writes (block-order, addressed by x,y) ----
