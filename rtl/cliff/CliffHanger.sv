@@ -290,14 +290,33 @@ module CliffHanger
     wire text_mode = tms_regs[12] & ~tms_regs[11] & ~tms_regs[1];
     wire gfx2_mode = ~tms_regs[12] & ~tms_regs[11] & tms_regs[1];
 
-    wire [15:0] OVL_W  = gfx2_mode ? 16'd256 : 16'd240;
-    wire [15:0] OVL_X0 = gfx2_mode ? 16'd32  : 16'd40;   // (320 - W) / 2
+    // A TMS PIXEL IS NOT A VIDEO PIXEL. The VDP is genlocked to the disc and its
+    // 342-pixel line IS one NTSC line (342 / (XTAL/2) = 63.6us), so the 256
+    // active pixels cover the 52.6us visible picture's worth of that -- 283 TMS
+    // pixels, ~91% of the width. MAME says the same: tms9928a.cpp's visible area
+    // is 256 active inside 280. Drawn 1:1 the graphics sat in a 256/320 = 80%
+    // window with disc video framing them on all four sides.
+    //
+    // Vertical needs no such stretch: a TMS line IS an NTSC line, so the 192
+    // active lines really are 192 of the picture's 240.
+    //
+    // W is the video-pixel count that maps onto the active area, X0 = (320-W)/2.
+    // Text's 240 active columns scale the same way: 240 * 320/283 = 272.
+    wire [15:0] OVL_W  = gfx2_mode ? 16'd290 : 16'd272;
+    wire [15:0] OVL_X0 = gfx2_mode ? 16'd15  : 16'd24;
     localparam [15:0] OVL_Y0 = 16'd24;                   // (240 - 192) / 2
 
     wire in_ovl = (ovl_hpos >= OVL_X0) && (ovl_hpos < OVL_X0 + OVL_W) &&
                   (ovl_vpos >= OVL_Y0) && (ovl_vpos < OVL_Y0 + 16'd192);
-    wire [15:0] ovl_x = ovl_hpos - OVL_X0;
-    wire [15:0] ovl_y = ovl_vpos - OVL_Y0;
+
+    // video pixel -> TMS pixel: x 283/320, as x226 >> 8 (0.8828 vs 0.8844).
+    // 24 bits holds the product exactly, which matters at the LEFT EDGE: before
+    // the window ovl_dx borrows, and the scaled result must still land just under
+    // 512 so the renderer's 9-bit prefetch wrap reaches cell 0 an early cell.
+    wire [15:0] ovl_dx    = ovl_hpos - OVL_X0;
+    wire [23:0] ovl_x_mul = ovl_dx * 16'd226;
+    wire [15:0] ovl_x     = ovl_x_mul[23:8];
+    wire [15:0] ovl_y     = ovl_vpos - OVL_Y0;
 
     wire [3:0] rnd_color;
     wire       rnd_transparent;

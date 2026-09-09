@@ -5,46 +5,48 @@
 // the CPU can see: registers, VRAM access, the status/interrupt latch).
 // This module implements the far side: given a pixel/line coordinate and the
 // eight VDP registers, produce the colour that pixel should show. Graphics I,
-// Graphics II, Multicolor and sprites are NOT implemented here.
+// Multicolor and sprites are NOT implemented here.
 //
 // Text mode: 40 columns x 24 rows of 6x8-pixel cells (240x192 active pixels),
 // two colours only (register 7), no sprites.
 //   Name table entry (col,row)     = nameBase    + row*40 + col
 //   Pattern byte (charcode,line)   = patternBase + charcode*8 + line
-//   nameBase    = reg2[3:0] * 0x400   (forms the upper 4 bits of the address)
-//   patternBase = reg4[2:0] * 0x800   (forms the upper 3 bits of the address)
-// Only the leftmost 6 bits of each pattern byte (bits 7:2) are displayed;
-// bits 1:0 are never fetched-as-pixels because a cell is 6 pixels wide, not 8.
+// Only the leftmost 6 bits of each pattern byte are displayed.
 //
-// ---- VRAM fetch pipeline --------------------------------------------------
-// VRAM is external (single read port, 1-cycle synchronous-read latency, same
-// contract as tms9928a_regs.sv's vram_dout: change the address, the data for
-// it appears one clock later). Resolving one pixel needs TWO dependent reads
-// (name byte, then pattern byte), so this module is a small 3-state FSM, not
-// a free-running per-pixel pipeline:
+// Graphics II: 32 columns x 24 rows of 8x8 cells (256x192), three independent
+// 256-entry banks selected by y[7:6], with a per-8-pixel-strip colour byte.
 //
-//   state ISSUE_NAME : vram_addr = name_addr(px,py)            [live px,py]
-//   state WAIT_NAME  : vram_data == name byte;
-//                      vram_addr = pattern_addr(vram_data,line) [issued now]
-//   state DECODE     : vram_data == pattern byte; colour/transparent
-//                      are computed and registered; back to ISSUE_NAME.
+// ---- CELL PREFETCH --------------------------------------------------------
+// VRAM is external (single read port, 1-cycle synchronous read: change the
+// address, its data appears one clock later). Resolving a cell needs two
+// dependent reads in text (name -> pattern) and three in Graphics II (name ->
+// pattern -> colour), so the fetch is a small FSM, not a per-clock pipeline.
 //
-// PIPELINE DEPTH: 3 ce pulses per query. The caller must hold px/py stable
-// for the ISSUE_NAME cycle (its live value is latched there) and pulse `ce`
-// three times; `color`/`transparent` update at the end of the third pulse
-// and hold until the next round completes. This is a query core, not a
-// continuously-streaming one-pixel-per-clock pipeline: it does NOT cache the
-// name/pattern byte across the 6 pixels of a cell, so it re-fetches both for
-// every single pixel query. Wiring it into a live, continuously-advancing
-// pixel counter (6 pixels/cell) would need either `ce` run at several times
-// the pixel rate, or a per-cell cache added on top -- neither exists yet;
-// that integration work is outside this module.
+// The pixel output must NOT depend on when that FSM happens to finish. An
+// earlier version updated `color` only at the end of a pass and restarted the
+// pass on every px change; the result was valid for the tail of each pixel
+// period only, so at cell boundaries the mixer sampled a pass that still
+// belonged to the previous cell. Measured against MAME on the title screen:
+// 453 wrong pixels, 86% of them at cell pixel 0 or 7.
+//
+// So the FSM does not chase px. It free-runs on a coordinate ONE CELL AHEAD
+// (px_pf) and parks its answer in pf_*. A cell lasts 6 or 8 source pixels --
+// ~77 or ~102 core clocks at the 512x480/CE_DIV_LOG2=3 raster -- against a
+// 3-or-4-clock pass, so pf_* has re-resolved the same address dozens of times
+// and is long stable before it is needed. At the cell boundary pf_* is copied
+// into cur_*, and the displayed pixel is then a combinational bit-select out of
+// cur_pat using the LIVE px. Timing no longer enters the picture.
+//
+// px is 9-bit and px_pf = px + cell width wraps within it, which is what makes
+// the left edge of the window work: the caller passes px = hpos - X0, so the
+// cells before the window sit at the top of the 9-bit range and px_pf reaches 0
+// exactly one cell early -- cell 0 of each line is prefetched during the border.
 //============================================================================
 module tms9928a_render
 (
     input             clk,
     input             reset_n,
-    input             ce,             // pixel-domain clock enable (see pipeline note above)
+    input             ce,             // clock enable; tie high to run at clk
 
     input      [7:0]  reg0,
     input      [7:0]  reg1,           // [6] = BLANK (0 = blanked, backdrop only)
@@ -62,7 +64,7 @@ module tms9928a_render
     // from px -- in Graphics II, px==255 is a REAL column, not a border marker.
     input             active,
 
-    output reg [3:0]  color,          // TMS colour index for (px,py), see pipeline note
+    output reg [3:0]  color,          // TMS colour index for (px,py)
     output reg        transparent,    // 1 when color==0 (mixer shows video underneath)
 
     // external VRAM read port (1-cycle synchronous-read latency)
@@ -70,54 +72,45 @@ module tms9928a_render
     input      [7:0]  vram_data
 );
     localparam [1:0] S_ISSUE_NAME = 2'd0,
-                      S_WAIT_NAME  = 2'd1,
-                      S_WAIT_PAT   = 2'd3,   // graphics II only: colour-table read
-                      S_DECODE     = 2'd2;
-
-    // TIMING MARGIN. Text takes 3 states per pixel, Graphics II 4 (it needs the
-    // extra colour-table read). One source pixel spans 512/320 * 8 = 12.8 clocks
-    // at CE_DIV_LOG2=3, and a px change mid-pass costs at most two passes to
-    // flush, so Graphics II needs up to 8 -- inside 12.8, but tighter than text.
-    reg [1:0] state;
-    reg [2:0] pix_in_cell_l;   // latched pixel-within-cell (0..5 text, 0..7 gfx2)
-    reg [2:0] line_l;          // latched scanline-within-cell (0..7)
-    reg       border_l;        // latched "outside the active area" flag
-    reg [9:0] charcode_l;      // gfx2: name byte + bank, needed for TWO reads
-    reg [7:0] pattern_l;       // gfx2: pattern byte, held while colour is fetched
-    reg       gfx2_l;          // mode latched with the rest, so it cannot change mid-cell
-
-    // ---- live combinational decode of the CURRENT px/py --------------------
-    // Only valid/used while in S_ISSUE_NAME (that's when px/py get sampled).
-    // NO `/` or `%` here. Quartus 17.0 does no CSE between them, so `px/6` and
-    // `px%6` would infer TWO separate lpm_divide instances -- see the vault note
-    // "Divide and modulo infer two separate dividers", where that cost thousands
-    // of ALMs. px is at most 255, and (px*171)>>10 equals px/6 exactly over that
-    // whole range (verified for 0..255), so one small multiply replaces both:
-    // the remainder then falls out as px - col*6, and *6 is just shifts.
-    wire [15:0] col_mul         = {7'd0, px} * 16'd171;
-    wire  [8:0] col_now         = col_mul[15:10];                   // = px / 6
-    wire  [8:0] col_x6          = {col_now[6:0], 2'b00}             // col*4
-                                + {col_now[7:0], 1'b0};             // + col*2
-    wire  [8:0] rem9            = px - col_x6;                      // 0..5
-    wire  [2:0] pix_in_cell_now = rem9[2:0];
-    wire [4:0] row_now         = py[7:3];        // 0..23
-    wire [2:0] line_now        = py[2:0];        // 0..7
-    wire       border_now      = ~active;
+                     S_WAIT_NAME  = 2'd1,
+                     S_WAIT_PAT   = 2'd3,   // graphics II only: colour-table read
+                     S_DECODE     = 2'd2;
 
     // Mode select. M1 = reg1[4], M2 = reg1[3], M3 = reg0[1].
     //   text = 1,0,0   graphics II = 0,0,1
-    wire mode_text = reg1[4] & ~reg1[3] & ~reg0[1];
     wire mode_gfx2 = ~reg1[4] & ~reg1[3] & reg0[1];
 
-    // Graphics II: 8-wide cells, 32 columns -- both are shifts, no divide.
-    wire [5:0] g_col_now       = px[8:3];
-    wire [2:0] g_pix_now       = px[2:0];
+    //---------------------------------------------------------------------
+    // Prefetch coordinate: one whole cell ahead of the pixel being displayed.
+    //---------------------------------------------------------------------
+    wire [8:0] px_pf = px + (mode_gfx2 ? 9'd8 : 9'd6);
 
-    // name_addr: upper 4 bits = table base, lower 10 bits = row*40+col (text)
-    // or row*32+col (graphics II, a concatenation rather than a multiply).
+    // NO `/` or `%` anywhere. Quartus 17.0 does no CSE between them, so `px/6`
+    // and `px%6` would infer TWO separate lpm_divide instances -- see the vault
+    // note "Divide and modulo infer two separate dividers". (px*171)>>10 equals
+    // px/6 exactly over the whole 9-bit range (verified 0..511), so one small
+    // multiply replaces both; the remainder falls out as px - col*6.
+    wire [15:0] pf_col_mul = {7'd0, px_pf} * 16'd171;
+    wire  [8:0] pf_col     = pf_col_mul[15:10];        // = px_pf / 6
+
+    wire [15:0] cur_col_mul = {7'd0, px} * 16'd171;
+    wire  [8:0] cur_col     = cur_col_mul[15:10];      // = px / 6
+    wire  [8:0] cur_col_x6  = {cur_col[6:0], 2'b00}    // col*4
+                            + {cur_col[7:0], 1'b0};    // + col*2
+    wire  [8:0] cur_rem9    = px - cur_col_x6;         // 0..5
+
+    wire [4:0] row_now  = py[7:3];        // 0..23
+    wire [2:0] line_now = py[2:0];        // 0..7
+
+    // Which cell the DISPLAYED pixel belongs to, and where inside it.
+    wire [5:0] cell_now    = mode_gfx2 ? px[8:3] : cur_col[5:0];
+    wire [2:0] pix_in_cell = mode_gfx2 ? px[2:0] : cur_rem9[2:0];
+
+    // name_addr for the PREFETCH cell: upper 4 bits = table base, lower 10 bits
+    // = row*40+col (text) or row*32+col (graphics II, a concatenation).
     wire [13:0] row_x40    = {9'd0, row_now} * 14'd40;
-    wire [13:0] name_off14 = row_x40 + {5'd0, col_now};
-    wire  [9:0] name_off   = mode_gfx2 ? {row_now, g_col_now[4:0]} : name_off14[9:0];
+    wire [13:0] name_off14 = row_x40 + {5'd0, pf_col};
+    wire  [9:0] name_off   = mode_gfx2 ? {row_now, px_pf[7:3]} : name_off14[9:0];
     wire [13:0] name_addr  = {reg2[3:0], name_off};
 
     // ---- Graphics II tables ------------------------------------------------
@@ -129,6 +122,11 @@ module tms9928a_render
     wire  [9:0] patternmask = {reg4[1:0], 8'hFF};        // ((R4 & 3) << 8) | 0xFF
     wire  [9:0] colourmask  = {reg3[6:0], 3'b111};       // ((R3 & 0x7F) << 3) | 7
 
+    reg  [2:0] line_l;         // scanline-within-cell latched with the name read
+    reg  [9:0] charcode_l;     // name byte + bank, needed for TWO further reads
+    reg  [7:0] pattern_hold;   // gfx2: pattern byte held while colour is fetched
+    reg        gfx2_l;         // mode latched with the rest, cannot change mid-pass
+
     // charcode = name byte + ((y >> 6) << 8); py[7:6] IS the 0/1/2 bank index.
     wire  [9:0] charcode_now = {py[7:6], vram_data};
     wire  [9:0] cc_pat       = charcode_l & patternmask;
@@ -139,49 +137,60 @@ module tms9928a_render
     wire [13:0] pattern_addr_txt = {reg4[2:0], vram_data, line_l};
     wire [13:0] pattern_addr_g2  = {reg4[2], cc_pat, line_l};
     wire [13:0] colour_addr_g2   = {reg3[7], cc_col, line_l};
-    wire [13:0] pattern_addr     = mode_gfx2 ? pattern_addr_g2 : pattern_addr_txt;
 
+    reg [1:0] state;
     always @* begin
         case (state)
             S_ISSUE_NAME: vram_addr = name_addr;
             S_WAIT_NAME:  vram_addr = mode_gfx2 ? pattern_addr_g2 : pattern_addr_txt;
             S_WAIT_PAT:   vram_addr = colour_addr_g2;   // graphics II only
-            default:      vram_addr = pattern_addr;     // S_DECODE: hold
+            default:      vram_addr = name_addr;        // S_DECODE: next name early
         endcase
     end
 
-    // Pattern-bit lookup: bit7=leftmost pixel (pixel 0) ... bit2=pixel 5.
-    // Bits 1:0 of the byte are never selected -- a cell is 6 pixels, not 8.
-    // Explicit case (not a computed part-select) per Quartus 17 house rules.
-    // Text reads the pattern live off the bus in S_DECODE; graphics II held it in
-    // pattern_l one state earlier, because S_DECODE's bus carries the colour byte.
-    wire [7:0] pat_byte = gfx2_l ? pattern_l : vram_data;
-    reg pat_bit;
-    always @* begin
-        case (pix_in_cell_l)
-            3'd0: pat_bit = pat_byte[7];
-            3'd1: pat_bit = pat_byte[6];
-            3'd2: pat_bit = pat_byte[5];
-            3'd3: pat_bit = pat_byte[4];
-            3'd4: pat_bit = pat_byte[3];
-            3'd5: pat_bit = pat_byte[2];
-            // bits 1:0 are only reachable in graphics II, whose cells are 8 wide
-            3'd6: pat_bit = gfx2_l ? pat_byte[1] : 1'b0;
-            default: pat_bit = gfx2_l ? pat_byte[0] : 1'b0;
-        endcase
-    end
+    //---------------------------------------------------------------------
+    // Prefetch result (settled long before the cell it belongs to is reached)
+    //---------------------------------------------------------------------
+    reg [7:0] pf_pat;
+    reg [3:0] pf_fg, pf_bg;
 
     // Graphics II takes fg/bg per 8-pixel strip from the colour table, which is
     // on the bus in S_DECODE. A zero nibble means "use the backdrop", as MAME's
     // mode-2 loop does. Text uses reg7's fixed pair.
     wire [3:0] g2_fg = (vram_data[7:4] != 4'd0) ? vram_data[7:4] : reg7[3:0];
     wire [3:0] g2_bg = (vram_data[3:0] != 4'd0) ? vram_data[3:0] : reg7[3:0];
-    wire [3:0] fg_now = gfx2_l ? g2_fg : reg7[7:4];
-    wire [3:0] bg_now = gfx2_l ? g2_bg : reg7[3:0];
 
-    // BLANK (reg1[6]==0) or outside the active area -> backdrop only.
-    wire [3:0] color_next       = (!reg1[6] || border_l) ? reg7[3:0]
-                                 : (pat_bit ? fg_now : bg_now);
+    //---------------------------------------------------------------------
+    // Displayed cell
+    //---------------------------------------------------------------------
+    reg [7:0] cur_pat;
+    reg [3:0] cur_fg, cur_bg;
+    reg [5:0] cell_q;
+    reg [7:0] py_q;
+    wire cell_changed = (cell_now != cell_q) || (py != py_q);
+
+    // Pattern-bit lookup: bit7 = leftmost pixel. Bits 1:0 are unreachable in
+    // text, whose cells are 6 pixels wide, not 8. Explicit case rather than a
+    // computed part-select, per the Quartus 17 house rules.
+    reg pat_bit;
+    always @* begin
+        case (pix_in_cell)
+            3'd0: pat_bit = cur_pat[7];
+            3'd1: pat_bit = cur_pat[6];
+            3'd2: pat_bit = cur_pat[5];
+            3'd3: pat_bit = cur_pat[4];
+            3'd4: pat_bit = cur_pat[3];
+            3'd5: pat_bit = cur_pat[2];
+            3'd6: pat_bit = mode_gfx2 ? cur_pat[1] : 1'b0;
+            default: pat_bit = mode_gfx2 ? cur_pat[0] : 1'b0;
+        endcase
+    end
+
+    // BLANK (reg1[6]==0) or outside the active area -> backdrop only. `active`
+    // is used LIVE here rather than latched through the fetch, so the window
+    // edge lands on the exact pixel the caller nominated.
+    wire [3:0] color_next = (!reg1[6] || !active) ? reg7[3:0]
+                                                 : (pat_bit ? cur_fg : cur_bg);
     // Colour 0 is treated as transparent so the laserdisc shows through. MAME
     // makes that conditional on EXTVID (reg0[0]) and otherwise paints colour 0
     // as a real pen; we do not, deliberately. This board is genlocked and Cliff
@@ -190,53 +199,69 @@ module tms9928a_render
     //
     // NOTE the BLANK case above is NOT forced transparent. It resolves to the
     // backdrop, and a non-zero backdrop really does cover the picture on a real
-    // TMS -- MAME only makes pen 0 transparent, never the backdrop as such. So
-    // if a blanked Cliff covers the screen, the fix is not here: it is whatever
-    // left reg7's low nibble non-zero.
-    wire       transparent_next = (color_next == 4'd0);
+    // TMS -- MAME only makes pen 0 transparent, never the backdrop as such.
+    wire transparent_next = (color_next == 4'd0);
 
     always @(posedge clk) begin
         if (!reset_n) begin
-            state         <= S_ISSUE_NAME;
-            pix_in_cell_l <= 3'd0;
-            line_l        <= 3'd0;
-            border_l      <= 1'b0;
-            charcode_l    <= 10'd0;
-            pattern_l     <= 8'd0;
-            gfx2_l        <= 1'b0;
-            color         <= 4'd0;
-            transparent   <= 1'b1;
+            state        <= S_ISSUE_NAME;
+            line_l       <= 3'd0;
+            charcode_l   <= 10'd0;
+            pattern_hold <= 8'd0;
+            gfx2_l       <= 1'b0;
+            pf_pat       <= 8'd0;
+            pf_fg        <= 4'd0;
+            pf_bg        <= 4'd0;
+            cur_pat      <= 8'd0;
+            cur_fg       <= 4'd0;
+            cur_bg       <= 4'd0;
+            cell_q       <= 6'd0;
+            py_q         <= 8'd0;
+            color        <= 4'd0;
+            transparent  <= 1'b1;
         end else if (ce) begin
+            // ---- free-running prefetch of the NEXT cell --------------------
             case (state)
                 S_ISSUE_NAME: begin
-                    // name_addr (built from live px/py) is on the bus this
-                    // cycle; snapshot what later stages will need.
-                    pix_in_cell_l <= mode_gfx2 ? g_pix_now : pix_in_cell_now;
-                    line_l        <= line_now;
-                    border_l      <= border_now;
-                    gfx2_l        <= mode_gfx2;
-                    state         <= S_WAIT_NAME;
+                    // name_addr (built from px_pf/py) is on the bus this cycle.
+                    line_l <= line_now;
+                    gfx2_l <= mode_gfx2;
+                    state  <= S_WAIT_NAME;
                 end
                 S_WAIT_NAME: begin
-                    // vram_data == name byte this cycle; the pattern address
-                    // (built from it combinationally above) is already on the bus.
+                    // vram_data == name byte; the pattern address it feeds is
+                    // already on the bus combinationally.
                     charcode_l <= charcode_now;
                     state      <= gfx2_l ? S_WAIT_PAT : S_DECODE;
                 end
                 S_WAIT_PAT: begin
-                    // graphics II: vram_data == pattern byte; hold it while the
-                    // colour address goes out, since S_DECODE's bus is the colour.
-                    pattern_l <= vram_data;
-                    state     <= S_DECODE;
+                    // graphics II: vram_data == pattern byte. Hold it -- next
+                    // cycle the bus carries the colour byte instead.
+                    pattern_hold <= vram_data;
+                    state        <= S_DECODE;
                 end
-                S_DECODE: begin
-                    // vram_data == pattern byte this cycle.
-                    color       <= color_next;
-                    transparent <= transparent_next;
-                    state       <= S_ISSUE_NAME;
+                default: begin   // S_DECODE
+                    // text: vram_data == pattern byte, colours come from reg7.
+                    // gfx2: vram_data == colour byte, pattern is in the hold reg.
+                    pf_pat <= gfx2_l ? pattern_hold : vram_data;
+                    pf_fg  <= gfx2_l ? g2_fg : reg7[7:4];
+                    pf_bg  <= gfx2_l ? g2_bg : reg7[3:0];
+                    state  <= S_ISSUE_NAME;
                 end
-                default: state <= S_ISSUE_NAME;
             endcase
+
+            // ---- adopt the prefetched cell at its boundary -----------------
+            cell_q <= cell_now;
+            py_q   <= py;
+            if (cell_changed) begin
+                cur_pat <= pf_pat;
+                cur_fg  <= pf_fg;
+                cur_bg  <= pf_bg;
+            end
+
+            // ---- pixel out (combinational select, registered once) ---------
+            color       <= color_next;
+            transparent <= transparent_next;
         end
     end
 endmodule
