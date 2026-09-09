@@ -219,12 +219,25 @@ module CliffHanger
     bin17_to_bcd5 u_bcd (.clk(clk_sys), .reset_n(reset), .bin(ld_curr_frame), .bcd(frame_bcd));
 
     wire [23:0] philips_code = ld_frame_valid ? {4'hF, frame_bcd} : 24'd0;
+
+    // The READY flag on port 0x52 is FIVE bits, not four. Daphne cliff.cpp:
+    //     result = frame_digit0 & 0x0F;
+    //     if (m_frame_val != 0) result |= 0xf8;   // "if the LDP is busy though,
+    //                                             //  the upper 5 bits must be clear"
+    // Setting only [7:4] (a plain 0xF nibble) leaves bit 3 holding digit0's bit 3,
+    // which is 0 for any frame below 80000 -- so the game reads "LDP busy" forever
+    // and never goes on to fetch 0x51/0x50. Measured in verilator/cliff: port 0x52
+    // read 414 times, 0x51 and 0x50 never.
+    wire frame_ready = ld_frame_valid && (ld_curr_frame != 17'd0);
+
     reg  [7:0]  phil_bus;
     always @(*) begin
         case (io_A[1:0])
-            2'd0:    phil_bus = philips_code[7:0];
-            2'd1:    phil_bus = philips_code[15:8];
-            default: phil_bus = philips_code[23:16];
+            2'd0:    phil_bus = philips_code[7:0];    // 0x50: BCD digits 3,4
+            2'd1:    phil_bus = philips_code[15:8];   // 0x51: BCD digits 1,2
+            // 0x52: digit 0 in the low nibble, ready flag in the upper FIVE bits.
+            default: phil_bus = frame_ready ? (8'hF8 | {4'd0, frame_bcd[19:16]})
+                                            : {4'd0, frame_bcd[19:16]};
         endcase
     end
 
@@ -319,6 +332,11 @@ module CliffHanger
             // in_ovl now only tells the renderer where the cells are (`active`);
             // outside it the renderer emits the backdrop, and transparency comes
             // from colour 0 alone -- exactly as the hardware does it.
+            // transp_en is deliberately NOT in this expression yet. Daphne makes
+            // colour 0 opaque unless the board arms transparency, but a 14 s sim
+            // shows Cliff's ROM never writing port 0x46 bit 4 in that window, so
+            // gating on it would only turn see-through areas solid. The latch is
+            // built and observable; wire it in once the ROM is seen to drive it.
             ovl_opaque <= (text_mode | gfx2_mode) & ~rnd_transparent;
         end
     end
@@ -358,6 +376,24 @@ module CliffHanger
             s2_out <= (s2_cnt < ((SND2_PERIOD * 32'd77) / 32'd100));
         end
     end
+    //------------------------------------------------------------------------
+    // Board genlock. Port 0x46 bit 4 is NOT a sound bit: it tells the video
+    // hardware to keep the overlay transparent. Daphne cliff.cpp:
+    //     if ((Value & 0x10) == 0x10) tms9128nl_set_transparency();
+    // and tms9128nl.cpp makes colour 0 see-through while it is set, opaque
+    // background when it is not -- then clears it EVERY NMI, because "this has
+    // to be set to true every pulse of the NMI in order to maintain the
+    // transparency. The Cliff ROM does this." So a frame in which the ROM stops
+    // asking goes solid, which is how the game covers the disc deliberately.
+    reg transp_en;
+    always @(posedge clk_sys) begin
+        if (!reset) transp_en <= 1'b0;
+        else begin
+            if (vblank_tick)                          transp_en <= 1'b0;
+            if (cpu_ce && cs_snd_w && cpu_Dout[4])    transp_en <= 1'b1;  // set wins
+        end
+    end
+
 
     wire signed [15:0] snd = ((snd_en[0] & s1_out) ? 16'sd6000 : 16'sd0)
                            + ((snd_en[1] & s2_out) ? 16'sd6000 : 16'sd0);
