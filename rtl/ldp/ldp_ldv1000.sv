@@ -176,8 +176,11 @@ module ldp_ldv1000
                         CMD_SCAN_FWD, CMD_SCAN_REV: begin
                             status <= ST_SCAN; number <= 17'd0;
                         end
+                        // REJECT must leave READY clear: the ready bit IS the
+                        // "command consumed" ack, and only 0xFF re-arms it. Super Don
+                        // Quix-ote parks the player at $14DB and resends until it clears.
                         CMD_STEP_FWD, CMD_STEP_REV, CMD_REJECT: begin
-                            status <= (cmd_byte == CMD_REJECT) ? (ST_PARK | ST_READY)
+                            status <= (cmd_byte == CMD_REJECT) ? ST_PARK
                                                                : (ST_STOP | ST_READY);
                             number <= 17'd0;
                         end

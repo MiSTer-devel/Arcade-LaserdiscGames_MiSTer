@@ -577,7 +577,9 @@ end
 //---------------------------------------------------- Heartbeat LED -----------------------------------------------------------//
 
 reg [23:0] hb_cnt = 24'd0;
-always_ff @(posedge clk_sys) hb_cnt <= hb_cnt + 24'd1;
-assign dbg_led = hb_cnt[23];   // ~0.6 Hz "core alive" blink
+// Held clear while this board is not selected, so a blink can only ever mean the
+// Dragon's Lair board is the one running.
+always_ff @(posedge clk_sys) if (!reset) hb_cnt <= 24'd0; else hb_cnt <= hb_cnt + 24'd1;
+assign dbg_led = hb_cnt[23];   // "core alive" blink, clk_sys/2^24
 
 endmodule

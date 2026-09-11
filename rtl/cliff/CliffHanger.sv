@@ -37,6 +37,8 @@ module CliffHanger
     input                disc_hold,
     input          [3:0] post_seek_frames,
     input                disc_2997,      // .dlv encode rate -> LD transport
+    input                is_gtg,         // 1 = Goal To Go running on this board
+    input                disc_side2,     // Goal To Go: 0 = disc side 1, 1 = disc side 2
 
     output               ld_search_cmd_o,
     output               ld_play_end_o,
@@ -214,13 +216,40 @@ module CliffHanger
     );
     assign ld_frame_o = ld_curr_frame;
 
+    // 59.94 Hz field tick for the VDP's vblank interrupt.
+    localparam [21:0] FIELD_PERIOD = (64'd1001 * CLK_HZ) / 64'd60000;
+    reg [21:0] fcnt;
+    wire       vblank_tick = (fcnt == FIELD_PERIOD - 22'd1);
+    always @(posedge clk_sys) begin
+        if (!reset) fcnt <= 22'd0;
+        else fcnt <= vblank_tick ? 22'd0 : fcnt + 22'd1;
+    end
+
     // ---- Philips VBI picture code (MAME philips_code_r) ----
     // 24 bits: 0xF in the top nibble marks a valid picture number, so bit 23 is
     // set and the IRQ fires; the low 20 bits are the frame as 5 BCD digits.
     wire [19:0] frame_bcd;
     bin17_to_bcd5 u_bcd (.clk(clk_sys), .reset_n(reset), .bin(ld_curr_frame), .bcd(frame_bcd));
 
-    wire [23:0] philips_code = ld_frame_valid ? {4'hF, frame_bcd} : 24'd0;
+    // Goal To Go's disc carries CHAPTER codes alongside picture numbers, and the
+    // game identifies the disc side from one: 0x881DDD = side 1, 0x8F7DDD = side 2.
+    // The ISR at $040E requires the low 12 bits to be 0xDDD, shifts right 4 and
+    // masks 0x7F, giving 0x01 / 0x77 at $E1BA; the side check at $0845 compares
+    // against exactly those. The .dlv carries no chapter data, so synthesise one on
+    // 1 field in 16 -- often enough for the side check, rare enough to leave the
+    // picture-number stream intact for the up-to-speed test at $0341, which needs
+    // consecutive picture codes to agree.
+    reg [3:0] phil_slot;
+    always @(posedge clk_sys) begin
+        if (!reset)          phil_slot <= 4'd0;
+        else if (vblank_tick) phil_slot <= phil_slot + 4'd1;
+    end
+    wire        chapter_field = is_gtg && (phil_slot == 4'd15);
+    wire [23:0] chapter_code  = disc_side2 ? 24'h8F7DDD : 24'h881DDD;
+
+    wire [23:0] philips_code = ~ld_frame_valid ? 24'd0
+                             : chapter_field   ? chapter_code
+                                               : {4'hF, frame_bcd};
 
     // The READY flag on port 0x52 is FIVE bits, not four. Daphne cliff.cpp:
     //     result = frame_digit0 & 0x0F;
@@ -238,8 +267,11 @@ module CliffHanger
             2'd0:    phil_bus = philips_code[7:0];    // 0x50: BCD digits 3,4
             2'd1:    phil_bus = philips_code[15:8];   // 0x51: BCD digits 1,2
             // 0x52: digit 0 in the low nibble, ready flag in the upper FIVE bits.
-            default: phil_bus = frame_ready ? (8'hF8 | {4'd0, frame_bcd[19:16]})
-                                            : {4'd0, frame_bcd[19:16]};
+            // 0x52 is the HIGH byte. A picture number must read >= 0xF8 or the
+            // dispatcher at $03E6 routes it to the chapter path and discards it.
+            default: phil_bus = chapter_field ? philips_code[23:16]
+                              : frame_ready   ? (8'hF8 | {4'd0, frame_bcd[19:16]})
+                                              : {4'd0, frame_bcd[19:16]};
         endcase
     end
 
@@ -259,15 +291,6 @@ module CliffHanger
         .clock_b(clk_sys), .address_b(vram_rd_A), .data_b(8'd0),
         .wren_b(1'b0), .q_b(vram_rd_Q)
     );
-
-    // 59.94 Hz field tick for the VDP's vblank interrupt.
-    localparam [21:0] FIELD_PERIOD = (64'd1001 * CLK_HZ) / 64'd60000;
-    reg [21:0] fcnt;
-    wire       vblank_tick = (fcnt == FIELD_PERIOD - 22'd1);
-    always @(posedge clk_sys) begin
-        if (!reset) fcnt <= 22'd0;
-        else fcnt <= vblank_tick ? 22'd0 : fcnt + 22'd1;
-    end
 
     wire [63:0] tms_regs;
 
@@ -440,14 +463,14 @@ module CliffHanger
 
     //--------------------------------------------------------- CPU data mux ---
     always @(*) begin
-        if      (cs_rom)    cpu_Din = (cpu_A < 16'hA000) ? rom_D : 8'hFF;
-        else if (cs_ram)    cpu_Din = ram_D;
-        else if (cs_vram_r) cpu_Din = tms_dout;
-        else if (cs_vreg_r) cpu_Din = tms_dout;
-        else if (cs_phil_r) cpu_Din = phil_bus;
-        else if (cs_port_r) cpu_Din = bank_bus;
-        else if (cs_irqack) cpu_Din = 8'h00;      // MAME returns 0
-        else                cpu_Din = 8'hFF;
+        if      (cs_rom)      cpu_Din = (cpu_A < 16'hA000) ? rom_D : 8'hFF;
+        else if (cs_ram)      cpu_Din = ram_D;
+        else if (cs_vram_r)   cpu_Din = tms_dout;
+        else if (cs_vreg_r)   cpu_Din = tms_dout;
+        else if (cs_phil_r)   cpu_Din = phil_bus;
+        else if (cs_port_r)   cpu_Din = bank_bus;
+        else if (cs_irqack)   cpu_Din = 8'h00;      // MAME returns 0
+        else                  cpu_Din = 8'hFF;
     end
 
     // Unused writes, decoded so they do not fall through to a warning:

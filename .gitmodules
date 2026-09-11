@@ -1,3 +1,6 @@
 [submodule "rtl/cpu/t400"]
 	path = rtl/cpu/t400
 	url = https://github.com/devsaurus/t400
+[submodule "rtl/sound/jt89"]
+	path = rtl/sound/jt89
+	url = https://github.com/jotego/jt89.git

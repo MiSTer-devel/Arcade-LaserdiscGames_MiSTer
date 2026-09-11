@@ -91,6 +91,22 @@ wire is_spaceace = (game_mod == 8'd1);
 wire is_thayers  = (game_mod == 8'd2);
 wire is_cliff    = (game_mod == 8'd3);   // Cliff Hanger: its own board, see rtl/cliff/
 wire is_dl2      = (game_mod == 8'd4);   // Dragon's Lair II: 8088 board, see rtl/dlair2/
+wire is_gtg      = (game_mod == 8'd5);   // Goal To Go: same PCB as Cliff Hanger
+wire is_sdq      = (game_mod == 8'd6);   // Super Don Quix-ote: Z80 + LD-V1000, see rtl/superdon/
+// Cliff Hanger and Goal To Go are the same board; everything that gates the board
+// or muxes its outputs keys on this, not on is_cliff.
+wire cliff_board = is_cliff | is_gtg;
+
+// One-hot board select. Exactly one bit is set, so exactly one board leaves reset
+// and drives the shared outputs below. Dragon's Lair is DERIVED from the others
+// rather than carrying an exclusion list, so adding a board cannot leave it
+// running alongside the new one.
+localparam BRD_DL = 0, BRD_CLIFF = 1, BRD_SDQ = 2, BRD_DL2 = 3;
+wire [3:0] brd;
+assign brd[BRD_CLIFF] = cliff_board;
+assign brd[BRD_SDQ]   = is_sdq;
+assign brd[BRD_DL2]   = is_dl2;
+assign brd[BRD_DL]    = ~|brd[3:1];
 
 // LED bar off -> the video gets the band's rows back (full screen).
 // Cliff Hanger has no scoreboard at all: it draws lives and score through the
@@ -100,7 +116,7 @@ wire is_dl2      = (game_mod == 8'd4);   // Dragon's Lair II: 8088 board, see rt
 // dlair2.cpp instantiates no such device. Credits appear in the LDP-1450 text
 // overlay when the game wants them seen. Turning the band off also returns its
 // BAND_H rows to the picture and switches VIDEO_ARY back to 480.
-wire band_off = status[20] | is_cliff | is_dl2;
+wire band_off = status[20] | cliff_board | is_dl2 | is_sdq;
 wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
@@ -117,6 +133,7 @@ localparam CONF_STR = {
 	// Entry 0 is the OSD title AND the .dlv folder name: both MRAs carry <setname same_dir="1">,
 	"LaserdiscGames;;",
 	"SC0,DLV,Load Disc;",
+	"H1O9,Disc Side,Side 1,Side 2;",
 	"-;",
 	"P1,Video;",
 	"P1OLM,Video Timing,CRT 240p60,Film 24Hz;",
@@ -192,7 +209,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({direct_video}),
+	.status_menumask({~is_gtg, direct_video}),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_upload(ioctl_upload),
@@ -350,6 +367,11 @@ wire        cliff_ovl_opaque;
 // at all, on every game. Verilator does not flag it.
 wire        d2_txt_lit;
 
+// Super Don Quix-ote's tilemap overlay: it presents RGB directly, because its
+// colours come from a board PROM rather than a fixed chip palette.
+wire [23:0] sdq_ovl_rgb;
+wire        sdq_ovl_opaque;
+
 // TMS9918/9928 fixed 16-colour palette. Index 0 is transparent and never
 // reaches here (ovl_opaque is low for it), so it is mapped to black.
 function [23:0] tms_rgb(input [3:0] c);
@@ -423,8 +445,15 @@ wire [15:0] ovl_sy     = crt_mode ? ovl_vrel : {1'b0, ovl_vrel[15:1]};
 // overlay means adding a source here, not another leg of a priority chain.
 //   DL2  : LDP-1450 text, white (the real player draws white only)
 //   Cliff: TMS9928A, through the VDP palette
-wire [23:0] ovl_bus_rgb    = d2_txt_lit ? 24'hFFFFFF : ovl_rgb;
-wire        ovl_bus_opaque = d2_txt_lit | cliff_ovl_opaque;
+//   SDQ  : 32-entry colour PROM, already RGB
+// Each contribution is ANDed with its owning board's select bit: this is an OR, not
+// a priority mux, so an idle board that fails to quiesce in reset would otherwise
+// paint over the running one.
+wire        d2_lit_g     = d2_txt_lit       & brd[BRD_DL2];
+wire        cliff_op_g   = cliff_ovl_opaque & brd[BRD_CLIFF];
+wire        sdq_op_g     = sdq_ovl_opaque   & brd[BRD_SDQ];
+wire [23:0] ovl_bus_rgb    = d2_lit_g ? 24'hFFFFFF : sdq_op_g ? sdq_ovl_rgb : ovl_rgb;
+wire        ovl_bus_opaque = d2_lit_g | cliff_op_g | sdq_op_g;
 
 wire  [7:0] comp_r = band_lit ? 8'hFF : ovl_bus_opaque ? ovl_bus_rgb[23:16] : (seek_black ? 8'h00 : rr_r);
 wire  [7:0] comp_g = band_lit ? 8'h00 : ovl_bus_opaque ? ovl_bus_rgb[15:8]  : (seek_black ? 8'h00 : rr_g);
@@ -518,7 +547,7 @@ wire        disc_2997_w;         // .dlv encode rate from the header -> LD trans
 //Instantiate Dragon's Lair top-level game module
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 (
-	.reset(~reset & ~is_cliff & ~is_dl2),   // active-low; held in reset while Cliff or DL2 runs
+	.reset(~reset & brd[BRD_DL]),   // active-low; held in reset while another board runs
 
 	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)
 
@@ -557,7 +586,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 //------------------------------------------------------------------------------
 // Cliff Hanger (Stern) — separate board: Z80 + TMS9928A overlay + Pioneer PR-8210.
 // Only one of the two game modules is out of reset at a time; every shared output
-// below is muxed on is_cliff so the idle board cannot drive the video or audio path.
+// below is muxed on cliff_board so the idle board cannot drive the video or audio path.
 //------------------------------------------------------------------------------
 wire signed [15:0] audio_l_cl, audio_r_cl;
 wire        [16:0] ld_frame_cl;
@@ -565,7 +594,7 @@ wire               seek_pulse_cl, play_end_cl, ld_playing_cl, dbg_led_cl;
 
 CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 (
-	.reset(~reset & is_cliff),
+	.reset(~reset & brd[BRD_CLIFF]),
 	.clk_sys(CLK_CORE),
 
 	// p1: {b3,b2,b1,action, right,left,down,up}; Cliff uses action=BUTTON1, skill1(B)=BUTTON2
@@ -585,6 +614,8 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 	.disc_hold(fb_seek_hold),
 	.post_seek_frames(post_seek_eff),
 	.disc_2997(disc_2997_w),
+	.is_gtg(is_gtg),
+	.disc_side2(status[9]),
 
 	.ld_search_cmd_o(seek_pulse_cl),
 	.ld_play_end_o(play_end_cl),
@@ -595,6 +626,47 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 	// TMS9928A overlay -> composited into comp_r/g/b above
 	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
 	.ovl_color(cliff_ovl_color), .ovl_opaque(cliff_ovl_opaque)
+);
+
+//------------------------------------------------------------------------------
+// Super Don Quix-ote (Universal) — Z80 + LD-V1000.  Character tilemap overlay
+// coloured by a board PROM, so it presents RGB rather than a palette index.
+//------------------------------------------------------------------------------
+wire signed [15:0] audio_l_sd, audio_r_sd;
+wire        [16:0] ld_frame_sd;
+wire               seek_pulse_sd, play_end_sd, ld_playing_sd, dbg_led_sd;
+
+SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
+(
+	.reset(~reset & brd[BRD_SDQ]),
+	.clk_sys(CLK_CORE),
+
+	// 4-way stick + one action button; MAME superdq IN0/IN1
+	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
+	.cab({m_coin2, m_coin1, m_start2, m_start1}),
+	.dsw(dsw),
+
+	.sound_l(audio_l_sd),
+	.sound_r(audio_r_sd),
+
+	.ioctl_addr(ioctl_addr),
+	.ioctl_data(ioctl_dout),
+	.ioctl_wr(ioctl_wr),
+	.ioctl_index(ioctl_index),
+
+	.pause(pause_cpu),
+	.disc_hold(fb_seek_hold),
+	.post_seek_frames(post_seek_eff),
+	.disc_2997(disc_2997_w),
+
+	.ld_search_cmd_o(seek_pulse_sd),
+	.ld_play_end_o(play_end_sd),
+	.ld_frame_o(ld_frame_sd),
+	.ld_playing_o(ld_playing_sd),
+
+	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+	.ovl_rgb(sdq_ovl_rgb), .ovl_opaque(sdq_ovl_opaque),
+	.dbg_led(dbg_led_sd)
 );
 
 //------------------------------------------------------------------------------
@@ -624,7 +696,7 @@ wire         [7:0] d2_txt_glyph, d2_txt_x, d2_txt_y;
 DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 (
 	.core_clk(CLK_CORE),
-	.reset_n(~reset & is_dl2),
+	.reset_n(~reset & brd[BRD_DL2]),
 
 	// DL2 has no DIPs (EEPROM-configured); controls only.
 	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
@@ -649,7 +721,7 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 // DL2's main RAM in DDR, through the port the framebuffer does not use.
 ddram_byte_port #(.BASE(28'h1000000)) dl2_ram
 (
-	.clk(CLK_CORE), .reset_n(~reset & is_dl2),
+	.clk(CLK_CORE), .reset_n(~reset & brd[BRD_DL2]),
 	.cpu_addr(d2_ram_addr), .cpu_din(d2_ram_din),
 	.cpu_rd(d2_ram_rd), .cpu_wr(d2_ram_wr),
 	.cpu_dout(d2_ram_dout), .busy(d2_ram_busy),
@@ -661,7 +733,7 @@ ddram_byte_port #(.BASE(28'h1000000)) dl2_ram
 // DL2's Sony LDP-1450, in the core domain so its strobes are never crossed.
 ldp_top #(.CLK_HZ(CORE_CLK_HZ)) dl2_ldp
 (
-	.clk(CLK_CORE), .reset_n(~reset & is_dl2),
+	.clk(CLK_CORE), .reset_n(~reset & brd[BRD_DL2]),
 	.player_sel(4'd3),                       // PLAYER_LDP1450
 	.cmd_stb(d2_tx_stb), .cmd_byte(d2_tx_byte),
 	.blip(1'b0),
@@ -699,16 +771,18 @@ assign led_disk_w = is_dl2 ? {1'b1, |d2_led_rx_cnt} : 2'b00;  // D7, Comm2 RX fr
 assign led_user_w = is_dl2 ? |d2_led_tx_cnt : dbg_led;   // D6, Comm2 TX to the player
 
 // ---- shared outputs: whichever board is running ----
-assign audio_l           = is_dl2 ? d2_audio : is_cliff ? audio_l_cl    : audio_l_dl;
-assign audio_r           = is_dl2 ? d2_audio : is_cliff ? audio_r_cl    : audio_r_dl;
-assign ld_curr_frame_top = is_dl2 ? ld_frame_d2   : is_cliff ? ld_frame_cl   : ld_frame_dl;
-assign fb_seek_pulse     = is_dl2 ? seek_pulse_d2 : is_cliff ? seek_pulse_cl : seek_pulse_dl;
-assign fb_play_end       = is_dl2 ? play_end_d2   : is_cliff ? play_end_cl   : play_end_dl;
-assign ld_playing_top    = is_dl2 ? ld_playing_d2 : is_cliff ? ld_playing_cl : ld_playing_dl;
-assign dbg_led           = is_cliff ? dbg_led_cl    : dbg_led_dl;
-// Cliff has no Dragon's Lair scoreboard and no Space Ace skill select.
-assign led_digits_flat   = (is_cliff | is_dl2) ? 64'd0 : led_digits_dl;
-assign skill_level       = is_cliff ? 2'd0  : skill_dl;
+assign audio_l           = brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_l_cl    : brd[BRD_SDQ] ? audio_l_sd    : audio_l_dl;
+assign audio_r           = brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_r_cl    : brd[BRD_SDQ] ? audio_r_sd    : audio_r_dl;
+assign ld_curr_frame_top = brd[BRD_DL2] ? ld_frame_d2   : brd[BRD_CLIFF] ? ld_frame_cl   : brd[BRD_SDQ] ? ld_frame_sd   : ld_frame_dl;
+assign fb_seek_pulse     = brd[BRD_DL2] ? seek_pulse_d2 : brd[BRD_CLIFF] ? seek_pulse_cl : brd[BRD_SDQ] ? seek_pulse_sd : seek_pulse_dl;
+assign fb_play_end       = brd[BRD_DL2] ? play_end_d2   : brd[BRD_CLIFF] ? play_end_cl   : brd[BRD_SDQ] ? play_end_sd   : play_end_dl;
+assign ld_playing_top    = brd[BRD_DL2] ? ld_playing_d2 : brd[BRD_CLIFF] ? ld_playing_cl : brd[BRD_SDQ] ? ld_playing_sd : ld_playing_dl;
+// DL2 drives LED_USER from its own Comm2 counters below, so its leg is 0 rather than
+// falling through to Dragon's Lair's heartbeat.
+assign dbg_led           = brd[BRD_DL2] ? 1'b0          : brd[BRD_CLIFF] ? dbg_led_cl    : brd[BRD_SDQ] ? dbg_led_sd    : dbg_led_dl;
+// The scoreboard band and the Space Ace skill select belong to the Dragon's Lair board only.
+assign led_digits_flat   = brd[BRD_DL] ? led_digits_dl : 64'd0;
+assign skill_level       = brd[BRD_DL] ? skill_dl      : 2'd0;
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
 // module.  It was the sole driver of ioctl_din and ioctl_upload_req -- tied off to keep hps_io happy.

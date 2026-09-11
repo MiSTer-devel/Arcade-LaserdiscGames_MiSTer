@@ -127,7 +127,11 @@ module ldp_transport
         if (!reset_n) begin
             mode <= M_PARK;
             search_frame <= 17'd0; stop_frame <= 17'd0; stop_valid <= 1'b0;
-            curr_frame <= 17'd0; fcnt <= 22'd0; vcnt <= 22'd0;
+            // CAV picture numbers start at 1: a spun-up disc always reports a
+            // real frame, parked or not.  Frame 0 is not a state real hardware
+            // can produce, and games validate the picture code before believing
+            // the disc is up to speed.
+            curr_frame <= 17'd1; fcnt <= 22'd0; vcnt <= 22'd0;
             search_delay <= 6'd0;
             disc_moving_q <= 1'b0;
             audio_en1 <= 1'b1; audio_en2 <= 1'b1;
