@@ -62,34 +62,27 @@ module mach3_video
     input         [15:0] ovl_vpos,
     input                ovl_ce_pix,
     output reg    [23:0] ovl_rgb,
-    output reg           ovl_opaque
+    output reg           ovl_opaque,
+
+    // ---- shared graphics ROM ----
+    // bgtiles 8K; sprites 64K as four 16K planes.  Both pools live at TOP LEVEL
+    // and are shared with every other board: boards are mutually exclusive, so a
+    // private copy per game costs its full size for nothing.  They stay two
+    // memories, not one, because a running game reads tiles and sprites in the
+    // same cycle -- pooling works across boards, never across concurrent readers.
+    output       [12:0] chr_rom_a,
+    input         [7:0] chr_rom_q,
+    output       [15:0] spr_rom_a,
+    input         [7:0] spr_rom_q
 );
-    //--------------------------------------------------- ROMs ----------------
-    // bgtiles 8K; sprites 64K as four 16K planes.
-    wire rom_ld = (ioctl_index == 8'd0) & ioctl_wr;
-    wire ld_bg  = rom_ld & (ioctl_addr >= 25'h0C000) & (ioctl_addr < 25'h0E000);
-    wire ld_spr = rom_ld & (ioctl_addr >= 25'h0E000) & (ioctl_addr < 25'h1E000);
-
-    wire [12:0] bg_ld_a  = ioctl_addr[12:0];              // 0C000 is 0x2000-aligned
-    wire [16:0] spr_off  = ioctl_addr[16:0] - 17'h0E000;
-    wire [15:0] spr_ld_a = spr_off[15:0];
-
     wire [12:0] bg_a;
     wire [15:0] spr_a;
     wire  [7:0] bg_q, spr_q;
 
-    dpram_dc #(.widthad_a(13)) u_bgrom (
-        .clock_a(core_clk), .address_a(bg_a), .q_a(bg_q),
-        .wren_a(1'b0), .data_a(8'd0),
-        .clock_b(core_clk), .address_b(bg_ld_a), .data_b(ioctl_data),
-        .wren_b(ld_bg), .q_b()
-    );
-    dpram_dc #(.widthad_a(16)) u_sprrom (
-        .clock_a(core_clk), .address_a(spr_a), .q_a(spr_q),
-        .wren_a(1'b0), .data_a(8'd0),
-        .clock_b(core_clk), .address_b(spr_ld_a), .data_b(ioctl_data),
-        .wren_b(ld_spr), .q_b()
-    );
+    assign chr_rom_a = bg_a;
+    assign bg_q      = chr_rom_q;
+    assign spr_rom_a = spr_a;
+    assign spr_q     = spr_rom_q;
 
     //--------------------------------------------------- palette -------------
     reg [7:0] pal [0:31];

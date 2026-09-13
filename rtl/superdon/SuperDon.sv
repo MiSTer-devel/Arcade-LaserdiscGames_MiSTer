@@ -33,6 +33,10 @@ module SuperDon
     output        [15:0] rom_addr,
     input          [7:0] rom_data,
 
+    // ---- shared graphics ROM (character generator, 8K) ----
+    output        [12:0] chr_rom_a,
+    input          [7:0] chr_rom_q,
+
     input         [24:0] ioctl_addr,
     input          [7:0] ioctl_data,
     input                ioctl_wr,
@@ -133,14 +137,12 @@ module SuperDon
         .wren_b(1'b0), .q_b(vram_rd_D)
     );
 
+    // Character generator lives in the TOP-LEVEL shared graphics pool, alongside
+    // Mach 3's background tiles: one 8K memory, since only one board ever runs.
     wire [12:0] char_A;
     wire  [7:0] char_D;
-    dpram_dc #(.widthad_a(13)) u_char (
-        .clock_a(clk_sys), .address_a(char_A), .q_a(char_D),
-        .wren_a(1'b0), .data_a(8'd0),
-        .clock_b(clk_sys), .address_b(ioctl_addr[12:0]), .data_b(ioctl_data),
-        .wren_b(ld_char), .q_b()
-    );
+    assign chr_rom_a = char_A;
+    assign char_D    = chr_rom_q;
 
     wire  [4:0] prom_A;
     wire  [7:0] prom_D;

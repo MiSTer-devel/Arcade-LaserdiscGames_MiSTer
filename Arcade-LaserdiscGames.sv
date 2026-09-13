@@ -672,6 +672,7 @@ wire               seek_pulse_sd, play_end_sd, ld_playing_sd, dbg_led_sd;
 SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 (
 	.rom_addr(sd_rom_a), .rom_data(prog_q),
+	.chr_rom_a(sd_chr_a), .chr_rom_q(gfx_chr_q),
 	.reset(~reset & brd[BRD_SDQ]),
 	.clk_sys(CLK_CORE),
 
@@ -869,7 +870,9 @@ mach3_video mach3_gfx
     .vram_rd_a(m3_vram_a), .vram_rd_d(m3_vram_d),
     .spram_rd_a(m3_spram_a), .spram_rd_d(m3_spram_d),
     .ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
-    .ovl_rgb(m3_ovl_rgb), .ovl_opaque(m3_ovl_opaque)
+    .ovl_rgb(m3_ovl_rgb), .ovl_opaque(m3_ovl_opaque),
+    .chr_rom_a(m3_chr_a), .chr_rom_q(gfx_chr_q),
+    .spr_rom_a(m3_spr_a), .spr_rom_q(gfx_spr_q)
 );
 
 // Gottlieb drives the PR-8210 blip from a 555, not a bit-banged loop like
@@ -900,6 +903,50 @@ dpram_dc #(.widthad_a(16)) u_prog_rom (
     .wren_a(1'b0), .data_a(8'd0),
     .clock_b(CLK_CORE), .address_b(ioctl_addr[15:0]), .data_b(ioctl_dout),
     .wren_b(prog_we), .q_b()
+);
+
+//------------------------------------------------------------------------------
+// Shared graphics ROM.  Same argument as the program ROM: boards are mutually
+// exclusive, so a private copy per game costs its full size for nothing.
+//
+// TWO pools, not one, and this is the rule: pooling works ACROSS boards, never
+// across concurrent readers.  A running Mach 3 reads a background tile and a
+// sprite plane in the same cycle, so those need two ports and therefore two
+// memories.  Each pool is sized to the LARGEST user, not the sum of all users,
+// so a new game only costs whatever it exceeds the current maximum by.
+//
+//   chr pool  8K : Mach 3 background tiles | Super Don character generator
+//   spr pool 64K : Mach 3 sprites (four 16K planes)
+//------------------------------------------------------------------------------
+wire [12:0] m3_chr_a, sd_chr_a;
+wire [15:0] m3_spr_a;
+wire  [7:0] gfx_chr_q, gfx_spr_q;
+
+wire [12:0] gfx_chr_rd_a = brd[BRD_MACH3] ? m3_chr_a : sd_chr_a;
+
+// Both writers land 8K-aligned, so the low 13 bits ARE the pool offset:
+// Mach 3 tiles at ioctl 0x0C000, Super Don's char generator at 0x4000.
+wire gfx_chr_we = ioctl_wr & (ioctl_index == 8'd0) &
+                  ((mach3_board & (ioctl_addr >= 25'h0C000) & (ioctl_addr < 25'h0E000)) |
+                   (is_sdq      & (ioctl_addr >= 25'h04000) & (ioctl_addr < 25'h06000)));
+
+// Sprites are NOT 64K-aligned in the MRA, so this one needs the subtraction.
+wire [16:0] gfx_spr_off = ioctl_addr[16:0] - 17'h0E000;
+wire gfx_spr_we = ioctl_wr & (ioctl_index == 8'd0) & mach3_board &
+                  (ioctl_addr >= 25'h0E000) & (ioctl_addr < 25'h1E000);
+
+dpram_dc #(.widthad_a(13)) u_gfx_chr (
+    .clock_a(CLK_CORE), .address_a(gfx_chr_rd_a), .q_a(gfx_chr_q),
+    .wren_a(1'b0), .data_a(8'd0),
+    .clock_b(CLK_CORE), .address_b(ioctl_addr[12:0]), .data_b(ioctl_dout),
+    .wren_b(gfx_chr_we), .q_b()
+);
+
+dpram_dc #(.widthad_a(16)) u_gfx_spr (
+    .clock_a(CLK_CORE), .address_a(m3_spr_a), .q_a(gfx_spr_q),
+    .wren_a(1'b0), .data_a(8'd0),
+    .clock_b(CLK_CORE), .address_b(gfx_spr_off[15:0]), .data_b(ioctl_dout),
+    .wren_b(gfx_spr_we), .q_b()
 );
 
 // ---- shared outputs: whichever board is running ----
