@@ -1,0 +1,93 @@
+<misterromdescription>
+    <name>M.A.C.H. 3</name>
+    <region>US</region>
+    <homebrew>no</homebrew>
+    <bootleg>no</bootleg>
+    <version></version>
+    <alternative></alternative>
+    <platform></platform>
+    <series>M.A.C.H. 3</series>
+    <year>1983</year>
+    <manufacturer>Mylstar</manufacturer>
+    <category>LaserDisc</category>
+
+    <setname same_dir="1">mach3</setname>
+    <parent>mach3</parent>
+    <mameversion>0270</mameversion>
+    <rbf>LaserdiscGames</rbf>
+    <about></about>
+
+    <resolution>15kHz</resolution>
+    <rotation>horizontal</rotation>
+    <flip>no</flip>
+
+    <players>2</players>
+    <joystick>8-way</joystick>
+    <special_controls></special_controls>
+    <num_buttons>2</num_buttons>
+    <buttons names="Fire,Bomb,-,-,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
+
+    <!-- One DSW byte at 0x5800 (gottlieb/gottlieb.cpp INPUT_PORTS mach3), read
+         straight through with no inversion.  Coinage and Bonus Life each use two
+         NON-ADJACENT bits, which an MRA <dip bits="lo,hi"> RANGE cannot express,
+         so all eight switches are listed individually:
+           Coinage    SW2(0x08),SW1(0x01): 09=4C/1C  01=3C/1C  08=2C/1C  00=Free Play
+           Bonus Life SW5(0x20),SW4(0x04): 00=10k/10k 04=10k/20k 20=10k/40k 24=20k/60k
+         Default 48 = 2C/1C, 3 lives, 10000/10000, demo sounds on. -->
+    <switches default="48">
+        <dip bits="0" name="SW1 Coinage (low)"    ids="Off,On"/>
+        <dip bits="1" name="SW6 Difficulty"       ids="Normal,Hard"/>
+        <dip bits="2" name="SW4 Bonus (low)"      ids="Off,On"/>
+        <dip bits="3" name="SW2 Coinage (high)"   ids="Off,On"/>
+        <dip bits="4" name="SW3 Lives"            ids="3,5"/>
+        <dip bits="5" name="SW5 Bonus (high)"     ids="Off,On"/>
+        <dip bits="6" name="SW7 Demo Sounds"      ids="Off,On"/>
+        <dip bits="7" name="SW8 Infinite Lives"   ids="Off,On"/>
+    </switches>
+
+    <!-- GAME-ID byte 0: 07 = M.A.C.H. 3. -->
+    <!-- POST-SEEK-FRAMES byte 1: extra film ticks before seek commits. -->
+    <rom index="1">
+        <part>07 03</part>
+    </rom>
+
+    <!-- Index 0, packed to match rtl/mach3/Mach3.sv + mach3_video.sv:
+           00000  40K  8088 program        -> CPU 6000-FFFF
+           0A000   8K  sound 6502 (dcpu)   -> C000-DFFF  (4K ROM at D000, so 4K pad first)
+           0C000   8K  background tiles
+           0E000  64K  sprites, 4 planes x 16K, MSB plane first
+           1E000   8K  speech 6502 (ycpu)  -> E000-FFFF  (4K ROM at F000, so 4K pad first)
+         Mach 3's sprite planes are only 8K each.  MAME's RGN_FRAC(1,4) over a
+         0x8000 region gives 256 elements, so a code of 256+ (spritebank set)
+         wraps modulo 256.  Each plane is therefore listed TWICE rather than
+         zero-padded, which reproduces that wrap exactly and keeps the RTL's
+         uniform 16K plane stride. -->
+    <rom index="0" md5="none" zip="mach3.zip">
+        <part crc="8bfd5a44" name="m3rom4.bin"/>
+        <part crc="b1b045af" name="m3rom3.bin"/>
+        <part crc="fbdfb03d" name="m3rom2.bin"/>
+        <part crc="3b0ba80b" name="m3rom1.bin"/>
+        <part crc="70c12bf4" name="m3rom0.bin"/>
+
+        <part repeat="4096">00</part>
+        <part crc="a6e29212" name="m3drom1.bin"/>
+
+        <part crc="ea2f5257" name="mach3bg0.bin"/>
+        <part crc="f543e4ce" name="mach3bg1.bin"/>
+
+        <part crc="472128b4" name="mach3fg3.bin"/>
+        <part crc="472128b4" name="mach3fg3.bin"/>
+        <part crc="2a59e99e" name="mach3fg2.bin"/>
+        <part crc="2a59e99e" name="mach3fg2.bin"/>
+        <part crc="9b88767b" name="mach3fg1.bin"/>
+        <part crc="9b88767b" name="mach3fg1.bin"/>
+        <part crc="0bae12a5" name="mach3fg0.bin"/>
+        <part crc="0bae12a5" name="mach3fg0.bin"/>
+
+        <part repeat="4096">00</part>
+        <part crc="eddf8872" name="m3yrom1.bin"/>
+    </rom>
+
+    <remark>M.A.C.H. 3 (Mylstar) - 8088 + Pioneer PR-8210</remark>
+    <mratimestamp>20260912000000</mratimestamp>
+</misterromdescription>

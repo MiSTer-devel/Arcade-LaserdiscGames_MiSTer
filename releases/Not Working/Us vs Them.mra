@@ -1,0 +1,78 @@
+<misterromdescription>
+    <name>Us vs Them</name>
+    <region>US</region>
+    <homebrew>no</homebrew>
+    <bootleg>no</bootleg>
+    <version></version>
+    <alternative></alternative>
+    <platform></platform>
+    <series>Us vs Them</series>
+    <year>1984</year>
+    <manufacturer>Mylstar</manufacturer>
+    <category>LaserDisc</category>
+
+    <setname same_dir="1">usvsthem</setname>
+    <parent>usvsthem</parent>
+    <mameversion>0270</mameversion>
+    <rbf>LaserdiscGames</rbf>
+    <about></about>
+
+    <resolution>15kHz</resolution>
+    <rotation>horizontal</rotation>
+    <flip>no</flip>
+
+    <players>2</players>
+    <joystick>8-way</joystick>
+    <special_controls></special_controls>
+    <num_buttons>3</num_buttons>
+    <buttons names="Fire,Missile,Button 3,-,Coin,Start 1P,Start 2P,Pause" default="A,B,X,Start,R,L"/>
+
+    <!-- Same board as M.A.C.H. 3 (MAME g2laser), but note this game reads THREE
+         buttons at IN4 bits 4,5,6 where M.A.C.H. 3 and Cobra Command use bits 5,6.
+         DSW at 0x5800, read straight through.  Coinage uses two NON-ADJACENT bits,
+         which an MRA <dip bits="lo,hi"> RANGE cannot express:
+           Coinage SW2(0x08),SW1(0x01): 08=2C/1C  00=1C/1C  01=Free Play
+         MAME documents only these two settings; the remaining switches are
+         unknown and are exposed raw so they can be swept.  Default 00. -->
+    <switches default="00">
+        <dip bits="0" name="SW1 Coinage (low)"    ids="Off,On"/>
+        <dip bits="1" name="SW2 (unknown)"        ids="Off,On"/>
+        <dip bits="2" name="SW4 Difficulty"       ids="Normal,Hard"/>
+        <dip bits="3" name="SW2 Coinage (high)"   ids="Off,On"/>
+        <dip bits="4" name="SW5 (unknown)"        ids="Off,On"/>
+        <dip bits="5" name="SW6 (unknown)"        ids="Off,On"/>
+        <dip bits="6" name="SW7 (unknown)"        ids="Off,On"/>
+        <dip bits="7" name="SW8 (unknown)"        ids="Off,On"/>
+    </switches>
+
+    <!-- GAME-ID byte 0: 09 = Us vs Them. -->
+    <rom index="1">
+        <part>09 03</part>
+    </rom>
+
+    <!-- Index 0, same packing as M.A.C.H. 3.  This is the game that sets the
+         sizes the RTL is built to: full 40K program, full 8K sound and speech
+         ROMs, and four FULL 16K sprite planes, so nothing here needs padding. -->
+    <rom index="0" md5="none" zip="usvsthem.zip">
+        <part crc="0d7a4072" name="usvs.rm4"/>
+        <part crc="6f32a671" name="usvs.rm3"/>
+        <part crc="36770716" name="usvs.rm2"/>
+        <part crc="697bc989" name="usvs.rm1"/>
+        <part crc="30cf6bd9" name="usvs.rm0"/>
+
+        <part crc="c0b5cab0" name="usvsdrom.1"/>
+
+        <part crc="8a0de09f" name="usvs.bg0"/>
+        <part crc="6fb64d3c" name="usvs.bg1"/>
+
+        <part crc="98703015" name="usvs.fg3"/>
+        <part crc="d3990707" name="usvs.fg2"/>
+        <part crc="a2057430" name="usvs.fg1"/>
+        <part crc="7734e53f" name="usvs.fg0"/>
+
+        <part crc="c3d245ca" name="usvsyrom.1"/>
+    </rom>
+
+    <remark>Us vs Them (Mylstar) - 8088 + Pioneer PR-8210</remark>
+    <mratimestamp>20260912000000</mratimestamp>
+</misterromdescription>

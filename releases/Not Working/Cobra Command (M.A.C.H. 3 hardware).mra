@@ -1,0 +1,88 @@
+<misterromdescription>
+    <name>Cobra Command (M.A.C.H. 3 hardware)</name>
+    <region>US</region>
+    <homebrew>no</homebrew>
+    <bootleg>no</bootleg>
+    <version></version>
+    <alternative></alternative>
+    <platform></platform>
+    <series>Cobra Command</series>
+    <year>1984</year>
+    <manufacturer>Data East</manufacturer>
+    <category>LaserDisc</category>
+
+    <setname same_dir="1">cobram3</setname>
+    <parent>cobra</parent>
+    <mameversion>0270</mameversion>
+    <rbf>LaserdiscGames</rbf>
+    <about></about>
+
+    <resolution>15kHz</resolution>
+    <rotation>horizontal</rotation>
+    <flip>no</flip>
+
+    <players>2</players>
+    <joystick>8-way</joystick>
+    <special_controls></special_controls>
+    <num_buttons>2</num_buttons>
+    <buttons names="Gun,Missile,-,-,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
+
+    <!-- This is the M.A.C.H. 3 CONVERSION KIT of Cobra Command, not the Data East
+         3-boardset.  MAME's cobram3 machine config differs from g2laser only in
+         sound-board mods, so it is the same board as M.A.C.H. 3.
+         DSW at 0x5800, read straight through.  "1st/2nd Bonus" uses two
+         NON-ADJACENT bits, which an MRA <dip bits="lo,hi"> RANGE cannot express:
+           Bonus SW4(0x10),SW3(0x04): 00=20000/None 10=15000/30000
+                                      04=20000/40000 14=30000/50000
+         Default 03 = 1 Coin/1 Credit, demo sounds on, 3 lives. -->
+    <switches default="03">
+        <dip bits="0" name="SW2 Coinage"          ids="2 Coins/1 Credit,1 Coin/1 Credit"/>
+        <dip bits="1" name="SW6 Demo Sounds"      ids="Off,On"/>
+        <dip bits="2" name="SW3 Bonus (low)"      ids="Off,On"/>
+        <dip bits="3" name="SW1 Lives"            ids="3,5"/>
+        <dip bits="4" name="SW4 Bonus (high)"     ids="Off,On"/>
+        <dip bits="5" name="SW5 Difficulty"       ids="Normal,Difficult"/>
+        <dip bits="6" name="SW7 Random 1st Level" ids="Off,On"/>
+        <dip bits="7" name="SW8 Self Test"        ids="Off,On"/>
+    </switches>
+
+    <!-- GAME-ID byte 0: 08 = Cobra Command on M.A.C.H. 3 hardware. -->
+    <rom index="1">
+        <part>08 03</part>
+    </rom>
+
+    <!-- Index 0, same packing as M.A.C.H. 3.  Two differences:
+           * the 8088 program is only 32K (nothing at 6000), so the first 8K pads;
+           * MAME loads one 8K sprite ROM into each 16K plane of a 64K region, so
+             the upper half of every plane really is blank — zero pad, do NOT
+             repeat as M.A.C.H. 3 does.
+         cobra.zip is a MERGED set holding all three Cobra Command variants; the
+         bh* files below are the M.A.C.H. 3 kit. -->
+    <rom index="0" md5="none" zip="cobra.zip">
+        <part repeat="8192">00</part>
+        <part crc="755cbbf5" name="bh03"/>
+        <part crc="928ef670" name="cobram3/bh02"/>
+        <part crc="7d86ab08" name="cobram3/bh01"/>
+        <part crc="c19ad038" name="cobram3/bh00"/>
+
+        <part repeat="4096">00</part>
+        <part crc="a6e29212" name="m3drom1.bin"/>
+
+        <part crc="8c5dfac0" name="bh09"/>
+        <part crc="8b8da8dc" name="bh0a"/>
+
+        <part crc="d8f49994" name="bh05"/>
+        <part repeat="8192">00</part>
+        <part crc="d6439e2f" name="bh08"/>
+        <part repeat="8192">00</part>
+        <part crc="f94668d2" name="bh07"/>
+        <part repeat="8192">00</part>
+        <part crc="ab6c7cf1" name="bh06"/>
+        <part repeat="8192">00</part>
+
+        <part crc="c3f61bc9" name="bh04"/>
+    </rom>
+
+    <remark>Cobra Command (Data East, M.A.C.H. 3 conversion kit) - 8088 + Pioneer PR-8210</remark>
+    <mratimestamp>20260912000000</mratimestamp>
+</misterromdescription>

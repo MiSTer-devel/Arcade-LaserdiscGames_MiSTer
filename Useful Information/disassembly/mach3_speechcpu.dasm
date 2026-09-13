@@ -1,0 +1,1683 @@
+0F000: C7 44 04 00 80          mov     word ptr [si+4h],8000h
+0F005: C7 44 0A 00 48          mov     word ptr [si+0Ah],4800h
+0F00A: C7 44 0E 00 00          mov     word ptr [si+0Eh],0h
+0F00F: C7 06 C3 0F 00 00       mov     word ptr [0FC3h],0h
+0F015: C7 44 14 00 00          mov     word ptr [si+14h],0h
+0F01A: C7 44 1A FF 7F          mov     word ptr [si+1Ah],7FFFh
+0F01F: C7 44 10 00 80          mov     word ptr [si+10h],8000h
+0F024: C7 44 12 00 80          mov     word ptr [si+12h],8000h
+0F029: C7 44 18 00 30          mov     word ptr [si+18h],3000h
+0F02E: C6 06 D8 0F 01          mov     byte ptr [0FD8h],1h
+0F033: 5E                      pop     si
+0F034: C3                      ret     
+0F035: B8 00 C0                mov     ax,0C000h
+0F038: 89 04                   mov     [si],ax
+0F03A: 05 00 80                add     ax,8000h
+0F03D: 89 44 02                mov     [si+2h],ax
+0F040: 89 44 04                mov     [si+4h],ax
+0F043: C7 06 C1 0F 00 00       mov     word ptr [0FC1h],0h
+0F049: C7 44 06 00 00          mov     word ptr [si+6h],0h
+0F04E: C7 44 0C FF 7F          mov     word ptr [si+0Ch],7FFFh
+0F053: C7 44 0A 00 48          mov     word ptr [si+0Ah],4800h
+0F058: C7 44 0E 00 00          mov     word ptr [si+0Eh],0h
+0F05D: C7 06 C3 0F 00 00       mov     word ptr [0FC3h],0h
+0F063: C7 44 14 00 00          mov     word ptr [si+14h],0h
+0F068: C7 44 1A FF 7F          mov     word ptr [si+1Ah],7FFFh
+0F06D: C7 44 10 00 80          mov     word ptr [si+10h],8000h
+0F072: C7 44 12 00 80          mov     word ptr [si+12h],8000h
+0F077: C7 44 18 00 30          mov     word ptr [si+18h],3000h
+0F07C: C6 06 D8 0F 01          mov     byte ptr [0FD8h],1h
+0F081: 5E                      pop     si
+0F082: C3                      ret     
+0F083: A0 D9 0F                mov     al,[0FD9h]
+0F086: 3C 00                   cmp     al,0h
+0F088: 75 01                   jne     0F08Bh
+0F08A: C3                      ret     
+0F08B: 56                      push    si
+0F08C: BE FE 0F                mov     si,0FFEh
+0F08F: 3C 01                   cmp     al,1h
+0F091: 74 03                   je      0F096h
+0F093: EB 55                   jmp     0F0EAh
+0F095: 90                      nop     
+0F096: E8 23 02                call    0F2BCh
+0F099: 8B 04                   mov     ax,[si]
+0F09B: A3 C7 0F                mov     [0FC7h],ax
+0F09E: E8 77 02                call    0F318h
+0F0A1: 8B 44 0E                mov     ax,[si+0Eh]
+0F0A4: A3 C9 0F                mov     [0FC9h],ax
+0F0A7: 8B 44 06                mov     ax,[si+6h]
+0F0AA: F7 D8                   neg     ax
+0F0AC: D1 E0                   shl     ax,1
+0F0AE: D1 E0                   shl     ax,1
+0F0B0: D1 E0                   shl     ax,1
+0F0B2: D1 E0                   shl     ax,1
+0F0B4: 88 26 C5 0F             mov     [0FC5h],ah
+0F0B8: 80 3E DC 0F 01          cmp     byte ptr [0FDCh],1h
+0F0BD: 75 29                   jne     0F0E8h
+0F0BF: 80 7C 1C 00             cmp     byte ptr [si+1Ch],0h
+0F0C3: 74 05                   je      0F0CAh
+0F0C5: FE 4C 1C                dec     byte ptr [si+1Ch]
+0F0C8: EB 1E                   jmp     0F0E8h
+0F0CA: E8 7B D0                call    0C148h
+0F0CD: 24 0F                   and     al,0Fh
+0F0CF: 04 03                   add     al,3h
+0F0D1: 88 44 1C                mov     [si+1Ch],al
+0F0D4: A1 C7 0F                mov     ax,[0FC7h]
+0F0D7: A3 E0 06                mov     [6E0h],ax
+0F0DA: A1 C9 0F                mov     ax,[0FC9h]
+0F0DD: A3 E2 06                mov     [6E2h],ax
+0F0E0: C6 06 EE 01 01          mov     byte ptr [1EEh],1h
+0F0E5: E8 33 B4                call    0A51Bh
+0F0E8: 5E                      pop     si
+0F0E9: C3                      ret     
+0F0EA: 3C 02                   cmp     al,2h
+0F0EC: 75 54                   jne     0F142h
+0F0EE: C7 06 10 07 98 00       mov     word ptr [710h],98h
+0F0F4: C7 04 00 00             mov     word ptr [si],0h
+0F0F8: C7 06 C7 0F 00 00       mov     word ptr [0FC7h],0h
+0F0FE: C7 44 06 00 00          mov     word ptr [si+6h],0h
+0F103: C7 44 0C FF 7F          mov     word ptr [si+0Ch],7FFFh
+0F108: C7 44 02 00 80          mov     word ptr [si+2h],8000h
+0F10D: C7 44 04 00 80          mov     word ptr [si+4h],8000h
+0F112: C7 44 0A 00 48          mov     word ptr [si+0Ah],4800h
+0F117: C7 44 0E 00 00          mov     word ptr [si+0Eh],0h
+0F11C: C7 06 C9 0F 00 00       mov     word ptr [0FC9h],0h
+0F122: C7 44 14 00 00          mov     word ptr [si+14h],0h
+0F127: C7 44 1A FF 7F          mov     word ptr [si+1Ah],7FFFh
+0F12C: C7 44 10 00 80          mov     word ptr [si+10h],8000h
+0F131: C7 44 12 00 80          mov     word ptr [si+12h],8000h
+0F136: C7 44 18 00 30          mov     word ptr [si+18h],3000h
+0F13B: C6 06 D9 0F 01          mov     byte ptr [0FD9h],1h
+0F140: 5E                      pop     si
+0F141: C3                      ret     
+0F142: 81 04 00 03             add     word ptr [si],300h
+0F146: 8B 04                   mov     ax,[si]
+0F148: A3 C7 0F                mov     [0FC7h],ax
+0F14B: E8 CA 01                call    0F318h
+0F14E: 8B 44 0E                mov     ax,[si+0Eh]
+0F151: A3 C9 0F                mov     [0FC9h],ax
+0F154: 5E                      pop     si
+0F155: C3                      ret     
+0F156: 80 3E DA 0F 00          cmp     byte ptr [0FDAh],0h
+0F15B: 75 01                   jne     0F15Eh
+0F15D: C3                      ret     
+0F15E: 56                      push    si
+0F15F: BE E1 0F                mov     si,0FE1h
+0F162: 80 3E DA 0F 01          cmp     byte ptr [0FDAh],1h
+0F167: 74 03                   je      0F16Ch
+0F169: E9 BB 00                jmp     0F227h
+0F16C: E8 4D 01                call    0F2BCh
+0F16F: 8B 04                   mov     ax,[si]
+0F171: 05 00 20                add     ax,2000h
+0F174: A3 C1 0F                mov     [0FC1h],ax
+0F177: 8B 44 06                mov     ax,[si+6h]
+0F17A: F7 D8                   neg     ax
+0F17C: D1 E0                   shl     ax,1
+0F17E: D1 E0                   shl     ax,1
+0F180: D1 E0                   shl     ax,1
+0F182: D1 E0                   shl     ax,1
+0F184: 88 26 BF 0F             mov     [0FBFh],ah
+0F188: E8 8D 01                call    0F318h
+0F18B: 8B 44 0E                mov     ax,[si+0Eh]
+0F18E: A3 C3 0F                mov     [0FC3h],ax
+0F191: 8B 44 14                mov     ax,[si+14h]
+0F194: D1 E0                   shl     ax,1
+0F196: D1 E0                   shl     ax,1
+0F198: D1 E0                   shl     ax,1
+0F19A: D1 E0                   shl     ax,1
+0F19C: 88 26 C0 0F             mov     [0FC0h],ah
+0F1A0: 80 3E DC 0F 01          cmp     byte ptr [0FDCh],1h
+0F1A5: 75 29                   jne     0F1D0h
+0F1A7: 80 7C 1C 00             cmp     byte ptr [si+1Ch],0h
+0F1AB: 74 05                   je      0F1B2h
+0F1AD: FE 4C 1C                dec     byte ptr [si+1Ch]
+0F1B0: EB 1E                   jmp     0F1D0h
+0F1B2: E8 93 CF                call    0C148h
+0F1B5: 24 0F                   and     al,0Fh
+0F1B7: 04 03                   add     al,3h
+0F1B9: 88 44 1C                mov     [si+1Ch],al
+0F1BC: A1 C1 0F                mov     ax,[0FC1h]
+0F1BF: A3 E0 06                mov     [6E0h],ax
+0F1C2: A1 C3 0F                mov     ax,[0FC3h]
+0F1C5: A3 E2 06                mov     [6E2h],ax
+0F1C8: C6 06 EE 01 01          mov     byte ptr [1EEh],1h
+0F1CD: E8 1E AD                call    9EEEh
+0F1D0: BE FE 0F                mov     si,0FFEh
+0F1D3: E8 E6 00                call    0F2BCh
+0F1D6: 8B 04                   mov     ax,[si]
+0F1D8: A3 C7 0F                mov     [0FC7h],ax
+0F1DB: E8 3A 01                call    0F318h
+0F1DE: 8B 44 0E                mov     ax,[si+0Eh]
+0F1E1: A3 C9 0F                mov     [0FC9h],ax
+0F1E4: 8B 44 06                mov     ax,[si+6h]
+0F1E7: F7 D8                   neg     ax
+0F1E9: D1 E0                   shl     ax,1
+0F1EB: D1 E0                   shl     ax,1
+0F1ED: D1 E0                   shl     ax,1
+0F1EF: D1 E0                   shl     ax,1
+0F1F1: 88 26 C5 0F             mov     [0FC5h],ah
+0F1F5: 80 3E DC 0F 01          cmp     byte ptr [0FDCh],1h
+0F1FA: 75 29                   jne     0F225h
+0F1FC: 80 7C 1C 00             cmp     byte ptr [si+1Ch],0h
+0F200: 74 05                   je      0F207h
+0F202: FE 4C 1C                dec     byte ptr [si+1Ch]
+0F205: EB 1E                   jmp     0F225h
+0F207: E8 3E CF                call    0C148h
+0F20A: 24 0F                   and     al,0Fh
+0F20C: 04 03                   add     al,3h
+0F20E: 88 44 1C                mov     [si+1Ch],al
+0F211: A1 C7 0F                mov     ax,[0FC7h]
+0F214: A3 E0 06                mov     [6E0h],ax
+0F217: A1 C9 0F                mov     ax,[0FC9h]
+0F21A: A3 E2 06                mov     [6E2h],ax
+0F21D: C6 06 EE 01 01          mov     byte ptr [1EEh],1h
+0F222: E8 F6 B2                call    0A51Bh
+0F225: 5E                      pop     si
+0F226: C3                      ret     
+0F227: BE E1 0F                mov     si,0FE1h
+0F22A: C7 04 00 00             mov     word ptr [si],0h
+0F22E: C7 06 C1 0F 00 00       mov     word ptr [0FC1h],0h
+0F234: C7 44 06 00 00          mov     word ptr [si+6h],0h
+0F239: C7 44 0C FF 3F          mov     word ptr [si+0Ch],3FFFh
+0F23E: C7 44 02 00 80          mov     word ptr [si+2h],8000h
+0F243: C7 44 04 00 80          mov     word ptr [si+4h],8000h
+0F248: C7 44 0A 00 80          mov     word ptr [si+0Ah],8000h
+0F24D: 8B 44 0E                mov     ax,[si+0Eh]
+0F250: A3 C3 0F                mov     [0FC3h],ax
+0F253: 05 00 80                add     ax,8000h
+0F256: 89 44 10                mov     [si+10h],ax
+0F259: 89 44 12                mov     [si+12h],ax
+0F25C: C7 44 14 00 00          mov     word ptr [si+14h],0h
+0F261: C7 44 1A FF 7F          mov     word ptr [si+1Ah],7FFFh
+0F266: C7 44 18 00 30          mov     word ptr [si+18h],3000h
+0F26B: BE FE 0F                mov     si,0FFEh
+0F26E: C7 04 00 80             mov     word ptr [si],8000h
+0F272: C7 06 C7 0F 00 80       mov     word ptr [0FC7h],8000h
+0F278: C7 44 06 00 00          mov     word ptr [si+6h],0h
+0F27D: C7 44 0C FF 1F          mov     word ptr [si+0Ch],1FFFh
+0F282: C7 44 02 00 00          mov     word ptr [si+2h],0h
+0F287: C7 44 04 00 00          mov     word ptr [si+4h],0h
+0F28C: C7 44 0A 00 30          mov     word ptr [si+0Ah],3000h
+0F291: 8B 44 0E                mov     ax,[si+0Eh]
+0F294: A3 C9 0F                mov     [0FC9h],ax
+0F297: 05 00 80                add     ax,8000h
+0F29A: 89 44 10                mov     [si+10h],ax
+0F29D: 89 44 12                mov     [si+12h],ax
+0F2A0: C7 44 14 00 00          mov     word ptr [si+14h],0h
+0F2A5: C7 44 1A FF 7F          mov     word ptr [si+1Ah],7FFFh
+0F2AA: C7 44 18 00 38          mov     word ptr [si+18h],3800h
+0F2AF: C7 06 10 07 40 00       mov     word ptr [710h],40h
+0F2B5: C6 06 DA 0F 01          mov     byte ptr [0FDAh],1h
+0F2BA: 5E                      pop     si
+0F2BB: C3                      ret     
+0F2BC: 8B 04                   mov     ax,[si]
+0F2BE: 05 00 80                add     ax,8000h
+0F2C1: 89 04                   mov     [si],ax
+0F2C3: 3B 44 04                cmp     ax,[si+4h]
+0F2C6: 77 09                   ja      0F2D1h
+0F2C8: B0 08                   mov     al,8h
+0F2CA: 98                      cbw     
+0F2CB: 01 44 06                add     [si+6h],ax
+0F2CE: EB 07                   jmp     0F2D7h
+0F2D0: 90                      nop     
+0F2D1: B0 08                   mov     al,8h
+0F2D3: 98                      cbw     
+0F2D4: 29 44 06                sub     [si+6h],ax
+0F2D7: 8B 44 06                mov     ax,[si+6h]
+0F2DA: 01 04                   add     [si],ax
+0F2DC: 8B 04                   mov     ax,[si]
+0F2DE: 2B 44 02                sub     ax,[si+2h]
+0F2E1: 3D 00 00                cmp     ax,0h
+0F2E4: 7F 02                   jg      0F2E8h
+0F2E6: F7 D8                   neg     ax
+0F2E8: 3D 00 08                cmp     ax,800h
+0F2EB: 77 23                   ja      0F310h
+0F2ED: E8 58 CE                call    0C148h
+0F2F0: 23 44 0C                and     ax,[si+0Ch]
+0F2F3: 03 44 0A                add     ax,[si+0Ah]
+0F2F6: 89 44 02                mov     [si+2h],ax
+0F2F9: 03 04                   add     ax,[si]
+0F2FB: D1 D8                   rcr     ax,1
+0F2FD: 89 44 04                mov     [si+4h],ax
+0F300: 39 04                   cmp     [si],ax
+0F302: 77 07                   ja      0F30Bh
+0F304: C7 44 06 03 00          mov     word ptr [si+6h],3h
+0F309: EB 05                   jmp     0F310h
+0F30B: C7 44 06 FD FF          mov     word ptr [si+6h],0FFFDh
+0F310: 8B 04                   mov     ax,[si]
+0F312: 05 00 80                add     ax,8000h
+0F315: 89 04                   mov     [si],ax
+0F317: C3                      ret     
+0F318: 8B 44 0E                mov     ax,[si+0Eh]
+0F31B: 05 00 80                add     ax,8000h
+0F31E: 89 44 0E                mov     [si+0Eh],ax
+0F321: 3B 44 12                cmp     ax,[si+12h]
+0F324: 77 09                   ja      0F32Fh
+0F326: B0 08                   mov     al,8h
+0F328: 98                      cbw     
+0F329: 01 44 14                add     [si+14h],ax
+0F32C: EB 07                   jmp     0F335h
+0F32E: 90                      nop     
+0F32F: B0 08                   mov     al,8h
+0F331: 98                      cbw     
+0F332: 29 44 14                sub     [si+14h],ax
+0F335: 8B 44 14                mov     ax,[si+14h]
+0F338: 01 44 0E                add     [si+0Eh],ax
+0F33B: 8B 44 0E                mov     ax,[si+0Eh]
+0F33E: 2B 44 10                sub     ax,[si+10h]
+0F341: 3D 00 00                cmp     ax,0h
+0F344: 7F 02                   jg      0F348h
+0F346: F7 D8                   neg     ax
+0F348: 3D 00 08                cmp     ax,800h
+0F34B: 77 25                   ja      0F372h
+0F34D: E8 F8 CD                call    0C148h
+0F350: 23 44 1A                and     ax,[si+1Ah]
+0F353: 03 44 18                add     ax,[si+18h]
+0F356: 89 44 10                mov     [si+10h],ax
+0F359: 03 44 0E                add     ax,[si+0Eh]
+0F35C: D1 D8                   rcr     ax,1
+0F35E: 89 44 12                mov     [si+12h],ax
+0F361: 39 44 0E                cmp     [si+0Eh],ax
+0F364: 77 07                   ja      0F36Dh
+0F366: C7 44 14 03 00          mov     word ptr [si+14h],3h
+0F36B: EB 05                   jmp     0F372h
+0F36D: C7 44 14 FD FF          mov     word ptr [si+14h],0FFFDh
+0F372: 8B 44 0E                mov     ax,[si+0Eh]
+0F375: 05 00 80                add     ax,8000h
+0F378: 89 44 0E                mov     [si+0Eh],ax
+0F37B: C3                      ret     
+0F37C: 83 3E DF 0F 00          cmp     word ptr [0FDFh],0h
+0F381: 74 05                   je      0F388h
+0F383: FF 0E DF 0F             dec     word ptr [0FDFh]
+0F387: C3                      ret     
+0F388: 8B 1E DD 0F             mov     bx,[0FDDh]
+0F38C: 83 06 DD 0F 07          add     word ptr [0FDDh],7h
+0F391: 8B 87 C2 F3             mov     ax,[bx-0C3Eh]
+0F395: A3 DF 0F                mov     [0FDFh],ax
+0F398: 8A 87 C4 F3             mov     al,[bx-0C3Ch]
+0F39C: A2 DC 0F                mov     [0FDCh],al
+0F39F: 8A 87 C5 F3             mov     al,[bx-0C3Bh]
+0F3A3: A2 D8 0F                mov     [0FD8h],al
+0F3A6: 8A 87 C6 F3             mov     al,[bx-0C3Ah]
+0F3AA: A2 D9 0F                mov     [0FD9h],al
+0F3AD: 8A 87 C7 F3             mov     al,[bx-0C39h]
+0F3B1: A2 DA 0F                mov     [0FDAh],al
+0F3B4: 8A 87 C8 F3             mov     al,[bx-0C38h]
+0F3B8: 3C 01                   cmp     al,1h
+0F3BA: 75 05                   jne     0F3C1h
+0F3BC: C6 06 DB 0F 00          mov     byte ptr [0FDBh],0h
+0F3C1: C3                      ret     
+0F3C2: C0 00 01                rol     byte ptr [bx+si],1h
+0F3C5: 02 00                   add     al,[bx+si]
+0F3C7: 00 00                   add     [bx+si],al
+0F3C9: 5C                      pop     sp
+0F3CA: 00 00                   add     [bx+si],al
+0F3CC: 01 00                   add     [bx+si],ax
+0F3CE: 00 00                   add     [bx+si],al
+0F3D0: EA 00 01 00 02          jmp     0200h:100h
+0F3D5: 00 00                   add     [bx+si],al
+0F3D7: 48                      dec     ax
+0F3D8: 00 00                   add     [bx+si],al
+0F3DA: 00 01                   add     [bx+di],al
+0F3DC: 00 00                   add     [bx+si],al
+0F3DE: 0F 00 00                sldt    [bx+si]
+0F3E1: 00 03                   add     [bp+di],al
+0F3E3: 00 00                   add     [bx+si],al
+0F3E5: 0C 01                   or      al,1h
+0F3E7: 01 03                   add     [bp+di],ax
+0F3E9: 00 00                   add     [bx+si],al
+0F3EB: 00 21                   add     [bx+di],ah
+0F3ED: 00 00                   add     [bx+si],al
+0F3EF: 01 00                   add     [bx+si],ax
+0F3F1: 00 00                   add     [bx+si],al
+0F3F3: 00 03                   add     [bp+di],al
+0F3F5: 01 00                   add     [bx+si],ax
+0F3F7: 00 02                   add     [bp+si],al
+0F3F9: 00 00                   add     [bx+si],al
+0F3FB: 00 00                   add     [bx+si],al
+0F3FD: 00 00                   add     [bx+si],al
+0F3FF: 00 01                   add     [bx+di],al
+0F401: 00 00                   add     [bx+si],al
+0F403: 00 00                   add     [bx+si],al
+0F405: 00 00                   add     [bx+si],al
+0F407: 01 DE                   add     si,bx
+0F409: AD                      lodsw   
+0F40A: C3                      ret     
+0F40B: C3                      ret     
+0F40C: 8B 1E E4 06             mov     bx,[6E4h]
+0F410: 89 B7 E6 06             mov     [bx+6E6h],si
+0F414: 83 06 E4 06 02          add     word ptr [6E4h],2h
+0F419: 83 C3 02                add     bx,2h
+0F41C: C7 87 E6 06 FF FF       mov     word ptr [bx+6E6h],0FFFFh
+0F422: 89 54 09                mov     [si+9h],dx
+0F425: 80 EE 08                sub     dh,8h
+0F428: 80 EA 08                sub     dl,8h
+0F42B: 81 FF E8 11             cmp     di,11E8h
+0F42F: 72 03                   jb      0F434h
+0F431: E9 B0 00                jmp     0F4E4h
+0F434: 8A 5C 04                mov     bl,[si+4h]
+0F437: D0 EB                   shr     bl,1
+0F439: D0 EB                   shr     bl,1
+0F43B: D0 EB                   shr     bl,1
+0F43D: D0 EB                   shr     bl,1
+0F43F: 32 FF                   xor     bh,bh
+0F441: 80 7C 04 60             cmp     byte ptr [si+4h],60h
+0F445: 76 03                   jbe     0F44Ah
+0F447: E9 84 00                jmp     0F4CEh
+0F44A: 8A E2                   mov     ah,dl
+0F44C: 2A 64 1B                sub     ah,[si+1Bh]
+0F44F: 8A CC                   mov     cl,ah
+0F451: 80 FC 00                cmp     ah,0h
+0F454: 7D 02                   jge     0F458h
+0F456: F6 DC                   neg     ah
+0F458: 80 FC 20                cmp     ah,20h
+0F45B: 76 03                   jbe     0F460h
+0F45D: EB 7E                   jmp     0F4DDh
+0F45F: 90                      nop     
+0F460: 8A E6                   mov     ah,dh
+0F462: 2A 64 1A                sub     ah,[si+1Ah]
+0F465: 8A EC                   mov     ch,ah
+0F467: 80 FC 00                cmp     ah,0h
+0F46A: 7D 02                   jge     0F46Eh
+0F46C: F6 DC                   neg     ah
+0F46E: 80 FC 20                cmp     ah,20h
+0F471: 76 03                   jbe     0F476h
+0F473: EB 68                   jmp     0F4DDh
+0F475: 90                      nop     
+0F476: 8A C2                   mov     al,dl
+0F478: 8A E1                   mov     ah,cl
+0F47A: D0 FC                   sar     ah,1
+0F47C: 2A C4                   sub     al,ah
+0F47E: D0 FC                   sar     ah,1
+0F480: 2A C4                   sub     al,ah
+0F482: 88 05                   mov     [di],al
+0F484: 8A C6                   mov     al,dh
+0F486: 8A E5                   mov     ah,ch
+0F488: D0 FC                   sar     ah,1
+0F48A: 2A C4                   sub     al,ah
+0F48C: D0 FC                   sar     ah,1
+0F48E: 2A C4                   sub     al,ah
+0F490: 88 45 01                mov     [di+1h],al
+0F493: 8A 87 13 A5             mov     al,[bx-5AEDh]
+0F497: 88 45 02                mov     [di+2h],al
+0F49A: 83 C7 04                add     di,4h
+0F49D: 8A C2                   mov     al,dl
+0F49F: 8A E1                   mov     ah,cl
+0F4A1: D0 FC                   sar     ah,1
+0F4A3: 2A C4                   sub     al,ah
+0F4A5: 88 05                   mov     [di],al
+0F4A7: 8A C6                   mov     al,dh
+0F4A9: 8A E5                   mov     ah,ch
+0F4AB: D0 FC                   sar     ah,1
+0F4AD: 2A C4                   sub     al,ah
+0F4AF: 88 45 01                mov     [di+1h],al
+0F4B2: 8A 87 0B A5             mov     al,[bx-5AF5h]
+0F4B6: 88 45 02                mov     [di+2h],al
+0F4B9: 83 C7 04                add     di,4h
+0F4BC: 8A 87 03 A5             mov     al,[bx-5AFDh]
+0F4C0: 88 15                   mov     [di],dl
+0F4C2: 88 75 01                mov     [di+1h],dh
+0F4C5: 88 45 02                mov     [di+2h],al
+0F4C8: 83 C7 04                add     di,4h
+0F4CB: EB 10                   jmp     0F4DDh
+0F4CD: 90                      nop     
+0F4CE: 8A 87 13 A5             mov     al,[bx-5AEDh]
+0F4D2: 88 15                   mov     [di],dl
+0F4D4: 88 75 01                mov     [di+1h],dh
+0F4D7: 88 45 02                mov     [di+2h],al
+0F4DA: 83 C7 04                add     di,4h
+0F4DD: 88 54 1B                mov     [si+1Bh],dl
+0F4E0: 88 74 1A                mov     [si+1Ah],dh
+0F4E3: C3                      ret     
+0F4E4: C6 44 1D 01             mov     byte ptr [si+1Dh],1h
+0F4E8: C3                      ret     
+0F4E9: 80 3E 24 10 00          cmp     byte ptr [1024h],0h
+0F4EE: 74 41                   je      0F531h
+0F4F0: BE 4E 06                mov     si,64Eh
+0F4F3: E8 94 EB                call    0E08Ah
+0F4F6: 3C 05                   cmp     al,5h
+0F4F8: 77 37                   ja      0F531h
+0F4FA: 80 3E 24 10 01          cmp     byte ptr [1024h],1h
+0F4FF: 75 08                   jne     0F509h
+0F501: C6 06 24 10 00          mov     byte ptr [1024h],0h
+0F506: EB 24                   jmp     0F52Ch
+0F508: 90                      nop     
+0F509: FE 0E 58 07             dec     byte ptr [758h]
+0F50D: 75 22                   jne     0F531h
+0F50F: E8 16 1E                call    1328h
+0F512: 24 07                   and     al,7h
+0F514: 8A 26 24 10             mov     ah,[1024h]
+0F518: F6 DC                   neg     ah
+0F51A: 80 E4 0F                and     ah,0Fh
+0F51D: FE C4                   inc     ah
+0F51F: D0 E4                   shl     ah,1
+0F521: D0 E4                   shl     ah,1
+0F523: 80 CC 02                or      ah,2h
+0F526: 02 E0                   add     ah,al
+0F528: 88 26 58 07             mov     [758h],ah
+0F52C: E8 76 01                call    0F6A5h
+0F52F: 75 01                   jne     0F532h
+0F531: C3                      ret     
+0F532: B0 01                   mov     al,1h
+0F534: 88 45 1A                mov     [di+1Ah],al
+0F537: B8 E8 00                mov     ax,0E8h
+0F53A: 89 45 07                mov     [di+7h],ax
+0F53D: 33 C0                   xor     ax,ax
+0F53F: 89 45 16                mov     [di+16h],ax
+0F542: C7 45 18 FF FF          mov     word ptr [di+18h],0FFFFh
+0F547: E8 DE 1D                call    1328h
+0F54A: 25 FF 01                and     ax,1FFh
+0F54D: 2D 00 01                sub     ax,100h
+0F550: 89 45 05                mov     [di+5h],ax
+0F553: C7 45 12 00 00          mov     word ptr [di+12h],0h
+0F558: C7 45 14 00 00          mov     word ptr [di+14h],0h
+0F55D: EB 4B                   jmp     0F5AAh
+0F55F: 90                      nop     
+0F560: 80 7C 0F 01             cmp     byte ptr [si+0Fh],1h
+0F564: 77 13                   ja      0F579h
+0F566: 80 7C 0F 00             cmp     byte ptr [si+0Fh],0h
+0F56A: 74 08                   je      0F574h
+0F56C: E8 B9 1D                call    1328h
+0F56F: 25 0F 00                and     ax,0Fh
+0F572: 75 05                   jne     0F579h
+0F574: E8 2E 01                call    0F6A5h
+0F577: 75 01                   jne     0F57Ah
+0F579: C3                      ret     
+0F57A: FE 44 0F                inc     byte ptr [si+0Fh]
+0F57D: 8A 44 0F                mov     al,[si+0Fh]
+0F580: 88 45 1A                mov     [di+1Ah],al
+0F583: 8B 44 07                mov     ax,[si+7h]
+0F586: 89 45 07                mov     [di+7h],ax
+0F589: 8B 44 16                mov     ax,[si+16h]
+0F58C: D1 E0                   shl     ax,1
+0F58E: D1 E0                   shl     ax,1
+0F590: D1 E0                   shl     ax,1
+0F592: 89 45 16                mov     [di+16h],ax
+0F595: C7 45 18 F0 FF          mov     word ptr [di+18h],0FFF0h
+0F59A: 8B 44 05                mov     ax,[si+5h]
+0F59D: 89 45 05                mov     [di+5h],ax
+0F5A0: C7 45 12 00 00          mov     word ptr [di+12h],0h
+0F5A5: C7 45 14 00 00          mov     word ptr [di+14h],0h
+0F5AA: C6 45 04 02             mov     byte ptr [di+4h],2h
+0F5AE: C6 45 0B 00             mov     byte ptr [di+0Bh],0h
+0F5B2: C6 45 1C 00             mov     byte ptr [di+1Ch],0h
+0F5B6: C6 45 0E 00             mov     byte ptr [di+0Eh],0h
+0F5BA: C7 45 09 00 00          mov     word ptr [di+9h],0h
+0F5BF: 56                      push    si
+0F5C0: BE 4E 06                mov     si,64Eh
+0F5C3: 50                      push    ax
+0F5C4: 52                      push    dx
+0F5C5: 8B D6                   mov     dx,si
+0F5C7: 8A 45 04                mov     al,[di+4h]
+0F5CA: FA                      cli     
+0F5CB: 8B 34                   mov     si,[si]
+0F5CD: 3B F2                   cmp     si,dx
+0F5CF: 74 05                   je      0F5D6h
+0F5D1: 38 44 04                cmp     [si+4h],al
+0F5D4: 76 F5                   jbe     0F5CBh
+0F5D6: 50                      push    ax
+0F5D7: 53                      push    bx
+0F5D8: FA                      cli     
+0F5D9: 8B 44 02                mov     ax,[si+2h]
+0F5DC: 89 45 02                mov     [di+2h],ax
+0F5DF: 89 35                   mov     [di],si
+0F5E1: 8B 5C 02                mov     bx,[si+2h]
+0F5E4: 89 3F                   mov     [bx],di
+0F5E6: 89 7C 02                mov     [si+2h],di
+0F5E9: FB                      sti     
+0F5EA: 5B                      pop     bx
+0F5EB: 58                      pop     ax
+0F5EC: FB                      sti     
+0F5ED: 5A                      pop     dx
+0F5EE: 58                      pop     ax
+0F5EF: B0 02                   mov     al,2h
+0F5F1: E8 8B E7                call    0DD7Fh
+0F5F4: 5E                      pop     si
+0F5F5: C3                      ret     
+0F5F6: BE 4E 06                mov     si,64Eh
+0F5F9: 8B D6                   mov     dx,si
+0F5FB: C6 06 A0 0F 08          mov     byte ptr [0FA0h],8h
+0F600: 8B 34                   mov     si,[si]
+0F602: 3B F2                   cmp     si,dx
+0F604: 75 01                   jne     0F607h
+0F606: C3                      ret     
+0F607: 80 7C 0B 00             cmp     byte ptr [si+0Bh],0h
+0F60B: 75 2C                   jne     0F639h
+0F60D: 52                      push    dx
+0F60E: E8 F3 10                call    704h
+0F611: 5A                      pop     dx
+0F612: FE 44 0E                inc     byte ptr [si+0Eh]
+0F615: 8B 44 16                mov     ax,[si+16h]
+0F618: 03 44 18                add     ax,[si+18h]
+0F61B: 89 44 16                mov     [si+16h],ax
+0F61E: D1 F8                   sar     ax,1
+0F620: D1 F8                   sar     ax,1
+0F622: D1 F8                   sar     ax,1
+0F624: 01 44 07                add     [si+7h],ax
+0F627: 8B 44 07                mov     ax,[si+7h]
+0F62A: 3D C0 04                cmp     ax,4C0h
+0F62D: 7C 08                   jl      0F637h
+0F62F: 3D 40 04                cmp     ax,440h
+0F632: 7F 03                   jg      0F637h
+0F634: EB 0C                   jmp     0F642h
+0F636: 90                      nop     
+0F637: EB C7                   jmp     0F600h
+0F639: E8 25 08                call    0FE61h
+0F63C: B8 00 08                mov     ax,800h
+0F63F: E8 D5 15                call    0C17h
+0F642: 8B 04                   mov     ax,[si]
+0F644: 50                      push    ax
+0F645: 53                      push    bx
+0F646: FA                      cli     
+0F647: 8B 5C 02                mov     bx,[si+2h]
+0F64A: 8B 04                   mov     ax,[si]
+0F64C: 89 07                   mov     [bx],ax
+0F64E: 93                      xchg    ax,bx
+0F64F: 89 47 02                mov     [bx+2h],ax
+0F652: A1 3B 06                mov     ax,[63Bh]
+0F655: 89 04                   mov     [si],ax
+0F657: 89 36 3B 06             mov     [63Bh],si
+0F65B: FB                      sti     
+0F65C: 5B                      pop     bx
+0F65D: 58                      pop     ax
+0F65E: 8B F0                   mov     si,ax
+0F660: 3B F2                   cmp     si,dx
+0F662: EB A0                   jmp     0F604h
+0F664: C3                      ret     
+0F665: 81 FF E8 11             cmp     di,11E8h
+0F669: 72 05                   jb      0F670h
+0F66B: C6 44 0B 01             mov     byte ptr [si+0Bh],1h
+0F66F: C3                      ret     
+0F670: 8B 1E E4 06             mov     bx,[6E4h]
+0F674: 89 B7 E6 06             mov     [bx+6E6h],si
+0F678: 83 06 E4 06 02          add     word ptr [6E4h],2h
+0F67D: 83 C3 02                add     bx,2h
+0F680: C7 87 E6 06 FF FF       mov     word ptr [bx+6E6h],0FFFFh
+0F686: 89 54 09                mov     [si+9h],dx
+0F689: 80 7C 1A 02             cmp     byte ptr [si+1Ah],2h
+0F68D: 75 03                   jne     0F692h
+0F68F: 80 EE 10                sub     dh,10h
+0F692: 89 15                   mov     [di],dx
+0F694: B0 C5                   mov     al,0C5h
+0F696: F6 44 0E 02             test    byte ptr [si+0Eh],2h
+0F69A: 75 02                   jne     0F69Eh
+0F69C: FE C0                   inc     al
+0F69E: 88 45 02                mov     [di+2h],al
+0F6A1: 83 C7 04                add     di,4h
+0F6A4: C3                      ret     
+0F6A5: FA                      cli     
+0F6A6: 50                      push    ax
+0F6A7: 8B 3E 3B 06             mov     di,[63Bh]
+0F6AB: 0B FF                   or      di,di
+0F6AD: 74 05                   je      0F6B4h
+0F6AF: 8B 05                   mov     ax,[di]
+0F6B1: A3 3B 06                mov     [63Bh],ax
+0F6B4: 58                      pop     ax
+0F6B5: FB                      sti     
+0F6B6: C3                      ret     
+0F6B7: F2 08 0E 08 F3          repne   or      [0F308h],cl
+0F6BC: 0B 0D                   or      cx,[di]
+0F6BE: 05 F3 05                add     ax,5F3h
+0F6C1: 0D 0B 39                or      ax,390Bh
+0F6C4: 37                      aaa     
+0F6C5: 38 39                   cmp     [bx+di],bh
+0F6C7: 3A 3B                   cmp     bh,[bp+di]
+0F6C9: 3B 3B                   cmp     di,[bp+di]
+0F6CB: 3B 3B                   cmp     di,[bp+di]
+0F6CD: 3C 3C                   cmp     al,3Ch
+0F6CF: 3C 3C                   cmp     al,3Ch
+0F6D1: 3C 3C                   cmp     al,3Ch
+0F6D3: 3D 3D 3D                cmp     ax,3D3Dh
+0F6D6: 3D 3D 3D                cmp     ax,3D3Dh
+0F6D9: 3D 3D 3E                cmp     ax,3E3Dh
+0F6DC: 3E 3E 3E 3E 3E 3E 3E 9C pushf   
+0F6E4: 9D                      popf    
+0F6E5: 9E                      sahf    
+0F6E6: 9F                      lahf    
+0F6E7: 9F                      lahf    
+0F6E8: A0 A0 A0                mov     al,[0A0A0h]
+0F6EB: A1 A2 A3                mov     ax,[0A3A2h]
+0F6EE: A4                      movsb   
+0F6EF: A4                      movsb   
+0F6F0: A5                      movsw   
+0F6F1: A5                      movsw   
+0F6F2: A5                      movsw   
+0F6F3: A6                      cmpsb   
+0F6F4: A6                      cmpsb   
+0F6F5: A7                      cmpsw   
+0F6F6: A7                      cmpsw   
+0F6F7: A7                      cmpsw   
+0F6F8: A8 A8                   test    al,0A8h
+0F6FA: A8 A0                   test    al,0A0h
+0F6FC: EE                      out     dx,al
+0F6FD: 01 0A                   add     [bp+si],cx
+0F6FF: 06                      push    es 
+0F700: EF                      out     dx,ax
+0F701: 01 3C                   add     [si],di
+0F703: 00 74 17                add     [si+17h],dh
+0F706: C6 06 EE 01 00          mov     byte ptr [1EEh],0h
+0F70B: C6 06 EF 01 00          mov     byte ptr [1EFh],0h
+0F710: BE 62 06                mov     si,662h
+0F713: E8 74 E9                call    0E08Ah
+0F716: 3C 06                   cmp     al,6h
+0F718: 77 03                   ja      0F71Dh
+0F71A: EB 02                   jmp     0F71Eh
+0F71C: 90                      nop     
+0F71D: C3                      ret     
+0F71E: FA                      cli     
+0F71F: 50                      push    ax
+0F720: 8B 3E 3B 06             mov     di,[63Bh]
+0F724: 0B FF                   or      di,di
+0F726: 74 05                   je      0F72Dh
+0F728: 8B 05                   mov     ax,[di]
+0F72A: A3 3B 06                mov     [63Bh],ax
+0F72D: 58                      pop     ax
+0F72E: FB                      sti     
+0F72F: 74 EC                   je      0F71Dh
+0F731: B0 21                   mov     al,21h
+0F733: E8 49 E6                call    0DD7Fh
+0F736: A1 AD 06                mov     ax,[6ADh]
+0F739: 05 10 00                add     ax,10h
+0F73C: 25 10 00                and     ax,10h
+0F73F: A3 AD 06                mov     [6ADh],ax
+0F742: A0 E3 06                mov     al,[6E3h]
+0F745: 98                      cbw     
+0F746: 05 08 00                add     ax,8h
+0F749: 8B D8                   mov     bx,ax
+0F74B: A0 E1 06                mov     al,[6E1h]
+0F74E: 98                      cbw     
+0F74F: 03 06 AD 06             add     ax,[6ADh]
+0F753: 2D 08 00                sub     ax,8h
+0F756: B1 01                   mov     cl,1h
+0F758: 89 45 05                mov     [di+5h],ax
+0F75B: 89 5D 07                mov     [di+7h],bx
+0F75E: 88 4D 04                mov     [di+4h],cl
+0F761: C6 45 0B 00             mov     byte ptr [di+0Bh],0h
+0F765: C7 45 19 00 00          mov     word ptr [di+19h],0h
+0F76A: 8B 45 05                mov     ax,[di+5h]
+0F76D: 8B 5D 07                mov     bx,[di+7h]
+0F770: 8B 0E E0 06             mov     cx,[6E0h]
+0F774: 8B 16 E2 06             mov     dx,[6E2h]
+0F778: 50                      push    ax
+0F779: 53                      push    bx
+0F77A: 57                      push    di
+0F77B: E8 24 20                call    17A2h
+0F77E: 5F                      pop     di
+0F77F: 89 45 0C                mov     [di+0Ch],ax
+0F782: 5B                      pop     bx
+0F783: 58                      pop     ax
+0F784: 8B 0E E0 06             mov     cx,[6E0h]
+0F788: 8B 16 E2 06             mov     dx,[6E2h]
+0F78C: E8 2E 23                call    1ABDh
+0F78F: 8A CD                   mov     cl,ch
+0F791: 32 ED                   xor     ch,ch
+0F793: 89 4D 0E                mov     [di+0Eh],cx
+0F796: BE 62 06                mov     si,662h
+0F799: 50                      push    ax
+0F79A: 52                      push    dx
+0F79B: 8B D6                   mov     dx,si
+0F79D: 8A 45 04                mov     al,[di+4h]
+0F7A0: FA                      cli     
+0F7A1: 8B 34                   mov     si,[si]
+0F7A3: 3B F2                   cmp     si,dx
+0F7A5: 74 05                   je      0F7ACh
+0F7A7: 38 44 04                cmp     [si+4h],al
+0F7AA: 76 F5                   jbe     0F7A1h
+0F7AC: 50                      push    ax
+0F7AD: 53                      push    bx
+0F7AE: FA                      cli     
+0F7AF: 8B 44 02                mov     ax,[si+2h]
+0F7B2: 89 45 02                mov     [di+2h],ax
+0F7B5: 89 35                   mov     [di],si
+0F7B7: 8B 5C 02                mov     bx,[si+2h]
+0F7BA: 89 3F                   mov     [bx],di
+0F7BC: 89 7C 02                mov     [si+2h],di
+0F7BF: FB                      sti     
+0F7C0: 5B                      pop     bx
+0F7C1: 58                      pop     ax
+0F7C2: FB                      sti     
+0F7C3: 5A                      pop     dx
+0F7C4: 58                      pop     ax
+0F7C5: C3                      ret     
+0F7C6: BE 62 06                mov     si,662h
+0F7C9: 8B D6                   mov     dx,si
+0F7CB: C6 06 A0 0F 00          mov     byte ptr [0FA0h],0h
+0F7D0: 8B 34                   mov     si,[si]
+0F7D2: 3B F2                   cmp     si,dx
+0F7D4: 74 6A                   je      0F840h
+0F7D6: 80 7C 0B 00             cmp     byte ptr [si+0Bh],0h
+0F7DA: 74 08                   je      0F7E4h
+0F7DC: B5 00                   mov     ch,0h
+0F7DE: E8 96 06                call    0FE77h
+0F7E1: EB 3B                   jmp     0F81Eh
+0F7E3: 90                      nop     
+0F7E4: 8B EA                   mov     bp,dx
+0F7E6: 8B 4C 0E                mov     cx,[si+0Eh]
+0F7E9: 8B 54 0C                mov     dx,[si+0Ch]
+0F7EC: E8 5F 1D                call    154Eh
+0F7EF: 01 4C 05                add     [si+5h],cx
+0F7F2: 01 54 07                add     [si+7h],dx
+0F7F5: 83 44 07 02             add     word ptr [si+7h],2h
+0F7F9: 8B D5                   mov     dx,bp
+0F7FB: 8B 44 19                mov     ax,[si+19h]
+0F7FE: 05 00 01                add     ax,100h
+0F801: 89 44 19                mov     [si+19h],ax
+0F804: 8A C4                   mov     al,ah
+0F806: 32 E4                   xor     ah,ah
+0F808: 01 44 07                add     [si+7h],ax
+0F80B: 80 44 04 01             add     byte ptr [si+4h],1h
+0F80F: 80 7C 04 3F             cmp     byte ptr [si+4h],3Fh
+0F813: 76 BB                   jbe     0F7D0h
+0F815: C6 44 04 3F             mov     byte ptr [si+4h],3Fh
+0F819: B5 04                   mov     ch,4h
+0F81B: E8 59 06                call    0FE77h
+0F81E: 8B 04                   mov     ax,[si]
+0F820: 50                      push    ax
+0F821: 53                      push    bx
+0F822: FA                      cli     
+0F823: 8B 5C 02                mov     bx,[si+2h]
+0F826: 8B 04                   mov     ax,[si]
+0F828: 89 07                   mov     [bx],ax
+0F82A: 93                      xchg    ax,bx
+0F82B: 89 47 02                mov     [bx+2h],ax
+0F82E: A1 3B 06                mov     ax,[63Bh]
+0F831: 89 04                   mov     [si],ax
+0F833: 89 36 3B 06             mov     [63Bh],si
+0F837: FB                      sti     
+0F838: 5B                      pop     bx
+0F839: 58                      pop     ax
+0F83A: 8B F0                   mov     si,ax
+0F83C: 3B F2                   cmp     si,dx
+0F83E: EB 94                   jmp     0F7D4h
+0F840: C3                      ret     
+0F841: 89 54 09                mov     [si+9h],dx
+0F844: 80 EE 08                sub     dh,8h
+0F847: 8A 5C 04                mov     bl,[si+4h]
+0F84A: D0 EB                   shr     bl,1
+0F84C: 80 FB 60                cmp     bl,60h
+0F84F: 76 01                   jbe     0F852h
+0F851: C3                      ret     
+0F852: 80 FB 1F                cmp     bl,1Fh
+0F855: 76 05                   jbe     0F85Ch
+0F857: B3 07                   mov     bl,7h
+0F859: EB 05                   jmp     0F860h
+0F85B: 90                      nop     
+0F85C: D0 EB                   shr     bl,1
+0F85E: D0 EB                   shr     bl,1
+0F860: 32 FF                   xor     bh,bh
+0F862: 8A E2                   mov     ah,dl
+0F864: 80 EC 08                sub     ah,8h
+0F867: 81 FF E8 11             cmp     di,11E8h
+0F86B: 73 0F                   jae     0F87Ch
+0F86D: 88 25                   mov     [di],ah
+0F86F: 88 75 01                mov     [di+1h],dh
+0F872: 8A 87 9D A6             mov     al,[bx-5963h]
+0F876: 88 45 02                mov     [di+2h],al
+0F879: 83 C7 04                add     di,4h
+0F87C: C3                      ret     
+0F87D: B3 B4                   mov     bl,0B4h
+0F87F: B5 B6                   mov     ch,0B6h
+0F881: B7 B8                   mov     bh,0B8h
+0F883: B9 B9 51                mov     cx,51B9h
+0F886: 8B 3C                   mov     di,[si]
+0F888: 83 C6 02                add     si,2h
+0F88B: 8A 0C                   mov     cl,[si]
+0F88D: 83 C6 01                add     si,1h
+0F890: 32 ED                   xor     ch,ch
+0F892: F3 A4                   rep     movsb   
+0F894: 59                      pop     cx
+0F895: C3                      ret     
+0F896: E8 D5 E5                call    0DE6Eh
+0F899: 80 3E 27 07 00          cmp     byte ptr [727h],0h
+0F89E: 75 2E                   jne     0F8CEh
+0F8A0: 8B 36 28 07             mov     si,[728h]
+0F8A4: 8A 04                   mov     al,[si]
+0F8A6: 8B 1E 2A 07             mov     bx,[72Ah]
+0F8AA: 81 E3 E0 FF             and     bx,0FFE0h
+0F8AE: 83 C3 50                add     bx,50h
+0F8B1: 8A C8                   mov     cl,al
+0F8B3: 32 ED                   xor     ch,ch
+0F8B5: D0 E9                   shr     cl,1
+0F8B7: 2B D9                   sub     bx,cx
+0F8B9: 89 1E 2A 07             mov     [72Ah],bx
+0F8BD: 3C 00                   cmp     al,0h
+0F8BF: 74 0D                   je      0F8CEh
+0F8C1: A2 27 07                mov     [727h],al
+0F8C4: FF 06 28 07             inc     word ptr [728h]
+0F8C8: C7 06 A4 06 58 02       mov     word ptr [6A4h],258h
+0F8CE: C3                      ret     
+0F8CF: 12 D2                   adc     dl,dl
+0F8D1: 0C 11                   or      al,11h
+0F8D3: 18 18                   sbb     [bx+si],bl
+0F8D5: 1C 0E                   sbb     al,0Eh
+0F8D7: 24 22                   and     al,22h
+0F8D9: 18 1E 1B 24             sbb     [241Bh],bl
+0F8DD: 10 0A                   adc     [bp+si],cl
+0F8DF: 16                      push    ss 
+0F8E0: 0E                      push    cs 
+0F8E1: D2 01                   rol     byte ptr [bx+di],cl
+0F8E3: 24 13                   and     al,13h
+0F8E5: 1D 0A 14                sbb     ax,140Ah
+0F8E8: 0E                      push    cs 
+0F8E9: 24 22                   and     al,22h
+0F8EB: 18 1E 1B 24             sbb     [241Bh],bl
+0F8EF: 0B 18                   or      bx,[bx+si]
+0F8F1: 16                      push    ss 
+0F8F2: 0B 0E 1B 24             or      cx,[241Bh]
+0F8F6: 12 17                   adc     dl,[bx]
+0F8F8: 16                      push    ss 
+0F8F9: 1E                      push    ds 
+0F8FA: 17                      pop     ss 
+0F8FB: 0D 0E 1B                or      ax,1B0Eh
+0F8FE: 24 11                   and     al,11h
+0F900: 0E                      push    cs 
+0F901: 0A 1F                   or      bl,[bx]
+0F903: 22 24                   and     ah,[si]
+0F905: 0E                      push    cs 
+0F906: 17                      pop     ss 
+0F907: 0E                      push    cs 
+0F908: 16                      push    ss 
+0F909: 22 24                   and     ah,[si]
+0F90B: 0F 12 1B                movlps  xmm3,[bp+di]
+0F90E: 0E                      push    cs 
+0F90F: 02 18                   add     bl,[bx+si]
+0F911: 1B 13                   sbb     dx,[bp+di]
+0F913: 0F 15 22                unpckhps xmm4,[bp+si]
+0F916: 24 12                   and     al,12h
+0F918: 17                      pop     ss 
+0F919: 24 15                   and     al,15h
+0F91B: 18 20                   sbb     [bx+si],ah
+0F91D: 24 0A                   and     al,0Ah
+0F91F: 17                      pop     ss 
+0F920: 0D 24 0F                or      ax,0F24h
+0F923: 0A 1C                   or      bl,[si]
+0F925: 1D 0F 12                sbb     ax,120Fh
+0F928: 17                      pop     ss 
+0F929: 24 22                   and     al,22h
+0F92B: 18 1E 1B 24             sbb     [241Bh],bl
+0F92F: 0F 12 10                movlps  xmm2,[bx+si]
+0F932: 11 1D                   adc     [di],bx
+0F934: 0E                      push    cs 
+0F935: 1B 00                   sbb     ax,[bx+si]
+0F937: 00 00                   add     [bx+si],al
+0F939: 00 0D                   add     [di],cl
+0F93B: D2 D2                   rcl     dl,cl
+0F93D: 0C 11                   or      al,11h
+0F93F: 0E                      push    cs 
+0F940: 0C 14                   or      al,14h
+0F942: 15 12 1C                adc     ax,1C12h
+0F945: 1D D2 D2                sbb     ax,0D2D2h
+0F948: 01 24                   add     [si],sp
+0F94A: 1A 1D                   sbb     bl,[di]
+0F94C: 1B 12                   sbb     dx,[bp+si]
+0F94E: 10 10                   adc     [bx+si],dl
+0F950: 0E                      push    cs 
+0F951: 1B 24                   sbb     sp,[si]
+0F953: 0F 12 1B                movlps  xmm3,[bp+di]
+0F956: 0E                      push    cs 
+0F957: 1C 24                   sbb     al,24h
+0F959: 10 1E 17 24             adc     [2417h],bl
+0F95D: 24 24                   and     al,24h
+0F95F: 24 24                   and     al,24h
+0F961: 24 24                   and     al,24h
+0F963: 52                      push    dx
+0F964: 53                      push    bx
+0F965: 1A 0B                   sbb     cl,[bp+di]
+0F967: 1E                      push    ds 
+0F968: 1D 1D 18                sbb     ax,181Dh
+0F96B: 17                      pop     ss 
+0F96C: 1C 24                   sbb     al,24h
+0F96E: 15 0A 1E                adc     ax,1E0Ah
+0F971: 17                      pop     ss 
+0F972: 0C 11                   or      al,11h
+0F974: 24 16                   and     al,16h
+0F976: 12 1C                   adc     bl,[si]
+0F978: 1C 12                   sbb     al,12h
+0F97A: 15 0E 1C                adc     ax,1C0Eh
+0F97D: 24 24                   and     al,24h
+0F97F: 24 1A                   and     al,1Ah
+0F981: 24 24                   and     al,24h
+0F983: 04 24                   add     al,24h
+0F985: 0A 1D                   or      bl,[di]
+0F987: 24 0A                   and     al,0Ah
+0F989: 17                      pop     ss 
+0F98A: 22 24                   and     ah,[si]
+0F98C: 1D 12 16                sbb     ax,1612h
+0F98F: 0E                      push    cs 
+0F990: 24 24                   and     al,24h
+0F992: 24 24                   and     al,24h
+0F994: 24 24                   and     al,24h
+0F996: 24 24                   and     al,24h
+0F998: 24 52                   and     al,52h
+0F99A: 53                      push    bx
+0F99B: 1A 0D                   sbb     cl,[di]
+0F99D: 0E                      push    cs 
+0F99E: 1C 1D                   sbb     al,1Dh
+0F9A0: 1B 18                   sbb     bx,[bx+si]
+0F9A2: 22 24                   and     ah,[si]
+0F9A4: 16                      push    ss 
+0F9A5: 0A 1B                   or      bl,[bp+di]
+0F9A7: 14 0E                   adc     al,0Eh
+0F9A9: 0D 24 1D                or      ax,1D24h
+0F9AC: 0A 1B                   or      bl,[bp+di]
+0F9AE: 10 0E 1D 1C             adc     [1C1Dh],cl
+0F9B2: 24 24                   and     al,24h
+0F9B4: 52                      push    dx
+0F9B5: 53                      push    bx
+0F9B6: 1A 0D                   sbb     cl,[di]
+0F9B8: 0E                      push    cs 
+0F9B9: 1C 1D                   sbb     al,1Dh
+0F9BB: 1B 18                   sbb     bx,[bx+si]
+0F9BD: 22 24                   and     ah,[si]
+0F9BF: 0E                      push    cs 
+0F9C0: 17                      pop     ss 
+0F9C1: 0E                      push    cs 
+0F9C2: 16                      push    ss 
+0F9C3: 22 24                   and     ah,[si]
+0F9C5: 24 24                   and     al,24h
+0F9C7: 24 24                   and     al,24h
+0F9C9: 24 24                   and     al,24h
+0F9CB: 24 24                   and     al,24h
+0F9CD: 24 24                   and     al,24h
+0F9CF: 24 24                   and     al,24h
+0F9D1: 1A 24                   sbb     ah,[si]
+0F9D3: 24 0A                   and     al,0Ah
+0F9D5: 12 1B                   adc     bl,[bp+di]
+0F9D7: 0C 1B                   or      al,1Bh
+0F9D9: 0A 0F                   or      cl,[bx]
+0F9DB: 1D 24 24                sbb     ax,2424h
+0F9DE: 24 24                   and     al,24h
+0F9E0: 24 24                   and     al,24h
+0F9E2: 24 24                   and     al,24h
+0F9E4: 24 24                   and     al,24h
+0F9E6: 24 24                   and     al,24h
+0F9E8: 24 24                   and     al,24h
+0F9EA: 52                      push    dx
+0F9EB: 53                      push    bx
+0F9EC: 1A 11                   sbb     dl,[bx+di]
+0F9EE: 12 1D                   adc     bl,[di]
+0F9F0: 24 1D                   and     al,1Dh
+0F9F2: 1B 12                   sbb     dx,[bp+si]
+0F9F4: 10 10                   adc     [bx+si],dl
+0F9F6: 0E                      push    cs 
+0F9F7: 1B 24                   sbb     sp,[si]
+0F9F9: 1D 18 24                sbb     ax,2418h
+0F9FC: 1C 1D                   sbb     al,1Dh
+0F9FE: 0A 1B                   or      bl,[bp+di]
+0FA00: 1D 24 24                sbb     ax,2424h
+0FA03: 24 24                   and     al,24h
+0FA05: 52                      push    dx
+0FA06: 53                      push    bx
+0FA07: 00 00                   add     [bx+si],al
+0FA09: 00 00                   add     [bx+si],al
+0FA0B: 0D D2 D2                or      ax,0D2D2h
+0FA0E: 0C 11                   or      al,11h
+0FA10: 0E                      push    cs 
+0FA11: 0C 14                   or      al,14h
+0FA13: 15 12 1C                adc     ax,1C12h
+0FA16: 1D D2 D2                sbb     ax,0D2D2h
+0FA19: 01 24                   add     [si],sp
+0FA1B: 1A 1D                   sbb     bl,[di]
+0FA1D: 1B 12                   sbb     dx,[bp+si]
+0FA1F: 10 10                   adc     [bx+si],dl
+0FA21: 0E                      push    cs 
+0FA22: 1B 24                   sbb     sp,[si]
+0FA24: 0F 12 1B                movlps  xmm3,[bp+di]
+0FA27: 0E                      push    cs 
+0FA28: 1C 24                   sbb     al,24h
+0FA2A: 10 1E 17 24             adc     [2417h],bl
+0FA2E: 24 24                   and     al,24h
+0FA30: 24 24                   and     al,24h
+0FA32: 24 24                   and     al,24h
+0FA34: 52                      push    dx
+0FA35: 53                      push    bx
+0FA36: 1A 0B                   sbb     cl,[bp+di]
+0FA38: 1E                      push    ds 
+0FA39: 1D 1D 18                sbb     ax,181Dh
+0FA3C: 17                      pop     ss 
+0FA3D: 1C 24                   sbb     al,24h
+0FA3F: 0D 1B 18                or      ax,181Bh
+0FA42: 19 24                   sbb     [si],sp
+0FA44: 0B 18                   or      bx,[bx+si]
+0FA46: 16                      push    ss 
+0FA47: 0B 1C                   or      bx,[si]
+0FA49: 24 24                   and     al,24h
+0FA4B: 24 24                   and     al,24h
+0FA4D: 24 24                   and     al,24h
+0FA4F: 24 24                   and     al,24h
+0FA51: 1A 24                   sbb     ah,[si]
+0FA53: 24 24                   and     al,24h
+0FA55: 08 24                   or      [si],ah
+0FA57: 0A 1D                   or      bl,[di]
+0FA59: 24 0A                   and     al,0Ah
+0FA5B: 17                      pop     ss 
+0FA5C: 22 24                   and     ah,[si]
+0FA5E: 1D 12 16                sbb     ax,1612h
+0FA61: 0E                      push    cs 
+0FA62: 24 24                   and     al,24h
+0FA64: 24 24                   and     al,24h
+0FA66: 24 24                   and     al,24h
+0FA68: 24 24                   and     al,24h
+0FA6A: 52                      push    dx
+0FA6B: 53                      push    bx
+0FA6C: 1A 0D                   sbb     cl,[di]
+0FA6E: 0E                      push    cs 
+0FA6F: 1C 1D                   sbb     al,1Dh
+0FA71: 1B 18                   sbb     bx,[bx+si]
+0FA73: 22 24                   and     ah,[si]
+0FA75: 16                      push    ss 
+0FA76: 0A 1B                   or      bl,[bp+di]
+0FA78: 14 0E                   adc     al,0Eh
+0FA7A: 0D 24 1D                or      ax,1D24h
+0FA7D: 0A 1B                   or      bl,[bp+di]
+0FA7F: 10 0E 1D 1C             adc     [1C1Dh],cl
+0FA83: 24 24                   and     al,24h
+0FA85: 52                      push    dx
+0FA86: 53                      push    bx
+0FA87: 1A 0B                   sbb     cl,[bp+di]
+0FA89: 0E                      push    cs 
+0FA8A: 20 0A                   and     [bp+si],cl
+0FA8C: 1B 0E 24 0F             sbb     cx,[0F24h]
+0FA90: 15 0A 14                adc     ax,140Ah
+0FA93: 24 0B                   and     al,0Bh
+0FA95: 1E                      push    ds 
+0FA96: 1B 1C                   sbb     bx,[si]
+0FA98: 1D 1C 24                sbb     ax,241Ch
+0FA9B: 24 24                   and     al,24h
+0FA9D: 24 24                   and     al,24h
+0FA9F: 24 52                   and     al,52h
+0FAA1: 53                      push    bx
+0FAA2: 1A 11                   sbb     dl,[bx+di]
+0FAA4: 12 1D                   adc     bl,[di]
+0FAA6: 24 1D                   and     al,1Dh
+0FAA8: 1B 12                   sbb     dx,[bp+si]
+0FAAA: 10 10                   adc     [bx+si],dl
+0FAAC: 0E                      push    cs 
+0FAAD: 1B 24                   sbb     sp,[si]
+0FAAF: 1D 18 24                sbb     ax,2418h
+0FAB2: 1C 1D                   sbb     al,1Dh
+0FAB4: 0A 1B                   or      bl,[bp+di]
+0FAB6: 1D 24 24                sbb     ax,2424h
+0FAB9: 24 24                   and     al,24h
+0FABB: 52                      push    dx
+0FABC: 53                      push    bx
+0FABD: 00 00                   add     [bx+si],al
+0FABF: 00 00                   add     [bx+si],al
+0FAC1: 17                      pop     ss 
+0FAC2: 0D 12 1C                or      ax,1C12h
+0FAC5: 0C 24                   or      al,24h
+0FAC7: 0E                      push    cs 
+0FAC8: 1B 1B                   sbb     bx,[bp+di]
+0FACA: 18 1B                   sbb     [bp+di],bl
+0FACC: 24 97                   and     al,97h
+0FACE: 97                      xchg    ax,di
+0FACF: 24 1C                   and     al,1Ch
+0FAD1: 1D 0A 22                sbb     ax,220Ah
+0FAD4: 24 19                   and     al,19h
+0FAD6: 1E                      push    ds 
+0FAD7: 1D D5 16                sbb     ax,16D5h
+0FADA: 16                      push    ss 
+0FADB: 18 1F                   sbb     [bx],bl
+0FADD: 0E                      push    cs 
+0FADE: 24 13                   and     al,13h
+0FAE0: 18 22                   sbb     [bp+si],ah
+0FAE2: 1C 1D                   sbb     al,1Dh
+0FAE4: 12 0C                   adc     cl,[si]
+0FAE6: 14 24                   adc     al,24h
+0FAE8: 1D 18 24                sbb     ax,2418h
+0FAEB: 1C 1D                   sbb     al,1Dh
+0FAED: 0A 1B                   or      bl,[bp+di]
+0FAEF: 1D 00 00                sbb     ax,0h
+0FAF2: 00 00                   add     [bx+si],al
+0FAF4: 0B 24                   or      sp,[si]
+0FAF6: 15 12 1F                adc     ax,1F12h
+0FAF9: 0E                      push    cs 
+0FAFA: 1C 24                   sbb     al,24h
+0FAFC: 0F 18 1B                prefetch2 [bp+di]
+0FAFF: 24 06                   and     al,6h
+0FB01: 24 0C                   and     al,0Ch
+0FB03: 18 12                   sbb     [bp+si],dl
+0FB05: 17                      pop     ss 
+0FB06: 1C 15                   sbb     al,15h
+0FB08: 19 18                   sbb     [bx+si],bx
+0FB0A: 12 17                   adc     dl,[bx]
+0FB0C: 1D 1C 24                sbb     ax,241Ch
+0FB0F: 19 0E 1B 24             sbb     [241Bh],cx
+0FB13: 0E                      push    cs 
+0FB14: 21 1D                   and     [di],bx
+0FB16: 1B 0A                   sbb     cx,[bp+si]
+0FB18: 24 15                   and     al,15h
+0FB1A: 12 0F                   adc     cl,[bx]
+0FB1C: 0E                      push    cs 
+0FB1D: A5                      movsw   
+0FB1E: 3A 0D                   cmp     cl,[di]
+0FB20: 01 1C                   add     [si],bx
+0FB22: 1D 24 0B                sbb     ax,0B24h
+0FB25: 18 17                   sbb     [bx],dl
+0FB27: 1E                      push    ds 
+0FB28: 1C 24                   sbb     al,24h
+0FB2A: 0A 1D                   or      bl,[di]
+0FB2C: 24 E7                   and     al,0E7h
+0FB2E: 3A 0B                   cmp     cl,[bp+di]
+0FB30: 1D 11 0E                sbb     ax,0E11h
+0FB33: 17                      pop     ss 
+0FB34: 24 0E                   and     al,0Eh
+0FB36: 1F                      pop     ds 
+0FB37: 0E                      push    cs 
+0FB38: 1B 22                   sbb     sp,[bp+si]
+0FB3A: 24 82                   and     al,82h
+0FB3C: 3A 1B                   cmp     bl,[bp+di]
+0FB3E: 0F 12 10                movlps  xmm2,[bx+si]
+0FB41: 11 1D                   adc     [di],bx
+0FB43: 0E                      push    cs 
+0FB44: 1B 24                   sbb     sp,[si]
+0FB46: 24 C8                   and     al,0C8h
+0FB48: C8 0C 11 18             enter   110Ch,18h
+0FB4C: 18 1C                   sbb     [si],bl
+0FB4E: 0E                      push    cs 
+0FB4F: C7 C7 24 24             mov     di,2424h
+0FB53: 0B 18                   or      bx,[bx+si]
+0FB55: 16                      push    ss 
+0FB56: 0B 0E 1B C3             or      cx,[0C31Bh]
+0FB5A: 3A 19                   cmp     bl,[bx+di]
+0FB5C: 10 0A                   adc     [bp+si],cl
+0FB5E: 16                      push    ss 
+0FB5F: 0E                      push    cs 
+0FB60: 24 24                   and     al,24h
+0FB62: 24 24                   and     al,24h
+0FB64: 24 24                   and     al,24h
+0FB66: 24 18                   and     al,18h
+0FB68: 17                      pop     ss 
+0FB69: 0E                      push    cs 
+0FB6A: 24 24                   and     al,24h
+0FB6C: 24 24                   and     al,24h
+0FB6E: 24 24                   and     al,24h
+0FB70: 24 10                   and     al,10h
+0FB72: 0A 16 0E A5             or      dl,[0A50Eh]
+0FB76: 38 13                   cmp     [bp+di],dl
+0FB78: 0D 12 1C                or      ax,1C12h
+0FB7B: 0C 24                   or      al,24h
+0FB7D: 12 17                   adc     dl,[bx]
+0FB7F: 12 1D                   adc     bl,[di]
+0FB81: 12 0A                   adc     cl,[bp+si]
+0FB83: 15 12 23                adc     ax,2312h
+0FB86: 0A 1D                   or      bl,[di]
+0FB88: 12 18                   adc     bl,[bx+si]
+0FB8A: 17                      pop     ss 
+0FB8B: 05 39 0C                add     ax,0C39h
+0FB8E: 01 97 24 1C             add     [bx+1C24h],dx
+0FB92: 1D 18 19                sbb     ax,1918h
+0FB95: 24 0D                   and     al,0Dh
+0FB97: 12 1C                   adc     bl,[si]
+0FB99: 14 45                   adc     al,45h
+0FB9B: 39 0D                   cmp     [di],cx
+0FB9D: 02 97 24 1C             add     dl,[bx+1C24h]
+0FBA1: 1D 0A 1B                sbb     ax,1B0Ah
+0FBA4: 1D 24 0D                sbb     ax,0D24h
+0FBA7: 12 1C                   adc     bl,[si]
+0FBA9: 14 85                   adc     al,85h
+0FBAB: 39 0D                   cmp     [di],cx
+0FBAD: 03 97 24 1C             add     dx,[bx+1C24h]
+0FBB1: 0E                      push    cs 
+0FBB2: 0E                      push    cs 
+0FBB3: 14 24                   adc     al,24h
+0FBB5: 0F 1B                   nop_hint byte ptr [bx+1C24h]
+0FBB7: 0A 16 0E CC             or      dl,[0CC0Eh]
+0FBBB: 39 06 0A 0C             cmp     [0C0Ah],ax
+0FBBF: 1D 1E 0A                sbb     ax,0A1Eh
+0FBC2: 15 E8 16                adc     ax,16E8h
+0FBC5: 02 8A 1E 4E             add     cl,[bp+si+4E1Eh]
+0FBC9: 07                      pop     es 
+0FBCA: 81 E3 07 00             and     bx,7h
+0FBCE: D1 E3                   shl     bx,1
+0FBD0: 8B C3                   mov     ax,bx
+0FBD2: D1 E3                   shl     bx,1
+0FBD4: 03 D8                   add     bx,ax
+0FBD6: 8B 9F 2D AC             mov     bx,[bx-53D3h]
+0FBDA: F6 06 01 58 10          test    byte ptr [5801h],10h
+0FBDF: 74 02                   je      0FBE3h
+0FBE1: D1 E3                   shl     bx,1
+0FBE3: 8B 16 D6 0F             mov     dx,[0FD6h]
+0FBE7: A0 01 58                mov     al,[5801h]
+0FBEA: 24 08                   and     al,8h
+0FBEC: 8A E0                   mov     ah,al
+0FBEE: 32 C6                   xor     al,dh
+0FBF0: 74 29                   je      0FC1Bh
+0FBF2: 8A F0                   mov     dh,al
+0FBF4: 22 F4                   and     dh,ah
+0FBF6: 74 23                   je      0FC1Bh
+0FBF8: A0 18 00                mov     al,[18h]
+0FBFB: 02 C7                   add     al,bh
+0FBFD: A2 18 00                mov     [18h],al
+0FC00: A2 19 00                mov     [19h],al
+0FC03: A2 1B 00                mov     [1Bh],al
+0FC06: FE 06 4F 07             inc     byte ptr [74Fh]
+0FC0A: FE 06 C6 01             inc     byte ptr [1C6h]
+0FC0E: FE 06 C8 01             inc     byte ptr [1C8h]
+0FC12: FE 06 CA 01             inc     byte ptr [1CAh]
+0FC16: B0 0F                   mov     al,0Fh
+0FC18: E8 78 E1                call    0DD93h
+0FC1B: A0 01 58                mov     al,[5801h]
+0FC1E: 24 04                   and     al,4h
+0FC20: 8A E0                   mov     ah,al
+0FC22: 32 C2                   xor     al,dl
+0FC24: 74 29                   je      0FC4Fh
+0FC26: 8A D0                   mov     dl,al
+0FC28: 22 D4                   and     dl,ah
+0FC2A: 74 23                   je      0FC4Fh
+0FC2C: A0 18 00                mov     al,[18h]
+0FC2F: 02 C3                   add     al,bl
+0FC31: A2 18 00                mov     [18h],al
+0FC34: A2 19 00                mov     [19h],al
+0FC37: A2 1B 00                mov     [1Bh],al
+0FC3A: FE 06 4F 07             inc     byte ptr [74Fh]
+0FC3E: FE 06 C6 01             inc     byte ptr [1C6h]
+0FC42: FE 06 C8 01             inc     byte ptr [1C8h]
+0FC46: FE 06 CA 01             inc     byte ptr [1CAh]
+0FC4A: B0 0F                   mov     al,0Fh
+0FC4C: E8 44 E1                call    0DD93h
+0FC4F: 89 16 D6 0F             mov     [0FD6h],dx
+0FC53: 80 3E 18 00 F0          cmp     byte ptr [18h],0F0h
+0FC58: 73 08                   jae     0FC62h
+0FC5A: C6 06 51 07 00          mov     byte ptr [751h],0h
+0FC5F: EB 06                   jmp     0FC67h
+0FC61: 90                      nop     
+0FC62: C6 06 51 07 01          mov     byte ptr [751h],1h
+0FC67: C3                      ret     
+0FC68: 80 3E 4F 07 00          cmp     byte ptr [74Fh],0h
+0FC6D: 74 10                   je      0FC7Fh
+0FC6F: 80 3E 50 07 00          cmp     byte ptr [750h],0h
+0FC74: 75 09                   jne     0FC7Fh
+0FC76: FE 0E 4F 07             dec     byte ptr [74Fh]
+0FC7A: C6 06 50 07 10          mov     byte ptr [750h],10h
+0FC7F: 80 3E 50 07 00          cmp     byte ptr [750h],0h
+0FC84: 74 17                   je      0FC9Dh
+0FC86: FE 0E 50 07             dec     byte ptr [750h]
+0FC8A: 80 3E 50 07 08          cmp     byte ptr [750h],8h
+0FC8F: 72 07                   jb      0FC98h
+0FC91: C6 06 15 07 01          mov     byte ptr [715h],1h
+0FC96: EB 05                   jmp     0FC9Dh
+0FC98: C6 06 15 07 00          mov     byte ptr [715h],0h
+0FC9D: C3                      ret     
+0FC9E: 8A 1E 4E 07             mov     bl,[74Eh]
+0FCA2: 81 E3 07 00             and     bx,7h
+0FCA6: D1 E3                   shl     bx,1
+0FCA8: 8B C3                   mov     ax,bx
+0FCAA: D1 E3                   shl     bx,1
+0FCAC: 03 D8                   add     bx,ax
+0FCAE: 8B 9F 31 AC             mov     bx,[bx-53CFh]
+0FCB2: 80 FB 00                cmp     bl,0h
+0FCB5: 74 0A                   je      0FCC1h
+0FCB7: 80 3E 18 00 00          cmp     byte ptr [18h],0h
+0FCBC: 75 03                   jne     0FCC1h
+0FCBE: E9 84 00                jmp     0FD45h
+0FCC1: BF 41 03                mov     di,341h
+0FCC4: BE 5D AC                mov     si,0AC5Dh
+0FCC7: 53                      push    bx
+0FCC8: E8 97 E1                call    0DE62h
+0FCCB: 5B                      pop     bx
+0FCCC: 83 EF 03                sub     di,3h
+0FCCF: A0 18 00                mov     al,[18h]
+0FCD2: 80 FB 00                cmp     bl,0h
+0FCD5: 75 06                   jne     0FCDDh
+0FCD7: B0 02                   mov     al,2h
+0FCD9: B3 01                   mov     bl,1h
+0FCDB: 32 E4                   xor     ah,ah
+0FCDD: F6 F3                   div     bl
+0FCDF: 8A FC                   mov     bh,ah
+0FCE1: 8A E0                   mov     ah,al
+0FCE3: 32 C0                   xor     al,al
+0FCE5: 33 C9                   xor     cx,cx
+0FCE7: 8A CC                   mov     cl,ah
+0FCE9: D0 E9                   shr     cl,1
+0FCEB: D0 E9                   shr     cl,1
+0FCED: D0 E9                   shr     cl,1
+0FCEF: D0 E9                   shr     cl,1
+0FCF1: 80 F9 00                cmp     cl,0h
+0FCF4: 74 05                   je      0FCFBh
+0FCF6: 04 16                   add     al,16h
+0FCF8: 27                      daa     
+0FCF9: E2 FB                   loop    0FCF6h
+0FCFB: 8A CC                   mov     cl,ah
+0FCFD: 32 ED                   xor     ch,ch
+0FCFF: 80 E1 0F                and     cl,0Fh
+0FD02: 80 F9 00                cmp     cl,0h
+0FD05: 74 05                   je      0FD0Ch
+0FD07: 04 01                   add     al,1h
+0FD09: 27                      daa     
+0FD0A: E2 FB                   loop    0FD07h
+0FD0C: 3C 00                   cmp     al,0h
+0FD0E: 75 06                   jne     0FD16h
+0FD10: B0 24                   mov     al,24h
+0FD12: AA                      stosb   
+0FD13: AA                      stosb   
+0FD14: EB 17                   jmp     0FD2Dh
+0FD16: 8A E0                   mov     ah,al
+0FD18: D0 E8                   shr     al,1
+0FD1A: D0 E8                   shr     al,1
+0FD1C: D0 E8                   shr     al,1
+0FD1E: D0 E8                   shr     al,1
+0FD20: 3C 00                   cmp     al,0h
+0FD22: 75 02                   jne     0FD26h
+0FD24: B0 24                   mov     al,24h
+0FD26: AA                      stosb   
+0FD27: 80 E4 0F                and     ah,0Fh
+0FD2A: 8A C4                   mov     al,ah
+0FD2C: AA                      stosb   
+0FD2D: 80 FF 00                cmp     bh,0h
+0FD30: 74 0B                   je      0FD3Dh
+0FD32: 47                      inc     di
+0FD33: 8A C7                   mov     al,bh
+0FD35: AA                      stosb   
+0FD36: B0 D3                   mov     al,0D3h
+0FD38: AA                      stosb   
+0FD39: 8A C3                   mov     al,bl
+0FD3B: AA                      stosb   
+0FD3C: C3                      ret     
+0FD3D: B0 24                   mov     al,24h
+0FD3F: B9 04 00                mov     cx,4h
+0FD42: F3 AA                   rep     stosb   
+0FD44: C3                      ret     
+0FD45: A0 14 00                mov     al,[14h]
+0FD48: 3C 0E                   cmp     al,0Eh
+0FD4A: 74 12                   je      0FD5Eh
+0FD4C: 3C 0A                   cmp     al,0Ah
+0FD4E: 74 0E                   je      0FD5Eh
+0FD50: 3C 0B                   cmp     al,0Bh
+0FD52: 74 0A                   je      0FD5Eh
+0FD54: BE 69 AC                mov     si,0AC69h
+0FD57: F6 06 BE 01 20          test    byte ptr [1BEh],20h
+0FD5C: 75 03                   jne     0FD61h
+0FD5E: BE 75 AC                mov     si,0AC75h
+0FD61: BF 41 03                mov     di,341h
+0FD64: E8 FB E0                call    0DE62h
+0FD67: C3                      ret     
+0FD68: E8 71 00                call    0FDDCh
+0FD6B: 8A 1E 4E 07             mov     bl,[74Eh]
+0FD6F: 81 E3 07 00             and     bx,7h
+0FD73: D1 E3                   shl     bx,1
+0FD75: 8B C3                   mov     ax,bx
+0FD77: D1 E3                   shl     bx,1
+0FD79: 03 D8                   add     bx,ax
+0FD7B: 8B 87 2F AC             mov     ax,[bx-53D1h]
+0FD7F: 8B 9F 31 AC             mov     bx,[bx-53CFh]
+0FD83: 3A 3E 18 00             cmp     bh,[18h]
+0FD87: 76 02                   jbe     0FD8Bh
+0FD89: B4 00                   mov     ah,0h
+0FD8B: 3A 1E 18 00             cmp     bl,[18h]
+0FD8F: 76 02                   jbe     0FD93h
+0FD91: B0 00                   mov     al,0h
+0FD93: C3                      ret     
+0FD94: BF 63 02                mov     di,263h
+0FD97: 81 C7 00 38             add     di,3800h
+0FD9B: 8A 1E 4E 07             mov     bl,[74Eh]
+0FD9F: 81 E3 07 00             and     bx,7h
+0FDA3: D1 E3                   shl     bx,1
+0FDA5: 8B C3                   mov     ax,bx
+0FDA7: D1 E3                   shl     bx,1
+0FDA9: 03 D8                   add     bx,ax
+0FDAB: 8B 87 2F AC             mov     ax,[bx-53D1h]
+0FDAF: 8B 9F 31 AC             mov     bx,[bx-53CFh]
+0FDB3: 80 FB 00                cmp     bl,0h
+0FDB6: 74 23                   je      0FDDBh
+0FDB8: FE C0                   inc     al
+0FDBA: 8A C8                   mov     cl,al
+0FDBC: 8A E0                   mov     ah,al
+0FDBE: 32 ED                   xor     ch,ch
+0FDC0: B0 29                   mov     al,29h
+0FDC2: F3 AA                   rep     stosb   
+0FDC4: 47                      inc     di
+0FDC5: 8A C4                   mov     al,ah
+0FDC7: AA                      stosb   
+0FDC8: BE 14 A9                mov     si,0A914h
+0FDCB: E8 06 00                call    0FDD4h
+0FDCE: 8A C3                   mov     al,bl
+0FDD0: AA                      stosb   
+0FDD1: BE 20 A9                mov     si,0A920h
+0FDD4: 8A 0C                   mov     cl,[si]
+0FDD6: 32 ED                   xor     ch,ch
+0FDD8: 46                      inc     si
+0FDD9: F3 A4                   rep     movsb   
+0FDDB: C3                      ret     
+0FDDC: A0 18 00                mov     al,[18h]
+0FDDF: 3A 06 19 00             cmp     al,[19h]
+0FDE3: 75 07                   jne     0FDECh
+0FDE5: 3A 06 1A 00             cmp     al,[1Ah]
+0FDE9: 75 18                   jne     0FE03h
+0FDEB: C3                      ret     
+0FDEC: 3A 06 1B 00             cmp     al,[1Bh]
+0FDF0: 75 03                   jne     0FDF5h
+0FDF2: EB 0F                   jmp     0FE03h
+0FDF4: 90                      nop     
+0FDF5: A0 1A 00                mov     al,[1Ah]
+0FDF8: 3A 06 1B 00             cmp     al,[1Bh]
+0FDFC: 75 03                   jne     0FE01h
+0FDFE: EB 03                   jmp     0FE03h
+0FE00: 90                      nop     
+0FE01: B0 00                   mov     al,0h
+0FE03: A2 18 00                mov     [18h],al
+0FE06: A2 19 00                mov     [19h],al
+0FE09: A2 1A 00                mov     [1Ah],al
+0FE0C: C3                      ret     
+0FE0D: 01 01                   add     [bx+di],ax
+0FE0F: 02 02                   add     al,[bp+si]
+0FE11: 00 00                   add     [bx+si],al
+0FE13: 01 01                   add     [bx+di],ax
+0FE15: 02 02                   add     al,[bp+si]
+0FE17: 02 02                   add     al,[bp+si]
+0FE19: 01 01                   add     [bx+di],ax
+0FE1B: 02 02                   add     al,[bp+si]
+0FE1D: 03 03                   add     ax,[bp+di]
+0FE1F: 01 01                   add     [bx+di],ax
+0FE21: 02 02                   add     al,[bp+si]
+0FE23: 04 04                   add     al,4h
+0FE25: 01 01                   add     [bx+di],ax
+0FE27: 04 04                   add     al,4h
+0FE29: 02 02                   add     al,[bp+si]
+0FE2B: 01 01                   add     [bx+di],ax
+0FE2D: 04 04                   add     al,4h
+0FE2F: 03 03                   add     ax,[bp+di]
+0FE31: 01 01                   add     [bx+di],ax
+0FE33: 04 04                   add     al,4h
+0FE35: 04 04                   add     al,4h
+0FE37: 01 01                   add     [bx+di],ax
+0FE39: 04 04                   add     al,4h
+0FE3B: 05 05 0B                add     ax,0B05h
+0FE3E: 0C 1B                   or      al,1Bh
+0FE40: 0E                      push    cs 
+0FE41: 0D 12 1D                or      ax,1D12h
+0FE44: 1C 28                   sbb     al,28h
+0FE46: 24 24                   and     al,24h
+0FE48: 24 0B                   and     al,0Bh
+0FE4A: 12 17                   adc     dl,[bx]
+0FE4C: 1C 0E                   sbb     al,0Eh
+0FE4E: 1B 1D                   sbb     bx,[di]
+0FE50: 24 0C                   and     al,0Ch
+0FE52: 18 12                   sbb     [bp+si],dl
+0FE54: 17                      pop     ss 
+0FE55: 0B 24                   or      sp,[si]
+0FE57: 24 24                   and     al,24h
+0FE59: 24 24                   and     al,24h
+0FE5B: 24 24                   and     al,24h
+0FE5D: 24 24                   and     al,24h
+0FE5F: 24 24                   and     al,24h
+0FE61: 52                      push    dx
+0FE62: 8B 44 05                mov     ax,[si+5h]
+0FE65: 8B 5C 07                mov     bx,[si+7h]
+0FE68: 8A 4C 04                mov     cl,[si+4h]
+0FE6B: B5 0F                   mov     ch,0Fh
+0FE6D: B2 00                   mov     dl,0h
+0FE6F: BD 01 00                mov     bp,1h
+0FE72: E8 16 00                call    0FE8Bh
+0FE75: 5A                      pop     dx
+0FE76: C3                      ret     
+0FE77: 52                      push    dx
+0FE78: 8B 44 05                mov     ax,[si+5h]
+0FE7B: 8B 5C 07                mov     bx,[si+7h]
+0FE7E: 8A 4C 04                mov     cl,[si+4h]
+0FE81: B2 00                   mov     dl,0h
+0FE83: BD 01 00                mov     bp,1h
+0FE86: E8 02 00                call    0FE8Bh
+0FE89: 5A                      pop     dx
+0FE8A: C3                      ret     
+0FE8B: 56                      push    si
+0FE8C: 57                      push    di
+0FE8D: 52                      push    dx
+0FE8E: 50                      push    ax
+0FE8F: 80 FA 00                cmp     dl,0h
+0FE92: 74 0A                   je      0FE9Eh
+0FE94: BE 58 06                mov     si,658h
+0FE97: E8 F0 E1                call    0E08Ah
+0FE9A: 3C 13                   cmp     al,13h
+0FE9C: 77 13                   ja      0FEB1h
+0FE9E: FA                      cli     
+0FE9F: 50                      push    ax
+0FEA0: 8B 3E 3B 06             mov     di,[63Bh]
+0FEA4: 0B FF                   or      di,di
+0FEA6: 74 05                   je      0FEADh
+0FEA8: 8B 05                   mov     ax,[di]
+0FEAA: A3 3B 06                mov     [63Bh],ax
+0FEAD: 58                      pop     ax
+0FEAE: FB                      sti     
+0FEAF: 75 05                   jne     0FEB6h
+0FEB1: 58                      pop     ax
+0FEB2: 5A                      pop     dx
+0FEB3: 5F                      pop     di
+0FEB4: 5E                      pop     si
+0FEB5: C3                      ret     
+0FEB6: 58                      pop     ax
+0FEB7: 89 45 05                mov     [di+5h],ax
+0FEBA: 89 5D 07                mov     [di+7h],bx
+0FEBD: 88 4D 04                mov     [di+4h],cl
+0FEC0: 88 55 13                mov     [di+13h],dl
+0FEC3: 80 FD 0F                cmp     ch,0Fh
+0FEC6: 74 19                   je      0FEE1h
+0FEC8: 80 FD 04                cmp     ch,4h
+0FECB: 75 0A                   jne     0FED7h
+0FECD: B5 03                   mov     ch,3h
+0FECF: B0 0B                   mov     al,0Bh
+0FED1: E8 AB DE                call    0DD7Fh
+0FED4: BD 00 00                mov     bp,0h
+0FED7: 80 E5 03                and     ch,3h
+0FEDA: D0 E5                   shl     ch,1
+0FEDC: 8A DD                   mov     bl,ch
+0FEDE: EB 0C                   jmp     0FEECh
+0FEE0: 90                      nop     
+0FEE1: 8A 5D 04                mov     bl,[di+4h]
+0FEE4: D0 EB                   shr     bl,1
+0FEE6: D0 EB                   shr     bl,1
+0FEE8: D0 EB                   shr     bl,1
+0FEEA: D0 EB                   shr     bl,1
+0FEEC: 32 FF                   xor     bh,bh
+0FEEE: 83 FD 00                cmp     bp,0h
+0FEF1: 74 09                   je      0FEFCh
+0FEF3: 8A C3                   mov     al,bl
+0FEF5: D0 E0                   shl     al,1
+0FEF7: 04 05                   add     al,5h
+0FEF9: E8 83 DE                call    0DD7Fh
+0FEFC: 8A 87 66 AD             mov     al,[bx-529Ah]
+0FF00: 88 45 0D                mov     [di+0Dh],al
+0FF03: C6 45 0C 01             mov     byte ptr [di+0Ch],1h
+0FF07: A0 A0 0F                mov     al,[0FA0h]
+0FF0A: 88 45 12                mov     [di+12h],al
+0FF0D: C6 45 15 00             mov     byte ptr [di+15h],0h
+0FF11: 8B DF                   mov     bx,di
+0FF13: BE 58 06                mov     si,658h
+0FF16: 50                      push    ax
+0FF17: 52                      push    dx
+0FF18: 8B D6                   mov     dx,si
+0FF1A: 8A 45 04                mov     al,[di+4h]
+0FF1D: FA                      cli     
+0FF1E: 8B 34                   mov     si,[si]
+0FF20: 3B F2                   cmp     si,dx
+0FF22: 74 05                   je      0FF29h
+0FF24: 38 44 04                cmp     [si+4h],al
+0FF27: 76 F5                   jbe     0FF1Eh
+0FF29: 50                      push    ax
+0FF2A: 53                      push    bx
+0FF2B: FA                      cli     
+0FF2C: 8B 44 02                mov     ax,[si+2h]
+0FF2F: 89 45 02                mov     [di+2h],ax
+0FF32: 89 35                   mov     [di],si
+0FF34: 8B 5C 02                mov     bx,[si+2h]
+0FF37: 89 3F                   mov     [bx],di
+0FF39: 89 7C 02                mov     [si+2h],di
+0FF3C: FB                      sti     
+0FF3D: 5B                      pop     bx
+0FF3E: 58                      pop     ax
+0FF3F: FB                      sti     
+0FF40: 5A                      pop     dx
+0FF41: 58                      pop     ax
+0FF42: 5A                      pop     dx
+0FF43: 5F                      pop     di
+0FF44: 5E                      pop     si
+0FF45: C3                      ret     
+0FF46: 00 00                   add     [bx+si],al
+0FF48: 09 09                   or      [bx+di],cx
+0FF4A: 12 12                   adc     dl,[bp+si]
+0FF4C: 1B 1B                   sbb     bx,[bp+di]
+0FF4E: 8A 2E E1 06             mov     ch,[6E1h]
+0FF52: 80 C5 80                add     ch,80h
+0FF55: 8A 0E E3 06             mov     cl,[6E3h]
+0FF59: 80 C1 80                add     cl,80h
+0FF5C: BE 58 06                mov     si,658h
+0FF5F: 8B D6                   mov     dx,si
+0FF61: 8B 34                   mov     si,[si]
+0FF63: 3B F2                   cmp     si,dx
+0FF65: 75 03                   jne     0FF6Ah
+0FF67: E9 B0 00                jmp     1Ah
+0FF6A: E8 E0 29                call    294Dh
+0FF6D: F6 44 13 FF             test    byte ptr [si+13h],0FFh
+0FF71: 74 32                   je      0FFA5h
+0FF73: 80 7C 04 08             cmp     byte ptr [si+4h],8h
+0FF77: 77 2C                   ja      0FFA5h
+0FF79: 8A 44 0A                mov     al,[si+0Ah]
+0FF7C: 2A C5                   sub     al,ch
+0FF7E: 7F 02                   jg      0FF82h
+0FF80: F6 D8                   neg     al
+0FF82: 3C 08                   cmp     al,8h
+0FF84: 77 1F                   ja      0FFA5h
+0FF86: 8A 44 09                mov     al,[si+9h]
+0FF89: 2A C1                   sub     al,cl
+0FF8B: 7F 02                   jg      0FF8Fh
+0FF8D: F6 D8                   neg     al
+0FF8F: 3C 08                   cmp     al,8h
+0FF91: 77 12                   ja      0FFA5h
+0FF93: 80 3E 14 00 09          cmp     byte ptr [14h],9h
+0FF98: 74 0B                   je      0FFA5h
+0FF9A: C6 06 14 00 09          mov     byte ptr [14h],9h
+0FF9F: C6 06 1B 07 00          mov     byte ptr [71Bh],0h
+0FFA4: C3                      ret     
+0FFA5: FE 4C 0C                dec     byte ptr [si+0Ch]
+0FFA8: 75 23                   jne     0FFCDh
+0FFAA: 8A 5C 0D                mov     bl,[si+0Dh]
+0FFAD: 32 FF                   xor     bh,bh
+0FFAF: FE 44 0D                inc     byte ptr [si+0Dh]
+0FFB2: 8A 87 3B AE             mov     al,[bx-51C5h]
+0FFB6: 3C FF                   cmp     al,0FFh
+0FFB8: 74 39                   je      0FFF3h
+0FFBA: 24 01                   and     al,1h
+0FFBC: 88 44 0F                mov     [si+0Fh],al
+0FFBF: 8A 87 5F AE             mov     al,[bx-51A1h]
+0FFC3: 88 44 0E                mov     [si+0Eh],al
+0FFC6: 8A 87 83 AE             mov     al,[bx-517Dh]
+0FFCA: 88 44 0C                mov     [si+0Ch],al
+0FFCD: 80 3E 87 0F 02          cmp     byte ptr [0F87h],2h
+0FFD2: 75 12                   jne     0FFE6h
+0FFD4: A1 10 07                mov     ax,[710h]
+0FFD7: 80 7C 04 03             cmp     byte ptr [si+4h],3h
+0FFDB: 77 03                   ja      0FFE0h
+0FFDD: B8 12 00                mov     ax,12h
+0FFE0: 01 44 07                add     [si+7h],ax
+0FFE3: E9 7B FF                jmp     0FF61h
+0FFE6: 80 6C 04 01             sub     byte ptr [si+4h],1h
+0FFEA: 80 7C 04 00             cmp     byte ptr [si+4h],0h
+0FFEE: 74 03                   je      0FFF3h
+0FFF0: EA 00 80 00 00          jmp     0000h:8000h
+0FFF5: 3B F2                   cmp     si,dx
+0FFF7: 74 21                   je      1001Ah
+0FFF9: 50                      push    ax
+0FFFA: 53                      push    bx
+0FFFB: FA                      cli     
+0FFFC: 8B 5C 02                mov     bx,[si+2h]
+0FFFF: 8B 36 89 00             mov     si,[89h]

@@ -19,6 +19,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/tms9928a_regs.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/tms9928a_render.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/CliffHanger.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/superdon/SuperDon.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mach3/Mach3.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mach3/mach3_video.sv
 set_global_assignment -name VERILOG_FILE rtl/sound/jt89/hdl/jt89.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt89/hdl/jt89_mixer.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt89/hdl/jt89_noise.v
