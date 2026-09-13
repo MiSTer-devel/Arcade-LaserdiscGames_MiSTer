@@ -116,7 +116,15 @@ module mach3_video
     // Addresses are driven straight from the overlay position; both reads settle
     // in the idle clocks before ovl_ce_pix, so nothing is sampled mid-fetch.
     assign vram_rd_a = {2'b00, sy[7:3], sx[7:3]};
-    assign bg_a      = {vram_rd_d, sy[2:0], sx[2:1]};
+    // The tile ROM address comes from a REGISTER, never straight off the video
+    // RAM's output.  BRAM_q -> BRAM_addr inside one 80 MHz clock does not close
+    // through a cascaded M10K and fails as correct characters in the correct
+    // cells with corrupted glyphs -- the exact fault Cliff Hanger's renderer had
+    // (2026-09-13).  The extra clock is free: the whole fetch settles in the
+    // idle clocks between ovl_ce_pix pulses.
+    reg [7:0] tile_code;
+    always @(posedge core_clk) tile_code <= vram_rd_d;
+    assign bg_a      = {tile_code, sy[2:0], sx[2:1]};
     wire [3:0] bg_pen = sx[0] ? bg_q[3:0] : bg_q[7:4];
 
     //--------------------------------------------------- sprite line buffer --

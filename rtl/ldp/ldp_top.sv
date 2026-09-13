@@ -52,6 +52,8 @@ module ldp_top
     output      [3:0] dbg_flags,
     input       [3:0] post_seek_frames,
     input             disc_2997,       // .dlv encode rate -> transport film tick
+    input      [16:0] park_frame,      // disc's first content frame; 0 = rest at frame 1
+    input             status_rd,       // 1-cyc at the END of a CPU status read
 
     // ---- text overlay feed (LDP-1450 family only; inert for the others) ----
     // The character generator belongs to the PLAYER, not the game: any board on
@@ -102,7 +104,7 @@ module ldp_top
         .search_busy(search_busy), .search_done(search_done), .autostop_done(autostop_done),
         .field_phase(field_phase), .frame_tick(frame_tick), .film_tick(film_tick),
         .pause(pause), .disc_hold(disc_hold), .post_seek_frames(post_seek_frames),
-        .disc_2997(disc_2997),
+        .disc_2997(disc_2997), .park_frame(park_frame),
         .search_cmd_o(search_cmd_o), .play_end_o(play_end_o), .playing(playing),
         .dbg_seek_frame(dbg_seek_frame)
     );
@@ -116,6 +118,7 @@ module ldp_top
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_ldv), .cmd_op(op_ldv), .cmd_arg(arg_ldv),
         .search_done(search_done), .autostop_done(autostop_done), .field_phase(field_phase),
+        .curr_frame(curr_frame), .status_rd(status_rd),
         .status(status_ldv), .status_strobe(sstrobe_ldv), .command_strobe(cstrobe_ldv),
         .dbg_digits(digits_ldv)
     );
@@ -151,7 +154,7 @@ module ldp_top
         .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldp1450),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_sony), .cmd_op(op_sony), .cmd_arg(arg_sony),
-        .mode(mode), .curr_frame(curr_frame),
+        .mode(mode), .curr_frame(curr_frame), .autostop_done(autostop_done),
         .tx_valid(txv_sony), .tx_byte(txb_sony), .tx_pop(tx_pop && sel_ldp1450),
         .dbg_digits(digits_sony),
         .txt_we(txt_we_sony), .txt_line(txt_line), .txt_col(txt_col),

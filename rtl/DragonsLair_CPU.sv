@@ -378,7 +378,12 @@ ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (   // thread the core clock down
     .dbg_end_frame  (dbg_end_frame_w), // segment END frame
     .dbg_flags      (dbg_flags_w),     // autostop armed/fired
     .post_seek_frames(post_seek_frames),
-    .disc_2997      (disc_2997)
+    .disc_2997      (disc_2997),
+    // DL / Space Ace / Thayer's never send 0xC2, so the frame-readback queue is
+    // unreachable here and status_rd is provably don't-care: tied off to keep
+    // these three bit-identical to the build they are known good on.
+    .park_frame     (17'd0),
+    .status_rd      (1'b0)
 );
 
 // expose disc frame to the top (streamer maps -> mjpeg frame + audio sample)

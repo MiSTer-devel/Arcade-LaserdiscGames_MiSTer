@@ -39,6 +39,7 @@ module ldp_ldp1450
     output reg [16:0] cmd_arg,
     input      [2:0]  mode,
     input      [16:0] curr_frame,
+    input             autostop_done,    // transport reached the armed stop frame
 
     // ---- reply queue to the game ----
     output            tx_valid,
@@ -64,7 +65,7 @@ module ldp_ldp1450
                      C_PLAY=8'h3a, C_ENTER=8'h40, C_SEARCH=8'h43,
                      C_CH1_ON=8'h46, C_CH1_OFF=8'h47,
                      C_CH2_ON=8'h48, C_CH2_OFF=8'h49,
-                     C_STILL=8'h4f, C_CLEAR=8'h56,
+                     C_STILL=8'h4f, C_CLEAR=8'h56, C_REPEAT=8'h44,
                      C_ADDR_INQ=8'h60, C_STATUS_INQ=8'h67;
     localparam [7:0] ACK = 8'h0a;
 
@@ -116,6 +117,23 @@ module ldp_ldp1450
     assign txt_y  = text_y;
     reg  [19:0] dig_sr, dig_latched;
     assign dbg_digits = dig_latched;
+
+    // ---- REPEAT (0x44): play to a frame, then pause and report completion ----
+    // Daphne ldp1000.cpp: 0x44 arms it, the first ENTER takes the end frame and
+    // latches the current frame as the loop start, the second ENTER takes the
+    // repeat count (absent => 1, 0 => endless) and starts playback. On reaching
+    // the end frame the player pauses and pushes 0x01. DL2 bounds every scene
+    // with this (`44 "02101" @ "1" @`), so while it is inert the disc runs past
+    // the scene for ever and the game never gets its completion.
+    localparam [1:0] RP_NONE=2'd0, RP_END=2'd1, RP_CNT=2'd2, RP_RUN=2'd3;
+    localparam [1:0] RQ_NONE=2'd0, RQ_STOP=2'd1, RQ_SEARCH=2'd2, RQ_AUTO=2'd3;
+    reg  [1:0]  rp, rp_req;
+    reg  [16:0] rp_end, rp_start;
+    reg  [7:0]  rp_left;         // passes remaining; 0 = endless
+    reg         rp_comp;         // completion byte owed to the game
+    reg         rp_replay;       // looping: waiting for the search to land
+    reg         rp_saw_search;
+    reg         got_num;         // at least one digit since the last accumulator reset
 
     // ---- reply queue (8 deep; the deepest response is the 5-byte status) ----
     reg  [7:0] q [0:7];
@@ -172,7 +190,16 @@ module ldp_ldp1450
                 C_ENTER: if (search_armed) begin
                              cmd_action = 1'b1; cmd_op = OP_SEARCH; cmd_arg = number;
                          end
-                default: ;   // arming, inquiries, text, repeat: no transport op
+                default: ;   // arming, inquiries, text: no transport op
+            endcase
+        end
+        // The repeat runs the transport on its own clock, with no byte in hand.
+        else if (sel && (rp_req != RQ_NONE)) begin
+            cmd_action = 1'b1;
+            case (rp_req)
+                RQ_STOP:   cmd_op = OP_STOP;
+                RQ_SEARCH: begin cmd_op = OP_SEARCH;   cmd_arg = rp_start; end
+                default:   begin cmd_op = OP_AUTOSTOP; cmd_arg = rp_end;   end
             endcase
         end
     end
@@ -183,6 +210,9 @@ module ldp_ldp1450
         if (!reset_n) begin
             qw <= 3'd0; qr <= 3'd0; qn <= 4'd0;
             number <= 17'd0; search_armed <= 1'b0;
+            rp <= RP_NONE; rp_req <= RQ_NONE; rp_end <= 17'd0; rp_start <= 17'd0;
+            rp_left <= 8'd0; rp_comp <= 1'b0; rp_replay <= 1'b0;
+            rp_saw_search <= 1'b0; got_num <= 1'b0;
             tmode <= TX_NONE; tcmd <= 1'b0; xy_i <= 2'd0; got_line <= 1'b0;
             tcol <= 6'd0; space_cnt <= 6'd0;
             fill_i <= 6'd0; fill_line <= 2'd0; clear_all <= 1'b0; filling <= 1'b0;
@@ -223,6 +253,28 @@ module ldp_ldp1450
                 2'b01:   qn <= qn - 4'd1;
                 default: ;   // both or neither: depth unchanged
             endcase
+
+            // ---- REPEAT sequencing ----
+            if (rp_req != RQ_NONE) rp_req <= RQ_NONE;    // one-shot onto the bus
+
+            if (autostop_done && (rp == RP_RUN)) begin
+                rp_comp <= 1'b1;                         // 0x01 completion, either way
+                if (rp_left == 8'd1) rp <= RP_NONE;      // last pass: transport already stopped
+                else begin
+                    if (rp_left != 8'd0) rp_left <= rp_left - 8'd1;
+                    rp_req        <= RQ_SEARCH;          // loop back, then play again
+                    rp_replay     <= 1'b1;
+                    rp_saw_search <= 1'b0;
+                end
+            end
+
+            if (rp_replay) begin
+                if (mode == M_SEARCH)   rp_saw_search <= 1'b1;
+                else if (rp_saw_search) begin
+                    rp_req    <= RQ_AUTO;
+                    rp_replay <= 1'b0;
+                end
+            end
 
             // ---- delayed ACK ----
             if (ack_pending) begin
@@ -270,6 +322,14 @@ module ldp_ldp1450
                 default: ;
             endcase
 
+            // Completion byte for a finished repeat pass. Pushed only when nothing
+            // else owns the queue this cycle, so it can never clobber an ACK or a
+            // multi-byte reply mid-sequence.
+            if (rp_comp && !ack_pending && (seq == S_IDLE)) begin
+                push_en <= 1'b1; push_val <= 8'h01;
+                rp_comp <= 1'b0;
+            end
+
             // ---- command reception ----
             if (sel && cmd_stb) begin
                 // Text framing runs FIRST and consumes its bytes without ACKing:
@@ -315,23 +375,45 @@ module ldp_ldp1450
                     end
                 end else if (is_digit) begin
                     number      <= (number * 17'd10) + {13'd0, dig};
+                    got_num     <= 1'b1;
                     dig_sr      <= {dig_sr[15:0], dig};
                     ack_pending <= 1'b1; ack_timer <= T_NUM;
                 end else begin
                     case (cmd_byte)
                         C_SEARCH: begin
                             search_armed <= 1'b1; number <= 17'd0; dig_sr <= 20'd0;
+                            got_num <= 1'b0;
+                            rp <= RP_NONE; rp_replay <= 1'b0;   // a new search abandons it
+                            ack_pending <= 1'b1; ack_timer <= T_ENTER;
+                        end
+                        C_REPEAT: begin
+                            rp <= RP_END; number <= 17'd0; dig_sr <= 20'd0;
+                            got_num <= 1'b0;
                             ack_pending <= 1'b1; ack_timer <= T_ENTER;
                         end
                         C_ENTER: begin
                             if (search_armed) begin
                                 dig_latched <= dig_sr; dig_sr <= 20'd0;
                                 search_armed <= 1'b0; number <= 17'd0;
+                            end else if (rp == RP_END) begin
+                                rp_end   <= number;      // play up to this frame
+                                rp_start <= curr_frame;  // and loop back to here
+                                rp       <= RP_CNT;
+                                number   <= 17'd0; dig_sr <= 20'd0;
+                            end else if (rp == RP_CNT) begin
+                                rp_left <= !got_num            ? 8'd1   :
+                                           (number == 17'd0)   ? 8'd0   :   // endless
+                                           (number > 17'd255)  ? 8'd255 : number[7:0];
+                                rp      <= RP_RUN;
+                                rp_req  <= RQ_AUTO;      // the 2nd ENTER starts playback
+                                number  <= 17'd0; dig_sr <= 20'd0;
                             end
+                            got_num <= 1'b0;
                             ack_pending <= 1'b1; ack_timer <= T_ENTER;
                         end
                         C_CLEAR: begin
                             search_armed <= 1'b0; number <= 17'd0; dig_sr <= 20'd0;
+                            got_num <= 1'b0; rp <= RP_NONE; rp_replay <= 1'b0;
                             ack_pending <= 1'b1; ack_timer <= T_CLEAR;
                         end
                         C_ADDR_INQ: begin

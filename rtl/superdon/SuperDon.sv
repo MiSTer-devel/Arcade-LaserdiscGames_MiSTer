@@ -38,6 +38,7 @@ module SuperDon
     input                disc_hold,
     input          [3:0] post_seek_frames,
     input                disc_2997,
+    input         [16:0] disc_leader,    // .dlv header@28 -> transport park position
 
     output               ld_search_cmd_o,
     output               ld_play_end_o,
@@ -186,6 +187,18 @@ module SuperDon
         end
     end
 
+    // Pop on the FALLING edge: the byte must stay put for the whole read cycle
+    // and only advance once the Z80 has latched it.  The 0xC2 frame readback
+    // hands back five digits on consecutive status reads and needs this strobe.
+    reg ld_rd_q, ld_status_rd;
+    always @(posedge clk_sys) begin
+        if (!reset) begin ld_rd_q <= 1'b0; ld_status_rd <= 1'b0; end
+        else begin
+            ld_rd_q      <= cs_ld_r;
+            ld_status_rd <= ld_rd_q & ~cs_ld_r;
+        end
+    end
+
     ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (
         .clk(clk_sys), .reset_n(reset),
         .player_sel(4'd0),              // PLAYER_LDV1000
@@ -199,7 +212,8 @@ module SuperDon
         .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
         .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
         .post_seek_frames(post_seek_frames),
-        .disc_2997(disc_2997)
+        .disc_2997(disc_2997),
+        .park_frame(disc_leader), .status_rd(ld_status_rd)
     );
 
     // IRQ is the LD-V1000 command strobe (Daphne superd.cpp); port 0x08 b6 acks.

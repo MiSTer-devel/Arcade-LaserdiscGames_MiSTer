@@ -34,12 +34,16 @@ module ldp_ldv1000
     input      [21:0] field_phase,
 
     // ---- CPU side ----
-    output reg [7:0]  status,           // -> 0xC020 laserdisc_r
+    input      [16:0] curr_frame,       // picture number, for the 0xC2 readback
+    input             status_rd,        // 1-cyc at the END of a CPU status read
+    output     [7:0]  status,           // -> 0xC020 laserdisc_r
     output reg        status_strobe,    // -> SYSTEM b6 (idle 1, asserts low)
     output reg        command_strobe,   // SYSTEM b7 = ~command_strobe
     output     [19:0] dbg_digits        // raw SEARCH digits, 5 nibbles
 );
 `include "ldp_bus.svh"
+
+    reg [7:0] status_r;                 // player state byte, behind the 0xC2 queue
 
     // ---- status codes (ldv1000hle.h) ----
     localparam [7:0] ST_PARK=8'h7c, ST_PLAY=8'h64, ST_STOP=8'h65,
@@ -67,7 +71,7 @@ module ldp_ldv1000
 
     // Strobe timing, LD-V1000-specific. The player strobes once per FIELD (59.94 Hz),
     // not per frame (Daphne ldp.cpp:703).
-    localparam [21:0] STAT_LOW = (64'd1040 * CLK_HZ) / 64'd40_000_000;  // 26 us status-strobe low
+    localparam [21:0] STAT_LOW = (64'd1040 * CLK_HZ) / 64'd40_000_000;  // 26 us status_r-strobe low
     localparam [21:0] CMD_LO_S = (64'd2160 * CLK_HZ) / 64'd40_000_000;  // 54 us command-strobe start
     localparam [21:0] CMD_LO_E = (64'd3160 * CLK_HZ) / 64'd40_000_000;  // 79 us command-strobe end
 
@@ -89,7 +93,7 @@ module ldp_ldv1000
 
     wire [3:0] dig = digit_of(cmd_byte);
     // The ready window: one byte accepted per arming, only 0xFF re-arms.
-    wire accepted  = sel && cmd_stb && !pause && (cmd_byte != CMD_NO_ENTRY) && status[7];
+    wire accepted  = sel && cmd_stb && !pause && (cmd_byte != CMD_NO_ENTRY) && status_r[7];
     wire is_digit  = accepted && (dig != 4'hf);
     wire is_action = accepted && (dig == 4'hf);
 
@@ -134,9 +138,53 @@ module ldp_ldv1000
         end
     end
 
+    // 0xC2 answers the next five status reads with the picture number in ASCII,
+    // high digit first, then falls back to the state byte (Daphne ldv1000.cpp
+    // read_ldv1000 pops its output stack ahead of the status, and
+    // framenum_to_frame is sprintf "%05d").  Super Don polls this every main-loop
+    // pass at $15AB and masks each reply with 0x0F to rebuild the frame in BCD.
+    reg [15:0] dd_bin;
+    reg [19:0] dd_bcd;
+    reg  [4:0] dd_cnt;
+    reg [19:0] fq;                      // five BCD digits left to hand back
+    reg  [2:0] fq_cnt;
+
+    wire [3:0] a0 = (dd_bcd[3:0]   >= 4'd5) ? dd_bcd[3:0]   + 4'd3 : dd_bcd[3:0];
+    wire [3:0] a1 = (dd_bcd[7:4]   >= 4'd5) ? dd_bcd[7:4]   + 4'd3 : dd_bcd[7:4];
+    wire [3:0] a2 = (dd_bcd[11:8]  >= 4'd5) ? dd_bcd[11:8]  + 4'd3 : dd_bcd[11:8];
+    wire [3:0] a3 = (dd_bcd[15:12] >= 4'd5) ? dd_bcd[15:12] + 4'd3 : dd_bcd[15:12];
+    wire [3:0] a4 = (dd_bcd[19:16] >= 4'd5) ? dd_bcd[19:16] + 4'd3 : dd_bcd[19:16];
+
+    wire load_frame = accepted && (cmd_byte == CMD_GET_FRAME_NUM);
+
     always @(posedge clk) begin
         if (!reset_n) begin
-            status <= ST_PARK | ST_READY;   // 0xFC
+            dd_bin <= 16'd0; dd_bcd <= 20'd0; dd_cnt <= 5'd0;
+            fq     <= 20'd0; fq_cnt <= 3'd0;
+        end else begin
+            if (load_frame) begin
+                dd_bin <= curr_frame[15:0]; dd_bcd <= 20'd0; dd_cnt <= 5'd16;
+                fq_cnt <= 3'd0;
+            end else if (dd_cnt != 5'd0) begin
+                dd_bcd <= {a4[2:0], a3, a2, a1, a0, dd_bin[15]};
+                dd_bin <= {dd_bin[14:0], 1'b0};
+                dd_cnt <= dd_cnt - 5'd1;
+                if (dd_cnt == 5'd1) begin
+                    fq     <= {a4[2:0], a3, a2, a1, a0, dd_bin[15]};
+                    fq_cnt <= 3'd5;
+                end
+            end else if (status_rd && (fq_cnt != 3'd0)) begin
+                fq     <= {fq[15:0], 4'd0};
+                fq_cnt <= fq_cnt - 3'd1;
+            end
+        end
+    end
+
+    assign status = (fq_cnt != 3'd0) ? {4'h3, fq[19:16]} : status_r;
+
+    always @(posedge clk) begin
+        if (!reset_n) begin
+            status_r <= ST_PARK | ST_READY;   // 0xFC
             status_strobe <= 1'b1; command_strobe <= 1'b1;
             number <= 17'd0; has_digit <= 1'b0;
             dig_sr <= 20'd0; dig_latched <= 20'd0;
@@ -146,52 +194,53 @@ module ldp_ldv1000
 
             // Mechanism-driven status changes, before the byte below so a command in the
             // same cycle still wins (matching the pre-split ordering).
-            if (search_done)   status <= ST_SEARCH_FIN;         // 0xd0, "search succeeded"
-            if (autostop_done) status <= ST_STOP | ST_READY;
+            if (search_done)   status_r <= ST_SEARCH_FIN;         // 0xd0, "search succeeded"
+            if (autostop_done) status_r <= ST_STOP | ST_READY;
 
             if (sel && cmd_stb) begin
                 if (cmd_byte == CMD_NO_ENTRY) begin
-                    status <= status | ST_READY;                // the only thing that re-arms
-                end else if (!status[7]) begin
-                    status <= status & 8'h7f;                   // not ready => byte ignored entirely
+                    status_r <= status_r | ST_READY;                // the only thing that re-arms
+                end else if (!status_r[7]) begin
+                    status_r <= status_r & 8'h7f;                   // not ready => byte ignored entirely
                 end else if (dig != 4'hf) begin
-                    status <= status & 8'h7f;                   // consumed => not ready
+                    status_r <= status_r & 8'h7f;                   // consumed => not ready
                     number <= (number * 17'd10) + {13'd0, dig};
                     has_digit <= 1'b1;
                     dig_sr <= {dig_sr[15:0], dig};              // raw digits, as received
                 end else begin
-                    status    <= status & 8'h7f;                // case below may override
+                    status_r    <= status_r & 8'h7f;                // case below may override
                     has_digit <= 1'b0;                          // every action consumes the accumulator
                     case (cmd_byte)
                         CMD_CLEAR: begin number <= 17'd0; dig_sr <= 20'd0; end
                         CMD_SEARCH: begin
                             dig_latched <= dig_sr; dig_sr <= 20'd0;
-                            status <= ST_SEARCH;                // 0x50 busy -- seen immediately
+                            status_r <= ST_SEARCH;                // 0x50 busy -- seen immediately
                             number <= 17'd0;
                         end
-                        CMD_PLAY:     begin status <= ST_PLAY;             number <= 17'd0; end
-                        CMD_STOP:     begin status <= ST_STOP | ST_READY;  number <= 17'd0; end
-                        CMD_AUTOSTOP: begin status <= ST_PLAY;             number <= 17'd0; end
+                        CMD_PLAY:     begin status_r <= ST_PLAY;             number <= 17'd0; end
+                        // STOP clears READY like every accepted command; only 0xFF re-arms.
+                        CMD_STOP:     begin status_r <= ST_STOP;             number <= 17'd0; end
+                        CMD_AUTOSTOP: begin status_r <= ST_PLAY;             number <= 17'd0; end
                         CMD_AUDIO1, CMD_AUDIO2: number <= 17'd0;
                         CMD_SCAN_FWD, CMD_SCAN_REV: begin
-                            status <= ST_SCAN; number <= 17'd0;
+                            status_r <= ST_SCAN; number <= 17'd0;
                         end
                         // REJECT must leave READY clear: the ready bit IS the
                         // "command consumed" ack, and only 0xFF re-arms it. Super Don
                         // Quix-ote parks the player at $14DB and resends until it clears.
                         CMD_STEP_FWD, CMD_STEP_REV, CMD_REJECT: begin
-                            status <= (cmd_byte == CMD_REJECT) ? ST_PARK
+                            status_r <= (cmd_byte == CMD_REJECT) ? ST_PARK
                                                                : (ST_STOP | ST_READY);
                             number <= 17'd0;
                         end
                         CMD_FWD_X0, CMD_FWD_X1_4, CMD_FWD_X1_2, CMD_FWD_X1,
                         CMD_FWD_X2, CMD_FWD_X3, CMD_FWD_X4, CMD_FWD_X5: begin
-                            status <= ST_FORWARD; number <= 17'd0;
+                            status_r <= ST_FORWARD; number <= 17'd0;
                         end
                         CMD_SKIP_FWD_10, CMD_SKIP_FWD_20, CMD_SKIP_FWD_30, CMD_SKIP_FWD_40,
                         CMD_SKIP_FWD_50, CMD_SKIP_FWD_60, CMD_SKIP_FWD_70, CMD_SKIP_FWD_80,
                         CMD_SKIP_FWD_90, CMD_SKIP_FWD_100: begin
-                            status <= ST_SEARCH; number <= 17'd0;
+                            status_r <= ST_SEARCH; number <= 17'd0;
                         end
                         CMD_STORE, CMD_RECALL, CMD_DISPLAY, CMD_DISPLAY_ENABLE,
                         CMD_DISPLAY_DISABLE, CMD_GET_FRAME_NUM, CMD_GET_1ST_DISPLAY,

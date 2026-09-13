@@ -543,6 +543,7 @@ wire       fb_aud_primed;      // from dlv_streamer (ring >= SEEK_FILL)
 
 wire        ld_playing_top;      // LD mode==PLAY from DragonsLair -> dlv_streamer
 wire        disc_2997_w;         // .dlv encode rate from the header -> LD transports
+wire [16:0] ld_leader_w;         // .dlv header@28 -> transport park position
 
 //Instantiate Dragon's Lair top-level game module
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
@@ -658,6 +659,7 @@ SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 	.disc_hold(fb_seek_hold),
 	.post_seek_frames(post_seek_eff),
 	.disc_2997(disc_2997_w),
+	.disc_leader(ld_leader_w),
 
 	.ld_search_cmd_o(seek_pulse_sd),
 	.ld_play_end_o(play_end_sd),
@@ -745,6 +747,7 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ)) dl2_ldp
 	.dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
 	.post_seek_frames(post_seek_eff),
 	.disc_2997(disc_2997_w),
+	.park_frame(17'd0), .status_rd(1'b0),
 	.txt_we(d2_txt_we), .txt_line(d2_txt_line), .txt_col(d2_txt_col),
 	.txt_glyph(d2_txt_glyph), .txt_on(d2_txt_on),
 	.txt_x(d2_txt_x), .txt_y(d2_txt_y)
@@ -831,7 +834,7 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),
     .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
     .ld_playing(ld_playing_top),
-    .disc_2997(disc_2997_w)
+    .disc_2997(disc_2997_w), .disc_leader(ld_leader_w)
 );
 
 // ---- JPEG frame decoder: byte stream -> px writes (block-order, addressed by x,y) ----

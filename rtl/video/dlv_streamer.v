@@ -73,7 +73,10 @@ module dlv_streamer #(
     input             seek_flush,
 
     // .dlv encode rate -> ldp_transport film tick.  1 = 29.97 fps disc, 0 = 23.976.
-    output            disc_2997
+    output            disc_2997,
+    // First content frame of the mounted disc (header@28) -> the player's park
+    // position, so a never-commanded transport does not walk the leader in real time.
+    output     [16:0] disc_leader
 );
     //------------------------------------------------------------------------
     // Compressed-frame BRAM (video)
@@ -343,6 +346,7 @@ module dlv_streamer #(
     wire signed [31:0] ld_leader_s = ld_leader_off;
     wire [16:0] ld_leader  = (ld_leader_s <= 32'sd0)      ? 17'd0     :
                              (ld_leader_s > 32'sd131071)  ? 17'h1FFFF : ld_leader_s[16:0];
+    assign disc_leader = ld_leader;
     wire signed [31:0] disc_rel_s = $signed({15'd0, ld_curr_frame}) - ld_leader_s;
     wire [16:0] disc_rel   = (disc_rel_s <= 32'sd0)       ? 17'd0     :
                              (disc_rel_s > 32'sd131071)   ? 17'h1FFFF : disc_rel_s[16:0];

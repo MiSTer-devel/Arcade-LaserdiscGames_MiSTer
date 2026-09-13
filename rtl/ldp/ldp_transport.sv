@@ -38,6 +38,7 @@ module ldp_transport
     input             disc_hold,        // video path priming; freezes motion, not the phase
     input      [3:0]  post_seek_frames, // MRA-tunable tail drain length
     input             disc_2997,        // .dlv encode rate: 1 = 29.97 fps, 0 = 23.976
+    input      [16:0] park_frame,       // disc's first content frame; 0 = rest at frame 1
 
     // ---- video / audio contract ----
     output reg        search_cmd_o,     // 1-cyc when a SEARCH commits (after the tail drain)
@@ -48,6 +49,7 @@ module ldp_transport
 `include "ldp_bus.svh"
 
     reg  [16:0] search_frame;
+    reg         park_track;    // still resting where the disc was mounted, never commanded to move
     reg  [16:0] stop_frame;
     reg         stop_valid;
     reg         audio_en1, audio_en2;
@@ -132,6 +134,7 @@ module ldp_transport
             // can produce, and games validate the picture code before believing
             // the disc is up to speed.
             curr_frame <= 17'd1; fcnt <= 22'd0; vcnt <= 22'd0;
+            park_track <= 1'b1;
             search_delay <= 6'd0;
             disc_moving_q <= 1'b0;
             audio_en1 <= 1'b1; audio_en2 <= 1'b1;
@@ -201,8 +204,19 @@ module ldp_transport
                 endcase
             end
 
+            // Place the head at the start of program material as soon as the .dlv header
+            // is known, even if the game is already playing: on a COLD boot the ROM reaches
+            // PLAY before the header has been parsed, so arming this only while parked
+            // leaves it walking the whole leader in real time.  A SEARCH disarms it -- the
+            // game has then said where it wants to be.
+            if (park_track && (park_frame > 17'd1) && (mode != M_SEARCH)) begin
+                curr_frame <= park_frame;
+                park_track <= 1'b0;
+            end
+
             // ---- command bus ----
             if (cmd_action) begin
+                if (cmd_op == OP_SEARCH) park_track <= 1'b0;
                 // Arms the busy countdown for every M_SEARCH entry point at once. The
                 // `mode != M_SEARCH` guard is required: re-arming mid-search pins busy,
                 // the completion never fires and the core hangs.

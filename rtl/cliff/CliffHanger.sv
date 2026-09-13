@@ -212,7 +212,9 @@ module CliffHanger
         .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
         .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
         .post_seek_frames(post_seek_frames),
-        .disc_2997(disc_2997)
+        .disc_2997(disc_2997),
+        // PR-8210 has no status read, and Cliff/GTG discs park at frame 1.
+        .park_frame(17'd0), .status_rd(1'b0)
     );
     assign ld_frame_o = ld_curr_frame;
 

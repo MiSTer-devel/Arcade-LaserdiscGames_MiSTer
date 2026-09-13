@@ -71,10 +71,11 @@ module tms9928a_render
     output reg [13:0] vram_addr,
     input      [7:0]  vram_data
 );
-    localparam [1:0] S_ISSUE_NAME = 2'd0,
-                     S_WAIT_NAME  = 2'd1,
-                     S_WAIT_PAT   = 2'd3,   // graphics II only: colour-table read
-                     S_DECODE     = 2'd2;
+    localparam [2:0] S_ISSUE_NAME = 3'd0,
+                     S_WAIT_NAME  = 3'd1,   // name byte on the bus; latch charcode
+                     S_ISSUE_PAT  = 3'd2,   // pattern address, from the LATCHED charcode
+                     S_WAIT_PAT   = 3'd3,   // graphics II only: colour-table read
+                     S_DECODE     = 3'd4;
 
     // Mode select. M1 = reg1[4], M2 = reg1[3], M3 = reg0[1].
     //   text = 1,0,0   graphics II = 0,0,1
@@ -141,26 +142,30 @@ module tms9928a_render
 
     // charcode = name byte + ((y >> 6) << 8); py[7:6] IS the 0/1/2 bank index.
     wire  [9:0] charcode_now = {py[7:6], vram_data};
-    // The pattern address is formed in S_WAIT_NAME, the same cycle the name byte
-    // is on the bus -- so it must use the LIVE charcode, not charcode_l, which
-    // does not latch until the end of that cycle. Free-running this went unseen
-    // (the pass repeated on one cell until the register caught up), but a
-    // one-shot catch-up pass would have read the previous cell's pattern. The
-    // colour address is formed a cycle later, by which time charcode_l is valid.
-    wire  [9:0] cc_pat       = charcode_now & patternmask;
+    // The pattern address is issued in its own state, S_ISSUE_PAT, from the
+    // LATCHED charcode.  It used to be formed in S_WAIT_NAME from the live
+    // vram_data to save a cycle, which put BRAM_q -> logic -> BRAM_addr in one
+    // 12.5 ns clock, through a 16-deep M10K cascade.  That path does not close
+    // reliably: it survives a favourable place-and-route and corrupts pattern
+    // bytes after any change that reshuffles placement, while the name bytes
+    // (addressed from the px/py counters) stay correct -- right characters in
+    // the right cells with broken glyphs.  The prefetch has budget to spare: a
+    // cell lasts 64 clk_sys at ce_pix = clk/8 and this fetch takes four.
+    wire  [9:0] cc_pat       = charcode_l   & patternmask;
     wire  [9:0] cc_col       = charcode_l   & colourmask;
 
     // pattern_addr: text = {base[2:0], charcode[7:0], line}; graphics II uses
     // the masked 10-bit charcode against a single A13 base bit.
-    wire [13:0] pattern_addr_txt = {reg4[2:0], vram_data, line_l};
+    wire [13:0] pattern_addr_txt = {reg4[2:0], charcode_l[7:0], line_l};
     wire [13:0] pattern_addr_g2  = {reg4[2], cc_pat, line_l};
     wire [13:0] colour_addr_g2   = {reg3[7], cc_col, line_l};
 
-    reg [1:0] state;
+    reg [2:0] state;
     always @* begin
         case (state)
             S_ISSUE_NAME: vram_addr = name_addr;
-            S_WAIT_NAME:  vram_addr = mode_gfx2 ? pattern_addr_g2 : pattern_addr_txt;
+            S_WAIT_NAME:  vram_addr = name_addr;        // name byte lands this cycle
+            S_ISSUE_PAT:  vram_addr = gfx2_l ? pattern_addr_g2 : pattern_addr_txt;
             S_WAIT_PAT:   vram_addr = colour_addr_g2;   // graphics II only
             default:      vram_addr = name_addr;        // S_DECODE: next name early
         endcase
@@ -267,9 +272,13 @@ module tms9928a_render
                     state      <= S_WAIT_NAME;
                 end
                 S_WAIT_NAME: begin
-                    // vram_data == name byte; the pattern address it feeds is
-                    // already on the bus combinationally.
+                    // vram_data == name byte. Latch it; the pattern address is
+                    // issued next cycle from the register, not from the bus.
                     charcode_l <= charcode_now;
+                    state      <= S_ISSUE_PAT;
+                end
+                S_ISSUE_PAT: begin
+                    // pattern address (from charcode_l) is on the bus now.
                     state      <= gfx2_l ? S_WAIT_PAT : S_DECODE;
                 end
                 S_WAIT_PAT: begin
