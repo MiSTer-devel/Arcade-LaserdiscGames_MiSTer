@@ -31,7 +31,10 @@ module Thayers_COP
     output  [7:0] rd_data,       // IN  ($80): last byte the COP drove on L
 
     // D port, as the COP drives it (active low). b0 = timer, b1 = data ready.
-    output  [3:0] cop_d
+    output  [3:0] cop_d,
+
+    // 40-key panel matrix, 10 rows x 4 bits, active HIGH. Row r bit b = keys[r*4+b].
+    input  [39:0] keys
 );
 
 // 2 MHz enable for the COP (the core divides by 32 internally for CKI/32).
@@ -121,14 +124,61 @@ t400_core #(.opt_type_g(1), .opt_ck_div_g(3), .opt_cko_g(0)) u_cop
     .io_g_en_o (g_en),
 
     .io_in_i   (4'hF),
-    // SI is the keyboard data line (MAME read_si -> kbdata_r).  It resets HIGH there; tying it
-    // low can stall the COP's own scan loop.  No keyboard yet, so hold it idle-high.
-    .si_i      (1'b1),
+    .si_i      (kbdata),        // keyboard serial data, shifted out below
     .so_o      (),
     .so_en_o   (),
-    .sk_o      (),
+    .sk_o      (sk_from_cop),   // keyboard serial clock, driven by the COP
     .sk_en_o   ()
 );
+
+//------------------------------------------------------- Keyboard -------------------------------------------------------------//
+// The panel is a SERIAL device on the COP's SK/SI pins, not a Z80 port.  The COP
+// free-runs SK; on each FALLING edge the panel shifts out one bit of a 10-bit
+// frame (Daphne/MAME thayers.cpp kbclk_w):
+//
+//     1, 0, 1, Q9, P3, P2, P1, P0, 0, <wrap>
+//
+// Q9 is high only while row 9 is being shifted -- that is the frame sync the COP
+// locks onto, so it must be driven even when no key is down.  After bit 10 the
+// row advances and the NEW row is latched, which is also the row Q9 describes.
+wire       sk_from_cop;
+reg        sk_q     = 1'b0;
+reg  [3:0] rx_bit   = 4'd0;    // 0..10
+reg  [3:0] keylatch = 4'd0;    // current row 0..9
+reg  [3:0] keydata  = 4'd0;    // row bits, shifted out MSB first
+reg        kbdata   = 1'b1;    // -> SI, idles high
+
+wire [3:0] rx_nxt  = rx_bit + 4'd1;
+wire [3:0] kl_nxt  = (keylatch == 4'd9) ? 4'd0 : keylatch + 4'd1;
+wire [3:0] row_nxt = keys[{kl_nxt, 2'b00} +: 4];
+
+always_ff @(posedge clk_sys) begin
+    if (!reset_n) begin
+        sk_q <= 1'b0; rx_bit <= 4'd0; keylatch <= 4'd0;
+        keydata <= 4'd0; kbdata <= 1'b1;
+    end
+    else begin
+        sk_q <= sk_from_cop;
+        if (sk_q & ~sk_from_cop) begin          // falling edge of SK only
+            case (rx_nxt)
+                4'd1, 4'd3: begin kbdata <= 1'b1;                  rx_bit <= rx_nxt; end
+                4'd2, 4'd9: begin kbdata <= 1'b0;                  rx_bit <= rx_nxt; end
+                4'd4:       begin kbdata <= (keylatch == 4'd9);    rx_bit <= rx_nxt; end
+                4'd10: begin                                       // wrap + advance row
+                    kbdata   <= 1'b1;
+                    rx_bit   <= 4'd0;
+                    keylatch <= kl_nxt;
+                    keydata  <= row_nxt;
+                end
+                default: begin                                     // bits 5..8 = P3..P0
+                    kbdata  <= keydata[3];
+                    keydata <= {keydata[2:0], 1'b0};
+                    rx_bit  <= rx_nxt;
+                end
+            endcase
+        end
+    end
+end
 
 // Program ROM: 1KB, MRA index 2.
 dpram_dc #(.widthad_a(10)) cop_rom

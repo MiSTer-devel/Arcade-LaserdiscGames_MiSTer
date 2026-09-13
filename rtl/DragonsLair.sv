@@ -45,6 +45,9 @@ module DragonsLair
     input                ioctl_wr,
     input          [7:0] ioctl_index,
 
+    // Thayer's Quest 40-key panel matrix (10 rows x 4), active HIGH.
+    input         [39:0] tq_keys,
+
     input                pause,
     input                disc_hold,   // video path priming -> freeze disc motion
 
@@ -92,6 +95,8 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
     .ioctl_addr(ioctl_addr),
     .ioctl_data(ioctl_data),
     .ioctl_wr(ioctl_wr),
+
+    .tq_keys(tq_keys),
 
     .pause(pause),
     .disc_hold(disc_hold),

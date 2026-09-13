@@ -317,11 +317,14 @@ always @(posedge CLK_CORE) begin
 	old_state <= ps2_key[10];
 	if(old_state != ps2_key[10]) begin
 		case(code)
-			'h16: btn_1p_start <= pressed; // 1 = Player 1 Start
-			'h1E: btn_2p_start <= pressed; // 2 = Player 2 Start
+			// Thayer's uses 1, 2 and P as panel keys, so those three bindings are
+			// gated off for it.  Coin (5/6) and service (9) do not collide, and the
+			// real Thayer's panel has no start button -- you press a key.
+			'h16: if (!is_thayers) btn_1p_start <= pressed; // 1 = Player 1 Start
+			'h1E: if (!is_thayers) btn_2p_start <= pressed; // 2 = Player 2 Start
 			'h2E: btn_coin1    <= pressed; // 5 = Coin Input 1
 			'h36: btn_coin2    <= pressed; // 6 = Coin Input 2
-			'h4D: btn_pause    <= pressed; // P = Pause
+			'h4D: if (!is_thayers) btn_pause <= pressed; // P = Pause
 			'h46: btn_service  <= pressed; // 9 = Test Advance
 
 			'h75: btn_up       <= pressed; // up         = Up
@@ -331,6 +334,74 @@ always @(posedge CLK_CORE) begin
 			'h14: btn_fire     <= pressed; // ctrl       = Draw Slow
 			'h12: btn_fire2    <= pressed; // left shift = Draw Fast
 		endcase 
+	end
+end
+
+//------------------------------------------------------------------------------
+// Thayer's Quest 40-key panel -> real USB keyboard.
+// The panel is 10 rows x 4 bits scanned serially by the COP421 (see
+// rtl/Thayers_COP.sv).  Index = row*4 + bit, active HIGH.
+// Dual-mapped keys follow the panel legends: 1/Clear, 3/Enter, 4/Space.
+//------------------------------------------------------------------------------
+reg [39:0] tq_keys = 40'd0;
+always @(posedge CLK_CORE) begin
+	reg tq_old;
+	tq_old <= ps2_key[10];
+	if (tq_old != ps2_key[10]) begin
+		case (code)
+			'h05: tq_keys[0]  <= pressed;  // F1  Yes
+			'h15: tq_keys[1]  <= pressed;  // Q
+			'h16: tq_keys[2]  <= pressed;  // 1   / Clear
+			'h66: tq_keys[2]  <= pressed;  // Backspace -> Clear
+			'h1E: tq_keys[3]  <= pressed;  // 2
+
+			'h06: tq_keys[4]  <= pressed;  // F2  Items
+			'h1D: tq_keys[5]  <= pressed;  // W   Amulet
+			'h1C: tq_keys[6]  <= pressed;  // A
+			'h1A: tq_keys[7]  <= pressed;  // Z   Spell of Release
+
+			'h04: tq_keys[8]  <= pressed;  // F3  Drop Item
+			'h24: tq_keys[9]  <= pressed;  // E   Black Mace
+			'h1B: tq_keys[10] <= pressed;  // S   Dagger
+			'h22: tq_keys[11] <= pressed;  // X   Scepter
+
+			'h0C: tq_keys[12] <= pressed;  // F4  Give Score
+			'h2D: tq_keys[13] <= pressed;  // R   Blood Sword
+			'h23: tq_keys[14] <= pressed;  // D   Great Circlet
+			'h21: tq_keys[15] <= pressed;  // C   Spell of Seeing
+
+			'h03: tq_keys[16] <= pressed;  // F5  Replay
+			'h2C: tq_keys[17] <= pressed;  // T   Chalice
+			'h2B: tq_keys[18] <= pressed;  // F   Hunting Horn
+			'h2A: tq_keys[19] <= pressed;  // V   Shield
+
+			'h0B: tq_keys[20] <= pressed;  // F6  Combine Action
+			'h35: tq_keys[21] <= pressed;  // Y   Coins
+			'h34: tq_keys[22] <= pressed;  // G   Long Bow
+			'h32: tq_keys[23] <= pressed;  // B   Silver Wheat
+
+			'h83: tq_keys[24] <= pressed;  // F7  Save Game
+			'h3C: tq_keys[25] <= pressed;  // U   Cold Fire
+			'h33: tq_keys[26] <= pressed;  // H   Medallion
+			'h31: tq_keys[27] <= pressed;  // N   Staff
+
+			'h0A: tq_keys[28] <= pressed;  // F8  Update
+			'h43: tq_keys[29] <= pressed;  // I   Crown
+			'h3B: tq_keys[30] <= pressed;  // J   Onyx Seal
+			'h3A: tq_keys[31] <= pressed;  // M   Spell of Understanding
+
+			'h01: tq_keys[32] <= pressed;  // F9  Hint
+			'h44: tq_keys[33] <= pressed;  // O   Crystal
+			'h42: tq_keys[34] <= pressed;  // K   Orb of Quoid
+			'h25: tq_keys[35] <= pressed;  // 4   / Space
+			'h29: tq_keys[35] <= pressed;  // Spacebar -> 4/Space
+
+			'h09: tq_keys[36] <= pressed;  // F10 No
+			'h4D: tq_keys[37] <= pressed;  // P
+			'h4B: tq_keys[38] <= pressed;  // L
+			'h26: tq_keys[39] <= pressed;  // 3   / Enter
+			'h5A: tq_keys[39] <= pressed;  // Enter -> 3/Enter
+		endcase
 	end
 end
 
@@ -579,6 +650,7 @@ wire [16:0] ld_leader_w;         // .dlv header@28 -> transport park position
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 (
 	.rom_addr(dl_rom_a), .rom_data(prog_q),
+	.tq_keys(tq_keys),
 	.reset(~reset & brd[BRD_DL]),   // active-low; held in reset while another board runs
 
 	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)

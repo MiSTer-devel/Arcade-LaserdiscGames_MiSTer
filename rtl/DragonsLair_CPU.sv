@@ -80,6 +80,10 @@ module DragonsLair_CPU
     input   [7:0] ioctl_data,
     input         ioctl_wr,
 
+    // Thayer's Quest 40-key panel matrix (10 rows x 4), active HIGH.  Unused by
+    // Dragon's Lair and Space Ace, which have no keyboard.
+    input  [39:0] tq_keys,
+
     input         pause,
     input         disc_hold,      // video path priming -> freeze disc motion
 
@@ -501,7 +505,8 @@ Thayers_COP #(.CLK_HZ(CLK_HZ)) u_cop
     .clk_sys(clk_sys), .reset_n(reset),
     .rom_cs_i(cop_rom_cs_i), .ioctl_addr(ioctl_addr), .ioctl_data(ioctl_data), .ioctl_wr(ioctl_wr),
     .z80_dout(cpu_Dout), .wr_g(cs_tq_copg), .wr_data(cs_tq_copwr), .rd_data(cop_rd),
-    .cop_d(cop_d)
+    .cop_d(cop_d),
+    .keys(tq_keys)
 );
 
 // Four LATCHED active-low sources ORed onto the Z80 IRQ.  Each is asserted by its hardware and
