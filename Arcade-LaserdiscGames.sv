@@ -108,6 +108,22 @@ assign brd[BRD_SDQ]   = is_sdq;
 assign brd[BRD_DL2]   = is_dl2;
 assign brd[BRD_DL]    = ~|brd[3:1];
 
+// ---- shared program ROM ----
+// Every board used to carry its own 64K dpram: four copies, 256 M10K, of which
+// at most one is ever addressed.  Pooling them frees ~192 M10K.  Each board now
+// presents a 16-bit read address and takes the shared data back.
+wire [15:0] dl_rom_a, cl_rom_a, sd_rom_a, d2_rom_a;
+wire  [7:0] prog_q;
+wire [15:0] prog_rd_a = brd[BRD_DL2]   ? d2_rom_a :
+                        brd[BRD_CLIFF] ? cl_rom_a :
+                        brd[BRD_SDQ]   ? sd_rom_a : dl_rom_a;
+// Program bytes occupy a different slice of ioctl index 0 per game, so the write
+// MUST be gated per board -- ungated, Super Don's char and PROM data would land
+// on top of program space.  game_mod is latched from index 1, which every MRA
+// places BEFORE index 0; reversing that order in an MRA truncates the ROM here.
+wire [24:0] prog_limit = is_sdq ? 25'h04000 : 25'h10000;
+wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_limit);
+
 // LED bar off -> the video gets the band's rows back (full screen).
 // Cliff Hanger has no scoreboard at all: it draws lives and score through the
 // TMS9928A overlay, so the band is meaningless there and is forced off.
@@ -548,6 +564,7 @@ wire [16:0] ld_leader_w;         // .dlv header@28 -> transport park position
 //Instantiate Dragon's Lair top-level game module
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 (
+	.rom_addr(dl_rom_a), .rom_data(prog_q),
 	.reset(~reset & brd[BRD_DL]),   // active-low; held in reset while another board runs
 
 	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)
@@ -595,6 +612,7 @@ wire               seek_pulse_cl, play_end_cl, ld_playing_cl, dbg_led_cl;
 
 CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 (
+	.rom_addr(cl_rom_a), .rom_data(prog_q),
 	.reset(~reset & brd[BRD_CLIFF]),
 	.clk_sys(CLK_CORE),
 
@@ -639,6 +657,7 @@ wire               seek_pulse_sd, play_end_sd, ld_playing_sd, dbg_led_sd;
 
 SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 (
+	.rom_addr(sd_rom_a), .rom_data(prog_q),
 	.reset(~reset & brd[BRD_SDQ]),
 	.clk_sys(CLK_CORE),
 
@@ -697,6 +716,7 @@ wire         [7:0] d2_txt_glyph, d2_txt_x, d2_txt_y;
 
 DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 (
+	.rom_addr(d2_rom_a), .rom_data(prog_q),
 	.core_clk(CLK_CORE),
 	.reset_n(~reset & brd[BRD_DL2]),
 
@@ -772,6 +792,15 @@ end
 // (sys_top.v: led_disk[1] ? ~led_disk[0] : ~(led_disk[0] | gp_out[29])).
 assign led_disk_w = is_dl2 ? {1'b1, |d2_led_rx_cnt} : 2'b00;  // D7, Comm2 RX from the player
 assign led_user_w = is_dl2 ? |d2_led_tx_cnt : dbg_led;   // D6, Comm2 TX to the player
+
+// One 64K program ROM for every board.  Only one board leaves reset, so its
+// address wins the mux above and the other boards' addresses are don't-care.
+dpram_dc #(.widthad_a(16)) u_prog_rom (
+    .clock_a(CLK_CORE), .address_a(prog_rd_a), .q_a(prog_q),
+    .wren_a(1'b0), .data_a(8'd0),
+    .clock_b(CLK_CORE), .address_b(ioctl_addr[15:0]), .data_b(ioctl_dout),
+    .wren_b(prog_we), .q_b()
+);
 
 // ---- shared outputs: whichever board is running ----
 assign audio_l           = brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_l_cl    : brd[BRD_SDQ] ? audio_l_sd    : audio_l_dl;

@@ -72,6 +72,10 @@ module DragonsLair_CPU
     // Main program ROM download (index 0) -> 0x0000-0x9FFF
     input         rom_cs_i,
     input         cop_rom_cs_i,    // MRA index 2 -> COP421 program ROM
+    // ---- shared program ROM ----
+    output [15:0] rom_addr,
+    input   [7:0] rom_data,
+
     input  [24:0] ioctl_addr,
     input   [7:0] ioctl_data,
     input         ioctl_wr,
@@ -271,22 +275,12 @@ end
 
 //-------------------------------------------------------- Program ROM ---------------------------------------------------------//
 
-// Single 64KB dpram covering the 0x0000-0x9FFF program space.  Loaded directly
-// by ioctl (index 0); read side gated by cs_rom in the data mux above.
-dpram_dc #(.widthad_a(16)) prog_rom
-(
-    .clock_a(clk_sys),
-    .address_a(cpu_A[15:0]),
-    .data_a(8'd0),
-    .wren_a(1'b0),
-    .q_a(rom_D),
-
-    .clock_b(clk_sys),
-    .address_b(ioctl_addr[15:0]),
-    .data_b(ioctl_data),
-    .wren_b(ioctl_wr & rom_cs_i),
-    .q_b()
-);
+// Program ROM lives at TOP LEVEL and is shared by every board: only one board
+// runs at a time, so private 64K copies cost 192 M10K for nothing.
+// Dragon's Lair / Space Ace / Thayer's Quest: 40K at CPU 0000-9FFF.
+// Read side still gated by cs_rom in the data mux above.
+assign rom_addr = cpu_A[15:0];
+assign rom_D    = rom_data;
 
 //---------------------------------------------------------- Work RAM ----------------------------------------------------------//
 

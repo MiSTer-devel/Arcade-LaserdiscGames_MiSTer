@@ -29,6 +29,10 @@ module SuperDon
     output signed [15:0] sound_l,
     output signed [15:0] sound_r,
 
+    // ---- shared program ROM ----
+    output        [15:0] rom_addr,
+    input          [7:0] rom_data,
+
     input         [24:0] ioctl_addr,
     input          [7:0] ioctl_data,
     input                ioctl_wr,
@@ -107,12 +111,11 @@ module SuperDon
 
     wire [7:0] rom_D, ram_D, vram_cpu_D;
 
-    dpram_dc #(.widthad_a(14)) u_rom (
-        .clock_a(clk_sys), .address_a(cpu_A[13:0]), .q_a(rom_D),
-        .wren_a(1'b0), .data_a(8'd0),
-        .clock_b(clk_sys), .address_b(ioctl_addr[13:0]), .data_b(ioctl_data),
-        .wren_b(ld_prog), .q_b()
-    );
+    // Program ROM lives at TOP LEVEL and is shared by every board: only one
+    // board runs at a time, so private 64K copies cost 192 M10K for nothing.
+    // Super Don: 16K at CPU 0000-3FFF, so the top two address bits are zero.
+    assign rom_addr = {2'b00, cpu_A[13:0]};
+    assign rom_D    = rom_data;
 
     dpram_dc #(.widthad_a(11)) u_ram (
         .clock_a(clk_sys), .address_a(cpu_A[10:0]), .q_a(ram_D),

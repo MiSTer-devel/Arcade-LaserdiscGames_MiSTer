@@ -28,6 +28,10 @@ module CliffHanger
     output signed [15:0] sound_l,
     output signed [15:0] sound_r,
 
+    // ---- shared program ROM ----
+    output        [15:0] rom_addr,
+    input          [7:0] rom_data,
+
     input         [24:0] ioctl_addr,
     input          [7:0] ioctl_data,
     input                ioctl_wr,
@@ -98,12 +102,11 @@ module CliffHanger
     wire [7:0] rom_D, ram_D;
     wire rom_ld = (ioctl_index == 8'd0) & ioctl_wr;
 
-    dpram_dc #(.widthad_a(16)) u_rom (
-        .clock_a(clk_sys), .address_a(cpu_A), .q_a(rom_D),
-        .wren_a(1'b0), .data_a(8'd0),
-        .clock_b(clk_sys), .address_b(ioctl_addr[15:0]), .data_b(ioctl_data),
-        .wren_b(rom_ld), .q_b()
-    );
+    // Program ROM lives at TOP LEVEL and is shared by every board: only one
+    // board runs at a time, so private 64K copies cost 192 M10K for nothing.
+    // Cliff Hanger / Goal To Go: 40K at CPU 0000-9FFF.
+    assign rom_addr = cpu_A;
+    assign rom_D    = rom_data;
 
     dpram_dc #(.widthad_a(12)) u_ram (
         .clock_a(clk_sys), .address_a(cpu_A[11:0]), .q_a(ram_D),

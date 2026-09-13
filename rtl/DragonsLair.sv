@@ -35,6 +35,10 @@ module DragonsLair
     output signed [15:0] sound_l,
     output signed [15:0] sound_r,
 
+    // ---- shared program ROM ----
+    output        [15:0] rom_addr,
+    input          [7:0] rom_data,
+
     // ROM loading
     input         [24:0] ioctl_addr,
     input          [7:0] ioctl_data,
@@ -79,6 +83,9 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
     .is_spaceace(is_spaceace),
 
     .sound(snd),
+
+    .rom_addr(rom_addr),
+    .rom_data(rom_data),
 
     .rom_cs_i(rom_cs),
     .cop_rom_cs_i(cop_rom_cs),

@@ -50,6 +50,10 @@ module DragonsLair2
     input          [3:0] cab,             // {coin2, coin1, start2, start1} active HIGH
     input                service,         // service switch, active HIGH here
 
+    // ---- shared program ROM ----
+    output        [15:0] rom_addr,
+    input          [7:0] rom_data,
+
     // ---- ROM download ----
     input         [24:0] ioctl_addr,
     input          [7:0] ioctl_data,
@@ -175,12 +179,11 @@ module DragonsLair2
     // 64KB at 0xF0000. Loaded from ioctl index 0.
     wire        in_rom = (req_addr[19:16] == 4'hF);
     wire [7:0]  rom_q;
-    dpram_dc #(.widthad_a(16)) prog_rom (
-        .clock_a(core_clk), .address_a(req_addr[15:0]), .data_a(8'd0),
-        .wren_a(1'b0), .q_a(rom_q),
-        .clock_b(core_clk), .address_b(ioctl_addr[15:0]), .data_b(ioctl_data),
-        .wren_b(ioctl_wr & (ioctl_index == 8'd0)), .q_b()
-    );
+    // Program ROM lives at TOP LEVEL and is shared by every board: only one
+    // board runs at a time, so private 64K copies cost 192 M10K for nothing.
+    // DL2: full 64K IPL, CPU F0000-FFFFF.
+    assign rom_addr = req_addr[15:0];
+    assign rom_q    = rom_data;
 
     //--------------------------------------------------- RAM (external) ------
     // req_addr is the 8088's 20-bit physical address; the RAM port is 24 bits.
@@ -189,7 +192,7 @@ module DragonsLair2
     assign ram_din  = req_wdata;
     // Fire once per cycle, only while the glue is asking and RAM is idle.
     reg ram_started;
-    reg rom_wait;   // one-cycle wait for the registered ROM output
+    reg [1:0] rom_wait;   // wait states for the shared ROM's registered output
     assign ram_rd = req & is_memrd & ~in_rom & ~ram_started & ~ram_busy;
     assign ram_wr = req & is_memwr & ~in_rom & ~ram_started & ~ram_busy;
 
@@ -603,9 +606,9 @@ module DragonsLair2
     always @(posedge core_clk) begin
         req_ack <= 1'b0;
         if (!reset_n) begin
-            ram_started <= 1'b0; req_rdata <= 8'hFF; rom_wait <= 1'b0;
+            ram_started <= 1'b0; req_rdata <= 8'hFF; rom_wait <= 2'd0;
         end else begin
-            if (!req) begin ram_started <= 1'b0; rom_wait <= 1'b0; end
+            if (!req) begin ram_started <= 1'b0; rom_wait <= 2'd0; end
 
             if (req && !req_ack) begin
                 if (is_iord || is_iowr) begin
@@ -615,7 +618,13 @@ module DragonsLair2
                     // dpram_dc REGISTERS its output, so rom_q trails req_addr by
                     // one clock. Sampling it the same cycle returns the previous
                     // byte and the CPU executes garbage. Give it the cycle.
-                    if (!rom_wait) rom_wait <= 1'b1;
+                    // Two cycles, not one: the ROM is now the shared top-level
+                    // block, so rom_q crosses a wide cascade mux and the die to
+                    // get here. This is the only fetch path sampled at full
+                    // clk_sys -- the Z80 boards are CE-gated and have ~20
+                    // clocks. dl2_bus is self-timed (ready_in holds the 8088),
+                    // so the extra cycle costs a stall, never correctness.
+                    if (rom_wait != 2'd2) rom_wait <= rom_wait + 2'd1;
                     else begin
                         req_rdata <= rom_q;
                         req_ack   <= 1'b1;
