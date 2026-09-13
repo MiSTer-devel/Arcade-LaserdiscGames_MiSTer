@@ -194,6 +194,12 @@ wire cs_tq_ldwr  = tq_io & ~n_wr & (io_A == 8'hF4);
 wire cs_tq_ldctl = tq_io & ~n_wr & (io_A == 8'hF5);
 wire cs_tq_den1  = tq_io & ~n_wr & (io_A == 8'hF6);
 wire cs_tq_den2  = tq_io & ~n_wr & (io_A == 8'hF7);
+// SSI-263 speech chip, ports 0x00-0x07 (MAME thayers.cpp maps all eight; the
+// chip ignores the register address on reads).  The core latches write data on
+// the DESELECT edge, per the datasheet, so the select must FALL at the end of
+// each Z80 IO cycle -- hence the rd/wr strobe term.
+wire ssi_sel     = tq_io & (io_A[7:3] == 5'd0) & (~n_rd | ~n_wr);
+wire cs_tq_ssird = tq_io & ~n_rd & (io_A[7:3] == 5'd0);
 
 //--------------------------------------------------------- CPU Data Mux -------------------------------------------------------//
 
@@ -241,6 +247,9 @@ wire [7:0] cpu_Din =
     cs_tq_ldrd        ? ld_status   :   // 0xF0 laserdisc data
     cs_tq_f1          ? tq_f1_bus   :   // 0xF1
     cs_tq_f2          ? dsw[7:0]    :   // 0xF2 DSWA
+    // 0x00-0x07: only D7 is driven by the SSI-263, and it reads back as the
+    // inverse of A/_R.  The other seven are open bus on the real part.
+    cs_tq_ssird       ? {ssi_d7_out, 7'h7F} :
     8'hFF;
 
 //----------------------------------------------------- AY 1 T-state WAIT ------------------------------------------------------//
@@ -337,7 +346,50 @@ jt49_bus #(.COMP(3'b010)) ay_chip
 // Mix three unsigned 8-bit channels -> signed 16-bit (as in the Kangaroo copy).
 wire [9:0] ay_sum = {2'b00, ay_A} + {2'b00, ay_B} + {2'b00, ay_C};
 wire signed [15:0] ay_signed = {1'b0, ay_sum, 5'd0} - 16'sd12288;
-assign sound = ay_signed;
+
+//----------------------------------------------------- SSI-263 speech ---------------------------------------------------------//
+// Thayer's Quest only.  Real formant synthesiser (rtl/sound/sc02, Ian's core):
+// five cascaded switched-capacitor sections reimplemented digitally, register
+// behaviour from the 1985 Votrax SC-02 / SSI-263A datasheet.
+//
+// XCK is 860 kHz (MAME thayers.cpp: SSI263HLE(config, m_ssi, 860000)).  The core
+// treats XCK as data and edge-detects it, so feed it a real square wave; the
+// filter sample rate Fs = XCK / (2*(256-FF)) falls out of that, which is how the
+// Filter Frequency register works for free.
+//
+// sc02_core is instantiated directly rather than sc02_top: the wrapper presents
+// a bidirectional D7 and an open-collector A/R as tri-states, which do not
+// synthesise as internal Quartus nets.  The core exposes the enables explicitly.
+localparam [11:0] XCK_HALF = CLK_HZ / 32'd1_720_000;   // half period of 860 kHz
+reg [11:0] xck_cnt = 12'd0;
+reg        xck     = 1'b0;
+always_ff @(posedge clk_sys) begin
+    if (!reset) begin xck_cnt <= 12'd0; xck <= 1'b0; end
+    else if (xck_cnt >= XCK_HALF - 12'd1) begin xck_cnt <= 12'd0; xck <= ~xck; end
+    else xck_cnt <= xck_cnt + 12'd1;
+end
+
+wire               ssi_d7_out, ssi_d7_oe;
+wire signed [15:0] ssi_pcm;
+
+sc02_core #(.ROMFILE("rtl/sound/sc02/sc02_phoneme_rom.bin")) u_ssi263 (
+    .clk(clk_sys), .rst_n(reset),
+    .d_in(cpu_Dout), .d7_out(ssi_d7_out), .d7_oe(ssi_d7_oe),
+    .rs(io_A[2:0]),
+    .r_w(n_wr),              // 1 = read; n_wr is low only during a write
+    .cs0(ssi_sel), .cs1_n(1'b0),
+    .pd_rst_n(reset),
+    .xck(xck), .div2(1'b0),  // a real 860 kHz wave, so no internal divide
+    .ar_n(), .ar_oe(ssi_ar_oe),
+    .audio_pcm(ssi_pcm), .audio_valid(), .audio_sd(),
+    .rom_row_flip(1'b0)      // die read is correct as transcribed, see Ian's README
+);
+
+// Speech and the AY sum at a resistor junction on the real board.  Both legs are
+// halved so a loud phrase over a loud AY cannot clip.  Dragon's Lair and Space
+// Ace keep the un-halved AY path exactly as they have it today.
+wire signed [16:0] tq_snd_sum = {ay_signed[15], ay_signed} + {ssi_pcm[15], ssi_pcm};
+assign sound = is_thayers ? tq_snd_sum[16:1] : ay_signed;
 
 
 // Laserdisc player: one shared transport (rtl/ldp/ldp_transport.sv) plus a protocol
@@ -458,8 +510,15 @@ Thayers_COP #(.CLK_HZ(CLK_HZ)) u_cop
 // It is ASSERTED at reset, so Thayer's first EI takes an interrupt immediately, and OUT 0xF3
 // both acks it and re-arms the one-shot.
 localparam [19:0] PERIODIC_TICKS = (CLK_HZ / 32'd1_000_000) * 20'd8250;
-localparam        ssi_req        = 1'b1;   // SSI-263 A/_R -- not implemented, held inactive
 localparam        cart_present   = 1'b1;   // _CART PRES -- no cartridge fitted
+
+// SSI-263 A/_R (speech request), active LOW, driven by the real synthesis core
+// further down.  Open collector on the real board: the chip pulls the line low
+// to ask for the next phoneme and the board pull-up returns it high.  This was
+// a localparam tied permanently inactive, so Thayer's waited forever on the
+// first phrase it tried to speak -- the disc-status announcement at boot.
+wire       ssi_ar_oe;
+wire       ssi_req      = ~ssi_ar_oe;
 
 reg        timer_int    = 1'b1;
 reg        data_rdy_int = 1'b1;
