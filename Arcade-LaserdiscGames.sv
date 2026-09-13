@@ -93,6 +93,12 @@ wire is_cliff    = (game_mod == 8'd3);   // Cliff Hanger: its own board, see rtl
 wire is_dl2      = (game_mod == 8'd4);   // Dragon's Lair II: 8088 board, see rtl/dlair2/
 wire is_gtg      = (game_mod == 8'd5);   // Goal To Go: same PCB as Cliff Hanger
 wire is_sdq      = (game_mod == 8'd6);   // Super Don Quix-ote: Z80 + LD-V1000, see rtl/superdon/
+wire is_mach3    = (game_mod == 8'd7);   // M.A.C.H. 3: 8088 + PR-8210, see rtl/mach3/
+wire is_cobram3  = (game_mod == 8'd8);   // Cobra Command, M.A.C.H. 3 conversion kit
+wire is_usvs     = (game_mod == 8'd9);   // Us vs Them: same board again
+// One Gottlieb/Mylstar rev-2 board runs all three; MAME's cobram3 config differs
+// from g2laser only in sound-board mods.  Us vs Them reads a third button.
+wire mach3_board = is_mach3 | is_cobram3 | is_usvs;
 // Cliff Hanger and Goal To Go are the same board; everything that gates the board
 // or muxes its outputs keys on this, not on is_cliff.
 wire cliff_board = is_cliff | is_gtg;
@@ -101,27 +107,30 @@ wire cliff_board = is_cliff | is_gtg;
 // and drives the shared outputs below. Dragon's Lair is DERIVED from the others
 // rather than carrying an exclusion list, so adding a board cannot leave it
 // running alongside the new one.
-localparam BRD_DL = 0, BRD_CLIFF = 1, BRD_SDQ = 2, BRD_DL2 = 3;
-wire [3:0] brd;
+localparam BRD_DL = 0, BRD_CLIFF = 1, BRD_SDQ = 2, BRD_DL2 = 3, BRD_MACH3 = 4;
+wire [4:0] brd;
 assign brd[BRD_CLIFF] = cliff_board;
 assign brd[BRD_SDQ]   = is_sdq;
 assign brd[BRD_DL2]   = is_dl2;
-assign brd[BRD_DL]    = ~|brd[3:1];
+assign brd[BRD_MACH3] = mach3_board;
+assign brd[BRD_DL]    = ~|brd[4:1];
 
 // ---- shared program ROM ----
 // Every board used to carry its own 64K dpram: four copies, 256 M10K, of which
 // at most one is ever addressed.  Pooling them frees ~192 M10K.  Each board now
 // presents a 16-bit read address and takes the shared data back.
-wire [15:0] dl_rom_a, cl_rom_a, sd_rom_a, d2_rom_a;
+wire [15:0] dl_rom_a, cl_rom_a, sd_rom_a, d2_rom_a, m3_rom_a;
 wire  [7:0] prog_q;
-wire [15:0] prog_rd_a = brd[BRD_DL2]   ? d2_rom_a :
+wire [15:0] prog_rd_a = brd[BRD_MACH3] ? m3_rom_a :
+                        brd[BRD_DL2]   ? d2_rom_a :
                         brd[BRD_CLIFF] ? cl_rom_a :
                         brd[BRD_SDQ]   ? sd_rom_a : dl_rom_a;
 // Program bytes occupy a different slice of ioctl index 0 per game, so the write
 // MUST be gated per board -- ungated, Super Don's char and PROM data would land
-// on top of program space.  game_mod is latched from index 1, which every MRA
-// places BEFORE index 0; reversing that order in an MRA truncates the ROM here.
-wire [24:0] prog_limit = is_sdq ? 25'h04000 : 25'h10000;
+// on top of program space, and Mach 3's tile and sprite data would wrap round
+// the 64K ROM and overwrite the program.  game_mod is latched from index 1,
+// which every MRA places BEFORE index 0; reversing that order truncates the ROM.
+wire [24:0] prog_limit = mach3_board ? 25'h0A000 : is_sdq ? 25'h04000 : 25'h10000;
 wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_limit);
 
 // LED bar off -> the video gets the band's rows back (full screen).
@@ -132,7 +141,10 @@ wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_l
 // dlair2.cpp instantiates no such device. Credits appear in the LDP-1450 text
 // overlay when the game wants them seen. Turning the band off also returns its
 // BAND_H rows to the picture and switches VIDEO_ARY back to 480.
-wire band_off = status[20] | cliff_board | is_dl2 | is_sdq;
+// M.A.C.H. 3 / Cobra Command / Us vs Them draw score and lives through their own
+// tile+sprite overlay genlocked onto the disc picture, so the band would only
+// duplicate it and steal rows from the game's own display.
+wire band_off = status[20] | cliff_board | is_dl2 | is_sdq | mach3_board;
 wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
@@ -468,8 +480,10 @@ wire [15:0] ovl_sy     = crt_mode ? ovl_vrel : {1'b0, ovl_vrel[15:1]};
 wire        d2_lit_g     = d2_txt_lit       & brd[BRD_DL2];
 wire        cliff_op_g   = cliff_ovl_opaque & brd[BRD_CLIFF];
 wire        sdq_op_g     = sdq_ovl_opaque   & brd[BRD_SDQ];
-wire [23:0] ovl_bus_rgb    = d2_lit_g ? 24'hFFFFFF : sdq_op_g ? sdq_ovl_rgb : ovl_rgb;
-wire        ovl_bus_opaque = d2_lit_g | cliff_op_g | sdq_op_g;
+wire        m3_op_g      = m3_ovl_opaque    & brd[BRD_MACH3];
+wire [23:0] ovl_bus_rgb    = d2_lit_g ? 24'hFFFFFF : sdq_op_g ? sdq_ovl_rgb :
+                             m3_op_g  ? m3_ovl_rgb : ovl_rgb;
+wire        ovl_bus_opaque = d2_lit_g | cliff_op_g | sdq_op_g | m3_op_g;
 
 wire  [7:0] comp_r = band_lit ? 8'hFF : ovl_bus_opaque ? ovl_bus_rgb[23:16] : (seek_black ? 8'h00 : rr_r);
 wire  [7:0] comp_g = band_lit ? 8'h00 : ovl_bus_opaque ? ovl_bus_rgb[15:8]  : (seek_black ? 8'h00 : rr_g);
@@ -793,6 +807,92 @@ end
 assign led_disk_w = is_dl2 ? {1'b1, |d2_led_rx_cnt} : 2'b00;  // D7, Comm2 RX from the player
 assign led_user_w = is_dl2 ? |d2_led_tx_cnt : dbg_led;   // D6, Comm2 TX to the player
 
+//------------------------------------------------------------------------------
+// M.A.C.H. 3 / Cobra Command / Us vs Them (Mylstar) — 8088 + Pioneer PR-8210.
+// Tile+sprite overlay genlocked onto the disc picture; the board presents RGB
+// already in the shared overlay space.  Sound board (2x 6502 + 2x AY8913 +
+// SP0250) is not fitted yet, so the audio legs are silent.
+//------------------------------------------------------------------------------
+wire signed [15:0] audio_l_m3 = 16'sd0, audio_r_m3 = 16'sd0;
+wire        [16:0] ld_frame_m3;
+wire               seek_pulse_m3, play_end_m3, ld_playing_m3;
+wire               m3_blip, m3_overlay_en, m3_bg_pri, m3_sprbank, m3_video_en;
+wire        [23:0] m3_ovl_rgb;
+wire               m3_ovl_opaque;
+wire        [11:0] m3_vram_a, m3_chram_a;
+wire         [7:0] m3_vram_d, m3_spram_a, m3_spram_d;
+wire               m3_pal_we;
+wire         [4:0] m3_pal_wa;
+wire         [7:0] m3_pal_wd;
+wire         [7:0] m3_snd_data;
+wire               m3_snd_stb;
+wire        [19:0] m3_tgt_addr;
+wire               m3_tgt_rd;
+
+// IN1: b0 SERVICE is active LOW, b5 TILT is active LOW, the rest active HIGH.
+wire [7:0] m3_in1 = {m_start2, m_start1, 1'b1, 1'b0, m_coin2, m_coin1, m_skill3, ~m_service};
+// IN4: Us vs Them reads THREE buttons at b4-b6; the other two use b5-b6.
+wire [7:0] m3_in4 = is_usvs
+    ? {1'b0, m_skill2, m_skill1,  m_action1, m_right1, m_left1, m_down1, m_up1}
+    : {1'b0, m_skill1, m_action1, 1'b0,      m_right1, m_left1, m_down1, m_up1};
+
+Mach3 #(.CLK_HZ(CORE_CLK_HZ)) mach3_inst
+(
+    .rom_addr(m3_rom_a), .rom_data(prog_q),
+    .core_clk(CLK_CORE), .reset_n(~reset & brd[BRD_MACH3]),
+    .in1(m3_in1), .in4(m3_in4), .dsw(dip_sw[0]),
+    .track_h(8'hFF), .track_v(8'hFF),     // trackball unused by all three games
+    .ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
+    .ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
+    .ld_blip(m3_blip), .ld_frame(ld_frame_m3),
+    .ld_video_active(~fb_seek_hold),      // no picture while the seek holds the framebuffer
+    .ld_overlay_en(m3_overlay_en),
+    .bg_priority(m3_bg_pri), .spritebank(m3_sprbank), .video_en(m3_video_en),
+    .tgt_addr(m3_tgt_addr), .tgt_data(8'hFF), .tgt_rd(m3_tgt_rd), .tgt_ready(1'b0),
+    .snd_data(m3_snd_data), .snd_stb(m3_snd_stb),
+    .vram_rd_a(m3_vram_a), .vram_rd_d(m3_vram_d),
+    .chram_rd_a(m3_chram_a), .chram_rd_d(),   // char RAM unused: tiles come from ROM
+    .spram_rd_a(m3_spram_a), .spram_rd_d(m3_spram_d),
+    .pal_we(m3_pal_we), .pal_wa(m3_pal_wa), .pal_wd(m3_pal_wd),
+    .vblank(rr_vblank),
+    .dbg_addr(), .dbg_type(), .dbg_halt()
+);
+
+mach3_video mach3_gfx
+(
+    .core_clk(CLK_CORE), .reset_n(~reset & brd[BRD_MACH3]),
+    .ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
+    .ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
+    .bg_priority(m3_bg_pri), .spritebank(m3_sprbank),
+    .video_en(m3_video_en), .genlock(m3_overlay_en),
+    .pal_we(m3_pal_we), .pal_wa(m3_pal_wa), .pal_wd(m3_pal_wd),
+    .vram_rd_a(m3_vram_a), .vram_rd_d(m3_vram_d),
+    .spram_rd_a(m3_spram_a), .spram_rd_d(m3_spram_d),
+    .ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+    .ovl_rgb(m3_ovl_rgb), .ovl_opaque(m3_ovl_opaque)
+);
+
+// Gottlieb drives the PR-8210 blip from a 555, not a bit-banged loop like
+// Cliff's, so this instance needs the wider one/zero boundary.  Every other
+// ldp_top keeps the default and is unchanged.
+ldp_top #(.CLK_HZ(CORE_CLK_HZ), .BIT_ONE_US(32'd1497)) mach3_ldp
+(
+    .clk(CLK_CORE), .reset_n(~reset & brd[BRD_MACH3]),
+    .player_sel(4'd2),                       // PLAYER_PR8210
+    .cmd_stb(1'b0), .cmd_byte(8'd0),
+    .blip(m3_blip),
+    .status(), .status_strobe(), .command_strobe(), .ready_n(), .frame_valid(),
+    .tx_valid(), .tx_byte(), .tx_pop(1'b0),
+    .search_cmd_o(seek_pulse_m3), .play_end_o(play_end_m3),
+    .curr_frame(ld_frame_m3),
+    .pause(pause_cpu), .disc_hold(fb_seek_hold), .playing(ld_playing_m3),
+    .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
+    .post_seek_frames(post_seek_eff),
+    .disc_2997(disc_2997_w),
+    .park_frame(ld_leader_w), .status_rd(1'b0),
+    .txt_we(), .txt_line(), .txt_col(), .txt_glyph(), .txt_on(), .txt_x(), .txt_y()
+);
+
 // One 64K program ROM for every board.  Only one board leaves reset, so its
 // address wins the mux above and the other boards' addresses are don't-care.
 dpram_dc #(.widthad_a(16)) u_prog_rom (
@@ -803,15 +903,15 @@ dpram_dc #(.widthad_a(16)) u_prog_rom (
 );
 
 // ---- shared outputs: whichever board is running ----
-assign audio_l           = brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_l_cl    : brd[BRD_SDQ] ? audio_l_sd    : audio_l_dl;
-assign audio_r           = brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_r_cl    : brd[BRD_SDQ] ? audio_r_sd    : audio_r_dl;
-assign ld_curr_frame_top = brd[BRD_DL2] ? ld_frame_d2   : brd[BRD_CLIFF] ? ld_frame_cl   : brd[BRD_SDQ] ? ld_frame_sd   : ld_frame_dl;
-assign fb_seek_pulse     = brd[BRD_DL2] ? seek_pulse_d2 : brd[BRD_CLIFF] ? seek_pulse_cl : brd[BRD_SDQ] ? seek_pulse_sd : seek_pulse_dl;
-assign fb_play_end       = brd[BRD_DL2] ? play_end_d2   : brd[BRD_CLIFF] ? play_end_cl   : brd[BRD_SDQ] ? play_end_sd   : play_end_dl;
-assign ld_playing_top    = brd[BRD_DL2] ? ld_playing_d2 : brd[BRD_CLIFF] ? ld_playing_cl : brd[BRD_SDQ] ? ld_playing_sd : ld_playing_dl;
+assign audio_l           = brd[BRD_MACH3] ? audio_l_m3   : brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_l_cl    : brd[BRD_SDQ] ? audio_l_sd    : audio_l_dl;
+assign audio_r           = brd[BRD_MACH3] ? audio_r_m3   : brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_r_cl    : brd[BRD_SDQ] ? audio_r_sd    : audio_r_dl;
+assign ld_curr_frame_top = brd[BRD_MACH3] ? ld_frame_m3  : brd[BRD_DL2] ? ld_frame_d2   : brd[BRD_CLIFF] ? ld_frame_cl   : brd[BRD_SDQ] ? ld_frame_sd   : ld_frame_dl;
+assign fb_seek_pulse     = brd[BRD_MACH3] ? seek_pulse_m3: brd[BRD_DL2] ? seek_pulse_d2 : brd[BRD_CLIFF] ? seek_pulse_cl : brd[BRD_SDQ] ? seek_pulse_sd : seek_pulse_dl;
+assign fb_play_end       = brd[BRD_MACH3] ? play_end_m3  : brd[BRD_DL2] ? play_end_d2   : brd[BRD_CLIFF] ? play_end_cl   : brd[BRD_SDQ] ? play_end_sd   : play_end_dl;
+assign ld_playing_top    = brd[BRD_MACH3] ? ld_playing_m3: brd[BRD_DL2] ? ld_playing_d2 : brd[BRD_CLIFF] ? ld_playing_cl : brd[BRD_SDQ] ? ld_playing_sd : ld_playing_dl;
 // DL2 drives LED_USER from its own Comm2 counters below, so its leg is 0 rather than
 // falling through to Dragon's Lair's heartbeat.
-assign dbg_led           = brd[BRD_DL2] ? 1'b0          : brd[BRD_CLIFF] ? dbg_led_cl    : brd[BRD_SDQ] ? dbg_led_sd    : dbg_led_dl;
+assign dbg_led           = brd[BRD_MACH3] ? 1'b0 : brd[BRD_DL2] ? 1'b0          : brd[BRD_CLIFF] ? dbg_led_cl    : brd[BRD_SDQ] ? dbg_led_sd    : dbg_led_dl;
 // The scoreboard band and the Space Ace skill select belong to the Dragon's Lair board only.
 assign led_digits_flat   = brd[BRD_DL] ? led_digits_dl : 64'd0;
 assign skill_level       = brd[BRD_DL] ? skill_dl      : 2'd0;

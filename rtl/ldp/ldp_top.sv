@@ -15,7 +15,11 @@
 //============================================================================
 module ldp_top
 #(
-    parameter [31:0] CLK_HZ = 32'd80_000_000
+    parameter [31:0] CLK_HZ = 32'd80_000_000,
+    // PR-8210 one/zero bit boundary, microseconds.  Default suits Cliff Hanger
+    // and Goal To Go, which bit-bang the blip (~705us zero / ~1035us one).
+    // Gottlieb drives it from a 555: 998us = 0, 1996us = 1, boundary ~1497.
+    parameter [31:0] BIT_ONE_US = 32'd870
 )
 (
     input             clk,
@@ -138,7 +142,7 @@ module ldp_top
     // ---- PR-8210 ----
     wire        fvalid_pr82;
     wire [9:0]  word_pr82;
-    ldp_pr8210 #(.CLK_HZ(CLK_HZ)) u_pr8210 (
+    ldp_pr8210 #(.CLK_HZ(CLK_HZ), .BIT_ONE_US(BIT_ONE_US)) u_pr8210 (
         .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_pr8210),
         .blip(blip),
         .cmd_action(act_pr82), .cmd_op(op_pr82), .cmd_arg(arg_pr82),
