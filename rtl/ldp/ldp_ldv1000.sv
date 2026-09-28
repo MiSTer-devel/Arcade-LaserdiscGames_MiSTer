@@ -44,6 +44,7 @@ module ldp_ldv1000
 `include "ldp_bus.svh"
 
     reg [7:0] status_r;                 // player state byte, behind the 0xC2 queue
+    reg       search_pend;              // SEARCH/SKIP accepted, transport not yet landed
 
     // ---- status codes (ldv1000hle.h) ----
     localparam [7:0] ST_PARK=8'h7c, ST_PLAY=8'h64, ST_STOP=8'h65,
@@ -188,6 +189,7 @@ module ldp_ldv1000
             status_strobe <= 1'b1; command_strobe <= 1'b1;
             number <= 17'd0; has_digit <= 1'b0;
             dig_sr <= 20'd0; dig_latched <= 20'd0;
+            search_pend <= 1'b0;
         end else if (!pause) begin
             status_strobe  <= ~(field_phase < STAT_LOW);
             command_strobe <= ~((field_phase >= CMD_LO_S) & (field_phase < CMD_LO_E));
@@ -195,11 +197,14 @@ module ldp_ldv1000
             // Mechanism-driven status changes, before the byte below so a command in the
             // same cycle still wins (matching the pre-split ordering).
             if (search_done)   status_r <= ST_SEARCH_FIN;         // 0xd0, "search succeeded"
+            if (search_done)   search_pend <= 1'b0;
             if (autostop_done) status_r <= ST_STOP | ST_READY;
 
             if (sel && cmd_stb) begin
                 if (cmd_byte == CMD_NO_ENTRY) begin
-                    status_r <= status_r | ST_READY;                // the only thing that re-arms
+                    // Daphne reports 0x50 until the search lands: FF must not fake 0xD0 mid-search.
+                    if (!search_pend)
+                        status_r <= status_r | ST_READY;            // the only thing that re-arms
                 end else if (!status_r[7]) begin
                     status_r <= status_r & 8'h7f;                   // not ready => byte ignored entirely
                 end else if (dig != 4'hf) begin
@@ -215,6 +220,7 @@ module ldp_ldv1000
                         CMD_SEARCH: begin
                             dig_latched <= dig_sr; dig_sr <= 20'd0;
                             status_r <= ST_SEARCH;                // 0x50 busy -- seen immediately
+                            search_pend <= 1'b1;
                             number <= 17'd0;
                         end
                         CMD_PLAY:     begin status_r <= ST_PLAY;             number <= 17'd0; end
@@ -241,6 +247,7 @@ module ldp_ldv1000
                         CMD_SKIP_FWD_50, CMD_SKIP_FWD_60, CMD_SKIP_FWD_70, CMD_SKIP_FWD_80,
                         CMD_SKIP_FWD_90, CMD_SKIP_FWD_100: begin
                             status_r <= ST_SEARCH; number <= 17'd0;
+                            search_pend <= 1'b1;
                         end
                         CMD_STORE, CMD_RECALL, CMD_DISPLAY, CMD_DISPLAY_ENABLE,
                         CMD_DISPLAY_DISABLE, CMD_GET_FRAME_NUM, CMD_GET_1ST_DISPLAY,

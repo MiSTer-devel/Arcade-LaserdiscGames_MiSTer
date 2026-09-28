@@ -76,7 +76,8 @@ module dlv_streamer #(
     output            disc_2997,
     // First content frame of the mounted disc (header@28) -> the player's park
     // position, so a never-commanded transport does not walk the leader in real time.
-    output     [16:0] disc_leader
+    output     [16:0] disc_leader,
+    output            hdr_valid     // .dlv header parsed
 );
     //------------------------------------------------------------------------
     // Compressed-frame BRAM (video)
@@ -103,6 +104,10 @@ module dlv_streamer #(
     // header@24 is RESERVED=0 and this reg is repurposed for the v2 field.
     reg [31:0] spf_q16_hdr;     // header@96: samples per DISC frame, 16.16 fixed point (.dlv v2)
     reg        header_valid;
+    assign     hdr_valid = header_valid;
+    // Set by a mount, cleared by an unmount; never by reset, so a reset re-reads the header.
+    reg        img_present = 1'b0;
+    always @(posedge clk) if (img_mounted) img_present <= (img_size != 64'd0);
 
     // current frame index entry
     reg [31:0] frm_off, frm_size, frm_start;
@@ -434,8 +439,9 @@ module dlv_streamer #(
 
             case (state)
             // ---- wait for image, then read header sector 0 ----
+            // After a reset, wait out any sector still in flight so its tail is not taken as the header.
             S_IDLE: begin
-                if (img_mounted && img_size != 0) begin
+                if (img_present && !sd_ack) begin
                     cap_mode <= 2'd0; cur_sec <= 32'd0; ret_state <= S_READY;
                     header_valid <= 1'b0;
                     state <= S_RD_ISSUE;

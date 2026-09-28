@@ -1,0 +1,77 @@
+<misterromdescription>
+    <name>GP World</name>
+    <region>World</region>
+    <homebrew>no</homebrew>
+    <bootleg>no</bootleg>
+    <version></version>
+    <alternative></alternative>
+    <platform></platform>
+    <series>GP World</series>
+    <year>1984</year>
+    <manufacturer>Sega</manufacturer>
+    <category>LaserDisc</category>
+
+    <setname same_dir="1">gpworld</setname>
+    <parent>gpworld</parent>
+    <mameversion>0270</mameversion>
+    <rbf>LaserdiscGames</rbf>
+    <about></about>
+
+    <resolution>15kHz</resolution>
+    <rotation>horizontal</rotation>
+    <flip>no</flip>
+
+    <players>1</players>
+    <joystick>8-way</joystick>
+    <special_controls>steering wheel, gas and brake pedals, gear shifter</special_controls>
+    <num_buttons>4</num_buttons>
+    <buttons names="Gas,Brake,Gear,Test,Coin,Start 1P,Start 2P,Pause" default="A,B,X,Y,Select,Start,R,L"/>
+
+    <!-- DSW1 at port 0x82, DSW2 at port 0x83. Values from MAME sega/gpworld.cpp;
+         defaults are MAME's (DSW1 FF, DSW2 EF = demo sounds on). -->
+    <switches default="FF,EF">
+        <!-- DSW1 (byte 0) -->
+        <dip bits="0,3"   name="Coin B" ids="1C/1C (again),2C/3C,4C/5C,5C/6C,4C/3C,6C/4C,2C/3C (again),4C/1C,3C/1C,2C/1C,1C/6C,1C/5C,1C/4C,1C/3C,1C/2C,1C/1C"/>
+        <dip bits="4,7"   name="Coin A" ids="1C/1C (again),2C/3C,4C/5C,5C/6C,4C/3C,6C/4C,2C/3C (again),4C/1C,3C/1C,2C/1C,1C/6C,1C/5C,1C/4C,1C/3C,1C/2C,1C/1C"/>
+        <!-- DSW2 (byte 1) -->
+        <dip bits="8"     name="Steering Difficulty" ids="Hard,Medium"/>
+        <dip bits="9"     name="Rank to Advance"     ids="Third,Fourth"/>
+        <dip bits="10"    name="Unknown SW2:7"       ids="On,Off"/>
+        <dip bits="11"    name="Unknown SW2:8"       ids="On,Off"/>
+        <dip bits="12"    name="Demo Sounds"         ids="On,Off"/>
+        <dip bits="13,14" name="Difficulty"          ids="Hardest,Hard,Easy,Medium"/>
+        <dip bits="15"    name="Start Year"          ids="1985,1984"/>
+    </switches>
+
+    <!-- GAME-ID byte 0: 0A = GP World. -->
+    <!-- POST-SEEK-FRAMES byte 1: extra film ticks before seek commits. -->
+    <rom index="1">
+        <part>0A 03</part>
+    </rom>
+
+    <!-- Index 0, packed to match rtl/gpworld/GPWorld.sv:
+         0x00000 Z80 program (48K), 0x0C000 tile generator (4K),
+         0x10000 sprites = MAME gfx2 (per 64K bank: plane 0 then plane 1), loaded into DDR. -->
+    <rom index="0" md5="none" zip="gpworld.zip">
+        <part crc="70e42574" name="GPW_6162A.BIN"/>
+        <part crc="49539e46" name="GPW_6163.BIN"/>
+        <part crc="7f0e6853" name="GPW_6164.BIN"/>
+        <part crc="a4b11cf5" name="GPW_6148.BIN"/>
+        <part repeat="0x3000">00</part>
+        <part crc="7e6c4797" name="GPW_6149.BIN"/>
+        <part crc="26d72b96" name="GPW_6151.BIN"/>
+        <part crc="6837e095" name="GPW_6150.BIN"/>
+        <part crc="86939fe2" name="GPW_6152.BIN"/>
+        <part crc="f52b7c1b" name="GPW_6153.BIN"/>
+        <part crc="a020bd03" name="GPW_6155.BIN"/>
+        <part crc="bbf5d7db" name="GPW_6154.BIN"/>
+        <part crc="2c03c64c" name="GPW_6156.BIN"/>
+        <part crc="cdd31036" name="GPW_6157.BIN"/>
+        <part repeat="0x4000">00</part>
+        <part crc="d15ac707" name="GPW_6158.BIN"/>
+        <part repeat="0x4000">00</part>
+    </rom>
+
+    <remark>GP World (Sega) - Pioneer LD-V1000 - tiles + sprites, no board sound</remark>
+    <mratimestamp>20260926000000</mratimestamp>
+</misterromdescription>

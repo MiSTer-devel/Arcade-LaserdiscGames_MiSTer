@@ -96,6 +96,7 @@ wire is_sdq      = (game_mod == 8'd6);   // Super Don Quix-ote: Z80 + LD-V1000, 
 wire is_mach3    = (game_mod == 8'd7);   // M.A.C.H. 3: 8088 + PR-8210, see rtl/mach3/
 wire is_cobram3  = (game_mod == 8'd8);   // Cobra Command, M.A.C.H. 3 conversion kit
 wire is_usvs     = (game_mod == 8'd9);   // Us vs Them: same board again
+wire is_gpw      = (game_mod == 8'd10);  // GP World (Sega): Z80 + LD-V1000, see rtl/gpworld/
 // One Gottlieb/Mylstar rev-2 board runs all three; MAME's cobram3 config differs
 // from g2laser only in sound-board mods.  Us vs Them reads a third button.
 wire mach3_board = is_mach3 | is_cobram3 | is_usvs;
@@ -107,21 +108,23 @@ wire cliff_board = is_cliff | is_gtg;
 // and drives the shared outputs below. Dragon's Lair is DERIVED from the others
 // rather than carrying an exclusion list, so adding a board cannot leave it
 // running alongside the new one.
-localparam BRD_DL = 0, BRD_CLIFF = 1, BRD_SDQ = 2, BRD_DL2 = 3, BRD_MACH3 = 4;
-wire [4:0] brd;
+localparam BRD_DL = 0, BRD_CLIFF = 1, BRD_SDQ = 2, BRD_DL2 = 3, BRD_MACH3 = 4, BRD_GPW = 5;
+wire [5:0] brd;
 assign brd[BRD_CLIFF] = cliff_board;
 assign brd[BRD_SDQ]   = is_sdq;
 assign brd[BRD_DL2]   = is_dl2;
 assign brd[BRD_MACH3] = mach3_board;
-assign brd[BRD_DL]    = ~|brd[4:1];
+assign brd[BRD_GPW]   = is_gpw;
+assign brd[BRD_DL]    = ~|brd[5:1];
 
 // ---- shared program ROM ----
 // Every board used to carry its own 64K dpram: four copies, 256 M10K, of which
 // at most one is ever addressed.  Pooling them frees ~192 M10K.  Each board now
 // presents a 16-bit read address and takes the shared data back.
-wire [15:0] dl_rom_a, cl_rom_a, sd_rom_a, d2_rom_a, m3_rom_a;
+wire [15:0] dl_rom_a, cl_rom_a, sd_rom_a, d2_rom_a, m3_rom_a, gp_rom_a;
 wire  [7:0] prog_q;
-wire [15:0] prog_rd_a = brd[BRD_MACH3] ? m3_rom_a :
+wire [15:0] prog_rd_a = brd[BRD_GPW]   ? gp_rom_a :
+                        brd[BRD_MACH3] ? m3_rom_a :
                         brd[BRD_DL2]   ? d2_rom_a :
                         brd[BRD_CLIFF] ? cl_rom_a :
                         brd[BRD_SDQ]   ? sd_rom_a : dl_rom_a;
@@ -130,7 +133,7 @@ wire [15:0] prog_rd_a = brd[BRD_MACH3] ? m3_rom_a :
 // on top of program space, and Mach 3's tile and sprite data would wrap round
 // the 64K ROM and overwrite the program.  game_mod is latched from index 1,
 // which every MRA places BEFORE index 0; reversing that order truncates the ROM.
-wire [24:0] prog_limit = mach3_board ? 25'h0A000 : is_sdq ? 25'h04000 : 25'h10000;
+wire [24:0] prog_limit = mach3_board ? 25'h0A000 : is_sdq ? 25'h04000 : is_gpw ? 25'h0C000 : 25'h10000;
 wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_limit);
 
 // LED bar off -> the video gets the band's rows back (full screen).
@@ -144,7 +147,7 @@ wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_l
 // M.A.C.H. 3 / Cobra Command / Us vs Them draw score and lives through their own
 // tile+sprite overlay genlocked onto the disc picture, so the band would only
 // duplicate it and steal rows from the game's own display.
-wire band_off = status[20] | cliff_board | is_dl2 | is_sdq | mach3_board;
+wire band_off = status[20] | cliff_board | is_dl2 | is_sdq | mach3_board | is_gpw;
 wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
@@ -193,6 +196,7 @@ wire [31:0] status;
 wire [10:0] ps2_key;
 
 wire        ioctl_download;
+wire        gpw_ioctl_wait;         // GP World sprite ROM -> DDR download stall
 wire        ioctl_upload;
 wire        ioctl_upload_req;
 wire  [7:0] ioctl_index;
@@ -247,6 +251,8 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_dout(ioctl_dout),
 	.ioctl_din(ioctl_din),
 	.ioctl_index(ioctl_index),
+	.ioctl_wait(gpw_ioctl_wait),
+
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -471,6 +477,10 @@ wire        d2_txt_lit;
 wire [23:0] sdq_ovl_rgb;
 wire        sdq_ovl_opaque;
 
+// GP World's tile overlay: 12-bit colour RAM, presented as RGB.
+wire [23:0] gpw_ovl_rgb;
+wire        gpw_ovl_opaque;
+
 // TMS9918/9928 fixed 16-colour palette. Index 0 is transparent and never
 // reaches here (ovl_opaque is low for it), so it is mapped to black.
 function [23:0] tms_rgb(input [3:0] c);
@@ -552,9 +562,10 @@ wire        d2_lit_g     = d2_txt_lit       & brd[BRD_DL2];
 wire        cliff_op_g   = cliff_ovl_opaque & brd[BRD_CLIFF];
 wire        sdq_op_g     = sdq_ovl_opaque   & brd[BRD_SDQ];
 wire        m3_op_g      = m3_ovl_opaque    & brd[BRD_MACH3];
-wire [23:0] ovl_bus_rgb    = d2_lit_g ? 24'hFFFFFF : sdq_op_g ? sdq_ovl_rgb :
+wire        gpw_op_g     = gpw_ovl_opaque   & brd[BRD_GPW];
+wire [23:0] ovl_bus_rgb    = d2_lit_g ? 24'hFFFFFF : sdq_op_g ? sdq_ovl_rgb : gpw_op_g ? gpw_ovl_rgb :
                              m3_op_g  ? m3_ovl_rgb : ovl_rgb;
-wire        ovl_bus_opaque = d2_lit_g | cliff_op_g | sdq_op_g | m3_op_g;
+wire        ovl_bus_opaque = d2_lit_g | cliff_op_g | sdq_op_g | m3_op_g | gpw_op_g;
 
 wire  [7:0] comp_r = band_lit ? 8'hFF : ovl_bus_opaque ? ovl_bus_rgb[23:16] : (seek_black ? 8'h00 : rr_r);
 wire  [7:0] comp_g = band_lit ? 8'h00 : ovl_bus_opaque ? ovl_bus_rgb[15:8]  : (seek_black ? 8'h00 : rr_g);
@@ -626,6 +637,8 @@ wire [1:0] skill_level;   // from DragonsLair_CPU's scoreboard snoop
 wire [1:0] skill_dl;
 wire [16:0] ld_frame_dl;
 wire        seek_pulse_dl, play_end_dl, ld_playing_dl;
+wire game_run = ~reset;
+
 wire [16:0] ld_curr_frame_top;   // LD disc frame from DragonsLair -> dlv_streamer
 
 // ---- Seek hold ----
@@ -654,7 +667,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	.dbg_ld_status(dbg_ld_status_dl),
 	.dbg_d0_seen(dbg_d0_seen_dl),
 	.dbg_seek_digits(dbg_seek_digits_dl),
-	.reset(~reset & brd[BRD_DL]),   // active-low; held in reset while another board runs
+	.reset(game_run & brd[BRD_DL]),   // active-low; held in reset while another board runs
 
 	.clk_sys(CLK_CORE),   // 80 MHz: Z80=/20=4MHz, AY=/40=2MHz (real-hardware speeds, dividers derived)
 
@@ -702,7 +715,7 @@ wire               seek_pulse_cl, play_end_cl, ld_playing_cl, dbg_led_cl;
 CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 (
 	.rom_addr(cl_rom_a), .rom_data(prog_q),
-	.reset(~reset & brd[BRD_CLIFF]),
+	.reset(game_run & brd[BRD_CLIFF]),
 	.clk_sys(CLK_CORE),
 
 	// p1: {b3,b2,b1,action, right,left,down,up}; Cliff uses action=BUTTON1, skill1(B)=BUTTON2
@@ -748,7 +761,7 @@ SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 (
 	.rom_addr(sd_rom_a), .rom_data(prog_q),
 	.chr_rom_a(sd_chr_a), .chr_rom_q(gfx_chr_q),
-	.reset(~reset & brd[BRD_SDQ]),
+	.reset(game_run & brd[BRD_SDQ]),
 	.clk_sys(CLK_CORE),
 
 	// 4-way stick + one action button; MAME superdq IN0/IN1
@@ -781,6 +794,52 @@ SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 );
 
 //------------------------------------------------------------------------------
+// GP World (Sega) — Z80 + LD-V1000. Tiles over sprites; the discrete-analog
+// sound board is not implemented.
+//------------------------------------------------------------------------------
+wire signed [15:0] audio_l_gp, audio_r_gp;
+wire        [16:0] ld_frame_gp;
+wire               seek_pulse_gp, play_end_gp, ld_playing_gp, dbg_led_gp;
+wire        [12:0] gp_chr_a;
+wire               gp_spr_req, gp_spr_valid;
+wire        [17:0] gp_spr_addr;
+wire        [15:0] gp_spr_data;
+
+GPWorld #(.CLK_HZ(CORE_CLK_HZ)) gpw_inst
+(
+	.rom_addr(gp_rom_a), .rom_data(prog_q),
+	.chr_rom_a(gp_chr_a), .chr_rom_q(gfx_chr_q),
+	.spr_rd_req(gp_spr_req), .spr_rd_addr(gp_spr_addr),
+	.spr_rd_valid(gp_spr_valid), .spr_rd_data(gp_spr_data),
+	.reset(game_run & brd[BRD_GPW]),
+	.clk_sys(CLK_CORE),
+
+	// A gas, B brake, X gear toggle, Y test
+	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
+	.cab({m_coin2, m_coin1, m_start2, m_start1}),
+	.service(btn_service),
+	.dsw(dsw),
+
+	.sound_l(audio_l_gp),
+	.sound_r(audio_r_gp),
+
+	.pause(pause_cpu),
+	.disc_hold(fb_seek_hold),
+	.post_seek_frames(post_seek_eff),
+	.disc_2997(disc_2997_w),
+	.disc_leader(ld_leader_w),
+
+	.ld_search_cmd_o(seek_pulse_gp),
+	.ld_play_end_o(play_end_gp),
+	.ld_frame_o(ld_frame_gp),
+	.ld_playing_o(ld_playing_gp),
+
+	.ovl_hraw(rr_hpos), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+	.ovl_rgb(gpw_ovl_rgb), .ovl_opaque(gpw_ovl_opaque),
+	.dbg_led(dbg_led_gp)
+);
+
+//------------------------------------------------------------------------------
 // Dragon's Lair II (Leland) — 8088 board. No video hardware of its own: the
 // LDP-1450 renders DL2's text itself. RAM is too large for block RAM (the core
 // is at 75% of its M10K) so it lives in DDR, using ddram.sv's spare "rom" port.
@@ -808,7 +867,7 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 (
 	.rom_addr(d2_rom_a), .rom_data(prog_q),
 	.core_clk(CLK_CORE),
-	.reset_n(~reset & brd[BRD_DL2]),
+	.reset_n(game_run & brd[BRD_DL2]),
 
 	// DL2 has no DIPs (EEPROM-configured); controls only.
 	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
@@ -833,7 +892,7 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 // DL2's main RAM in DDR, through the port the framebuffer does not use.
 ddram_byte_port #(.BASE(28'h1000000)) dl2_ram
 (
-	.clk(CLK_CORE), .reset_n(~reset & brd[BRD_DL2]),
+	.clk(CLK_CORE), .reset_n(game_run & brd[BRD_DL2]),
 	.cpu_addr(d2_ram_addr), .cpu_din(d2_ram_din),
 	.cpu_rd(d2_ram_rd), .cpu_wr(d2_ram_wr),
 	.cpu_dout(d2_ram_dout), .busy(d2_ram_busy),
@@ -845,7 +904,7 @@ ddram_byte_port #(.BASE(28'h1000000)) dl2_ram
 // DL2's Sony LDP-1450, in the core domain so its strobes are never crossed.
 ldp_top #(.CLK_HZ(CORE_CLK_HZ)) dl2_ldp
 (
-	.clk(CLK_CORE), .reset_n(~reset & brd[BRD_DL2]),
+	.clk(CLK_CORE), .reset_n(game_run & brd[BRD_DL2]),
 	.player_sel(4'd3),                       // PLAYER_LDP1450
 	.cmd_stb(d2_tx_stb), .cmd_byte(d2_tx_byte),
 	.blip(1'b0),
@@ -915,7 +974,7 @@ wire [7:0] m3_in4 = is_usvs
 Mach3 #(.CLK_HZ(CORE_CLK_HZ)) mach3_inst
 (
     .rom_addr(m3_rom_a), .rom_data(prog_q),
-    .core_clk(CLK_CORE), .reset_n(~reset & brd[BRD_MACH3]),
+    .core_clk(CLK_CORE), .reset_n(game_run & brd[BRD_MACH3]),
     .in1(m3_in1), .in4(m3_in4), .dsw(dip_sw[0]),
     .track_h(8'hFF), .track_v(8'hFF),     // trackball unused by all three games
     .ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
@@ -936,7 +995,7 @@ Mach3 #(.CLK_HZ(CORE_CLK_HZ)) mach3_inst
 
 mach3_video mach3_gfx
 (
-    .core_clk(CLK_CORE), .reset_n(~reset & brd[BRD_MACH3]),
+    .core_clk(CLK_CORE), .reset_n(game_run & brd[BRD_MACH3]),
     .ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
     .ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
     .bg_priority(m3_bg_pri), .spritebank(m3_sprbank),
@@ -955,7 +1014,7 @@ mach3_video mach3_gfx
 // ldp_top keeps the default and is unchanged.
 ldp_top #(.CLK_HZ(CORE_CLK_HZ), .BIT_ONE_US(32'd1497)) mach3_ldp
 (
-    .clk(CLK_CORE), .reset_n(~reset & brd[BRD_MACH3]),
+    .clk(CLK_CORE), .reset_n(game_run & brd[BRD_MACH3]),
     .player_sel(4'd2),                       // PLAYER_PR8210
     .cmd_stb(1'b0), .cmd_byte(8'd0),
     .blip(m3_blip),
@@ -997,13 +1056,14 @@ wire [12:0] m3_chr_a, sd_chr_a;
 wire [15:0] m3_spr_a;
 wire  [7:0] gfx_chr_q, gfx_spr_q;
 
-wire [12:0] gfx_chr_rd_a = brd[BRD_MACH3] ? m3_chr_a : sd_chr_a;
+wire [12:0] gfx_chr_rd_a = brd[BRD_MACH3] ? m3_chr_a : brd[BRD_GPW] ? gp_chr_a : sd_chr_a;
 
 // Both writers land 8K-aligned, so the low 13 bits ARE the pool offset:
 // Mach 3 tiles at ioctl 0x0C000, Super Don's char generator at 0x4000.
 wire gfx_chr_we = ioctl_wr & (ioctl_index == 8'd0) &
                   ((mach3_board & (ioctl_addr >= 25'h0C000) & (ioctl_addr < 25'h0E000)) |
-                   (is_sdq      & (ioctl_addr >= 25'h04000) & (ioctl_addr < 25'h06000)));
+                   (is_sdq      & (ioctl_addr >= 25'h04000) & (ioctl_addr < 25'h06000)) |
+                   (is_gpw      & (ioctl_addr >= 25'h0C000) & (ioctl_addr < 25'h0D000)));
 
 // Sprites are NOT 64K-aligned in the MRA, so this one needs the subtraction.
 wire [16:0] gfx_spr_off = ioctl_addr[16:0] - 17'h0E000;
@@ -1025,15 +1085,15 @@ dpram_dc #(.widthad_a(16)) u_gfx_spr (
 );
 
 // ---- shared outputs: whichever board is running ----
-assign audio_l           = brd[BRD_MACH3] ? audio_l_m3   : brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_l_cl    : brd[BRD_SDQ] ? audio_l_sd    : audio_l_dl;
-assign audio_r           = brd[BRD_MACH3] ? audio_r_m3   : brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_r_cl    : brd[BRD_SDQ] ? audio_r_sd    : audio_r_dl;
-assign ld_curr_frame_top = brd[BRD_MACH3] ? ld_frame_m3  : brd[BRD_DL2] ? ld_frame_d2   : brd[BRD_CLIFF] ? ld_frame_cl   : brd[BRD_SDQ] ? ld_frame_sd   : ld_frame_dl;
-assign fb_seek_pulse     = brd[BRD_MACH3] ? seek_pulse_m3: brd[BRD_DL2] ? seek_pulse_d2 : brd[BRD_CLIFF] ? seek_pulse_cl : brd[BRD_SDQ] ? seek_pulse_sd : seek_pulse_dl;
-assign fb_play_end       = brd[BRD_MACH3] ? play_end_m3  : brd[BRD_DL2] ? play_end_d2   : brd[BRD_CLIFF] ? play_end_cl   : brd[BRD_SDQ] ? play_end_sd   : play_end_dl;
-assign ld_playing_top    = brd[BRD_MACH3] ? ld_playing_m3: brd[BRD_DL2] ? ld_playing_d2 : brd[BRD_CLIFF] ? ld_playing_cl : brd[BRD_SDQ] ? ld_playing_sd : ld_playing_dl;
+assign audio_l           = brd[BRD_GPW] ? audio_l_gp : brd[BRD_MACH3] ? audio_l_m3   : brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_l_cl    : brd[BRD_SDQ] ? audio_l_sd    : audio_l_dl;
+assign audio_r           = brd[BRD_GPW] ? audio_r_gp : brd[BRD_MACH3] ? audio_r_m3   : brd[BRD_DL2] ? d2_audio      : brd[BRD_CLIFF] ? audio_r_cl    : brd[BRD_SDQ] ? audio_r_sd    : audio_r_dl;
+assign ld_curr_frame_top = brd[BRD_GPW] ? ld_frame_gp : brd[BRD_MACH3] ? ld_frame_m3  : brd[BRD_DL2] ? ld_frame_d2   : brd[BRD_CLIFF] ? ld_frame_cl   : brd[BRD_SDQ] ? ld_frame_sd   : ld_frame_dl;
+assign fb_seek_pulse     = brd[BRD_GPW] ? seek_pulse_gp : brd[BRD_MACH3] ? seek_pulse_m3: brd[BRD_DL2] ? seek_pulse_d2 : brd[BRD_CLIFF] ? seek_pulse_cl : brd[BRD_SDQ] ? seek_pulse_sd : seek_pulse_dl;
+assign fb_play_end       = brd[BRD_GPW] ? play_end_gp : brd[BRD_MACH3] ? play_end_m3  : brd[BRD_DL2] ? play_end_d2   : brd[BRD_CLIFF] ? play_end_cl   : brd[BRD_SDQ] ? play_end_sd   : play_end_dl;
+assign ld_playing_top    = brd[BRD_GPW] ? ld_playing_gp : brd[BRD_MACH3] ? ld_playing_m3: brd[BRD_DL2] ? ld_playing_d2 : brd[BRD_CLIFF] ? ld_playing_cl : brd[BRD_SDQ] ? ld_playing_sd : ld_playing_dl;
 // DL2 drives LED_USER from its own Comm2 counters below, so its leg is 0 rather than
 // falling through to Dragon's Lair's heartbeat.
-assign dbg_led           = brd[BRD_MACH3] ? 1'b0 : brd[BRD_DL2] ? 1'b0          : brd[BRD_CLIFF] ? dbg_led_cl    : brd[BRD_SDQ] ? dbg_led_sd    : dbg_led_dl;
+assign dbg_led           = brd[BRD_GPW] ? dbg_led_gp : brd[BRD_MACH3] ? 1'b0 : brd[BRD_DL2] ? 1'b0          : brd[BRD_CLIFF] ? dbg_led_cl    : brd[BRD_SDQ] ? dbg_led_sd    : dbg_led_dl;
 // The scoreboard band and the Space Ace skill select belong to the Dragon's Lair board only.
 //------------------------------------------------------------------------------
 // Thayer's Quest diagnostic field.
@@ -1117,7 +1177,8 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),
     .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
     .ld_playing(ld_playing_top),
-    .disc_2997(disc_2997_w), .disc_leader(ld_leader_w)
+    .disc_2997(disc_2997_w), .disc_leader(ld_leader_w),
+    .hdr_valid()
 );
 
 // ---- JPEG frame decoder: byte stream -> px writes (block-order, addressed by x,y) ----
@@ -1315,6 +1376,39 @@ fb_writer #(
     .we_req(fb_we_req), .we_ack(fb_we_ack)
 );
 
+// ddram.sv's "rom" port is shared by boards that never run together: DL2's RAM and GP World's
+// sprite graphics. Its handshake is a toggle, so DL2's side is offset by the ack it saw while
+// held in reset -- otherwise its first request after GP World could read as already complete.
+wire [27:1] gp_mem_addr;
+wire [15:0] gp_mem_din;
+wire  [1:0] gp_mem_be;
+wire        gp_mem_we, gp_mem_req;
+wire [27:1] ddr_rom_addr;
+wire [15:0] ddr_rom_din, ddr_rom_dout;
+wire  [1:0] ddr_rom_be;
+wire        ddr_rom_we, ddr_rom_req, ddr_rom_ack;
+reg         d2_ack_ofs = 1'b0;
+always @(posedge CLK_CORE) if (!(game_run & brd[BRD_DL2])) d2_ack_ofs <= ddr_rom_ack;
+
+wire gp_port = brd[BRD_GPW];
+assign ddr_rom_addr = gp_port ? gp_mem_addr : d2_mem_addr;
+assign ddr_rom_din  = gp_port ? gp_mem_din  : d2_mem_din;
+assign ddr_rom_be   = gp_port ? gp_mem_be   : d2_mem_be;
+assign ddr_rom_we   = gp_port ? gp_mem_we   : d2_mem_we;
+assign ddr_rom_req  = gp_port ? gp_mem_req  : (d2_mem_req ^ d2_ack_ofs);
+assign d2_mem_ack   = ddr_rom_ack ^ d2_ack_ofs;
+assign d2_mem_dout  = ddr_rom_dout;
+
+gpw_spr_mem gpw_spr_ddr
+(
+	.clk(CLK_CORE), .en(gp_port),
+	.ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout), .ioctl_index(ioctl_index),
+	.ioctl_wait(gpw_ioctl_wait),
+	.rd_req(gp_spr_req), .rd_addr(gp_spr_addr), .rd_valid(gp_spr_valid), .rd_data(gp_spr_data),
+	.mem_addr(gp_mem_addr), .mem_din(gp_mem_din), .mem_be(gp_mem_be), .mem_we(gp_mem_we),
+	.mem_req(gp_mem_req), .mem_ack(ddr_rom_ack), .mem_dout(ddr_rom_dout)
+);
+
 ddram ddram_fb (
     .DDRAM_CLK(CLK_CORE),
     .DDRAM_BUSY(DDRAM_BUSY),
@@ -1330,10 +1424,10 @@ ddram ddram_fb (
     .wraddr(fb_wraddr), .din(fb_din),
     .din64(fb_din64), .be64(fb_be64),
     .we_req(fb_we_req), .we_ack(fb_we_ack),
-    // rom read/write port — Dragon's Lair II main RAM (ddram_byte_port).
-    // Unused by every other game; ddram.sv itself is unmodified.
-    .rdaddr(d2_mem_addr), .dout(d2_mem_dout), .rom_din(d2_mem_din), .rom_be(d2_mem_be),
-    .rom_we(d2_mem_we), .rom_req(d2_mem_req), .rom_ack(d2_mem_ack),
+    // rom read/write port — Dragon's Lair II main RAM / GP World sprite graphics.
+    // ddram.sv itself is unmodified.
+    .rdaddr(ddr_rom_addr), .dout(ddr_rom_dout), .rom_din(ddr_rom_din), .rom_be(ddr_rom_be),
+    .rom_we(ddr_rom_we), .rom_req(ddr_rom_req), .rom_ack(ddr_rom_ack),
     // second read port — raster reader (DDR framebuffer -> video)
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
