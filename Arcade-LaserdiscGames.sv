@@ -59,8 +59,14 @@ wire signed [15:0] ay_l_s   = (ay_l_g >  18'sd32767) ?  16'sd32767 :
                               (ay_l_g < -18'sd32768) ? -16'sd32768 : ay_l_g[15:0];
 wire signed [15:0] ay_r_s   = (ay_r_g >  18'sd32767) ?  16'sd32767 :
                               (ay_r_g < -18'sd32768) ? -16'sd32768 : ay_r_g[15:0];
-wire signed [16:0] mix_l = ay_l_s + pcm_l;
-wire signed [16:0] mix_r = ay_r_s + pcm_r;
+// Beep Speaker (status[24:23]): Stereo, or the board sound folded to mono on one side only.
+wire [1:0]         beep_spk = status[24:23];
+wire signed [16:0] ay_sum   = ay_l_s + ay_r_s;
+wire signed [15:0] ay_mono  = ay_sum[16:1];
+wire signed [15:0] ay_l_o   = (beep_spk == 2'd0) ? ay_l_s : (beep_spk == 2'd1) ? ay_mono : 16'sd0;
+wire signed [15:0] ay_r_o   = (beep_spk == 2'd0) ? ay_r_s : (beep_spk == 2'd2) ? ay_mono : 16'sd0;
+wire signed [16:0] mix_l = ay_l_o + pcm_l;
+wire signed [16:0] mix_r = ay_r_o + pcm_r;
 wire signed [15:0] sat_l = (mix_l >  17'sd32767) ?  16'sd32767 :
                            (mix_l < -17'sd32768) ? -16'sd32768 : mix_l[15:0];
 wire signed [15:0] sat_r = (mix_r >  17'sd32767) ?  16'sd32767 :
@@ -177,6 +183,7 @@ localparam CONF_STR = {
 	"P2OQ,Dim video after 10s,On,Off;",
 	"P3,Behaviour Options;",
 	"P3OIJ,Beep Volume,Normal,Loud,Max,Off;",
+	"P3ONO,Beep Speaker,Stereo,Left,Right;",
 	"P3O4,Seek Behaviour,Hold Frame,Black;",
 	"P3O13,Seek Delay,0,1,2,3,4,5;",
 	"P3O8,Hold Frame Seek,Off,On;",
@@ -618,6 +625,9 @@ wire [15:0] dsw = {dip_sw[1], dip_sw[0]};
 // 0 = instant flush (old behaviour), 5 ≈ 208 ms ≈ 5 film frames.
 // Write the desired value in the MRA <rom index="1"> as the second byte.
 reg [3:0] post_seek_frames_r = 4'd0;
+// MRA index 1, byte 2: LD player override, 0 = DIP decides, 1 = LD-V1000, 2 = PR-7820.
+// Cleared at byte 0 so an MRA without byte 2 never inherits the previous game's override.
+reg [1:0] ld_player_r = 2'd0;
 // Segment Tail (status[7:5]) lets the player override that per-config without editing the MRA.
 // The framework owns status[], so the MRA value cannot be pushed into it as a power-on default --
 // instead selection 0 MEANS "use the MRA byte", and 1-6 are explicit overrides of 0-5.  status[]
@@ -628,6 +638,8 @@ wire [3:0] post_seek_eff = (seg_tail_sel == 3'd0) ? post_seek_frames_r
 always @(posedge CLK_CORE) begin
     if (ioctl_wr && (ioctl_index == 8'd1)) begin
         if (ioctl_addr == 25'd0) game_mod          <= ioctl_dout;
+        if (ioctl_addr == 25'd0) ld_player_r       <= 2'd0;
+        if (ioctl_addr == 25'd2) ld_player_r       <= ioctl_dout[1:0];
         if (ioctl_addr == 25'd1) post_seek_frames_r <= ioctl_dout[3:0];
     end
 end
@@ -679,6 +691,7 @@ DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 	.dsw(dsw),
 	.is_thayers(is_thayers),
 	.is_spaceace(is_spaceace),
+	.ld_player(ld_player_r),
 
 	.sound_l(audio_l_dl),
 	.sound_r(audio_r_dl),

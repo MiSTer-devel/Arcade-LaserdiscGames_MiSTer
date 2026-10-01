@@ -30,6 +30,8 @@ module DragonsLair
     input                is_thayers,
     // Set for Space Ace: its ROM selects the LD player on a different DIP bit than DL's.
     input                is_spaceace,
+    // MRA LD player override: 0 = DIP decides, 1 = LD-V1000, 2 = PR-7820
+    input          [1:0] ld_player,
 
     // Audio
     output signed [15:0] sound_l,
@@ -87,6 +89,7 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
     .dsw(dsw),
     .is_thayers(is_thayers),
     .is_spaceace(is_spaceace),
+    .ld_player(ld_player),
 
     .sound(snd),
 

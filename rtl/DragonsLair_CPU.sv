@@ -65,6 +65,8 @@ module DragonsLair_CPU
     // Board select: 0 = Dragon's Lair / Space Ace (dlus_map), 1 = Thayer's Quest (RDI)
     input         is_thayers,
     input         is_spaceace,
+    // MRA LD player override (index 1, byte 2): 0 = DIP decides, 1 = LD-V1000, 2 = PR-7820
+    input   [1:0] ld_player,
 
     // Audio (AY-3-8910)
     output signed [15:0] sound,
@@ -230,8 +232,11 @@ wire [7:0] p1_bus = ~p1;
 //   Space Ace      bit 0,(hl) / jp nz,$026E -> dsw[8]  SET   = PR-7820
 // Both MRAs default their bit to LD-V1000.  Thayer's is LD-V1000 only and uses dsw[11:8] as
 // its own DIP bank B, so it must never be decoded as a player select.
-wire pr7820_mode = is_thayers  ? 1'b0   :
-                   is_spaceace ? dsw[8] : ~dsw[11];
+// Pre-Rev-E DL ROMs use dsw[11] for Joystick Feedback Sound, so their MRAs fix the player here.
+wire pr7820_mode = is_thayers         ? 1'b0   :
+                   (ld_player == 2'd1) ? 1'b0   :
+                   (ld_player == 2'd2) ? 1'b1   :
+                   is_spaceace        ? dsw[8] : ~dsw[11];
 
 // SYSTEM (0xC010) b7: the LD-V1000 reports its command strobe here; the PR-7820 has no strobes
 // at all and instead drives its /READY line onto the same bit (Daphne lair.cpp m_misc_val 0x80).
