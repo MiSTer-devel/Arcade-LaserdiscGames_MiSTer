@@ -83,8 +83,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/rom_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/ddram.sv
 
 # Clocks
-set_global_assignment -name VERILOG_FILE rtl/pll.v
-set_global_assignment -name VERILOG_FILE rtl/pll/pll_0002.v
 
 # MJPEG video - ultraembedded/core_jpeg  + wrapper
 set_global_assignment -name VERILOG_FILE rtl/video/jpeg_frame_decoder.v
