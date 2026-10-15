@@ -40,6 +40,7 @@ module ldp_ldp1450
     input      [2:0]  mode,
     input      [16:0] curr_frame,
     input             autostop_done,    // transport reached the armed stop frame
+    input             search_done,      // DIAG-REVERT-2026-10-15: new, delete on revert. Transport landed a search
 
     // ---- reply queue to the game ----
     output            tx_valid,
@@ -267,6 +268,9 @@ module ldp_ldp1450
                     rp_saw_search <= 1'b0;
                 end
             end
+
+            // DIAG-REVERT-2026-10-15: new, delete on revert. A landed SEARCH owes 0x01 (MAME ldp1450hle.cpp:1113); REPEAT loop-backs already got theirs
+            if (search_done && !rp_replay) rp_comp <= 1'b1;
 
             if (rp_replay) begin
                 if (mode == M_SEARCH)   rp_saw_search <= 1'b1;

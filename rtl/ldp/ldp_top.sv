@@ -158,7 +158,9 @@ module ldp_top
         .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldp1450),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_sony), .cmd_op(op_sony), .cmd_arg(arg_sony),
-        .mode(mode), .curr_frame(curr_frame), .autostop_done(autostop_done),
+        // DIAG-REVERT-2026-10-15: original below, uncomment to restore
+        // .mode(mode), .curr_frame(curr_frame), .autostop_done(autostop_done),
+        .mode(mode), .curr_frame(curr_frame), .autostop_done(autostop_done), .search_done(search_done),   // DIAG
         .tx_valid(txv_sony), .tx_byte(txb_sony), .tx_pop(tx_pop && sel_ldp1450),
         .dbg_digits(digits_sony),
         .txt_we(txt_we_sony), .txt_line(txt_line), .txt_col(txt_col),

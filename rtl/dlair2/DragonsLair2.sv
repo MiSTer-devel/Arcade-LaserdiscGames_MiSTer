@@ -113,7 +113,12 @@ module DragonsLair2
     wire  [2:0] s2_s0;
     wire        ready_in;
 
-    biu_max BIU (
+    // DIAG-REVERT-2026-10-15: original was "biu_max BIU (" with no parameters
+    // DIAG: 8 core clocks per 8088 clock (10 MHz) vs the microcode's 100/4.77 = 20.96: x391>>10 = 0.3818.
+    // DIAG-REVERT-2026-10-15: previous line below, uncomment to restore
+    // biu_max #(.CYC_MUL(391), .CYC_SHIFT(10)) BIU (
+    biu_max #(.CYC_MUL(391), .CYC_SHIFT(10), .FAST_BUS(1)) BIU (   // DIAG: bus cycles at 10 MHz T-states too
+
         .CORE_CLK_INT(core_clk),
         .CLK(cpu_clk), .RESET_INT(~reset_n), .READY_IN(ready_in),
         .NMI(1'b0), .INTR(cpu_intr),

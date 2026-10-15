@@ -119,7 +119,9 @@ module Mach3
     wire nmi_pulse = vblank & ~vblank_q;
     always @(posedge core_clk) vblank_q <= vblank;
 
-    biu_max BIU (
+    // DIAG-REVERT-2026-10-15: original was "biu_max BIU (" with no parameters
+    // DIAG: 16 core clocks per 8088 clock (5 MHz) vs the microcode's 100/4.77 = 20.96: x781>>10 = 0.7627.
+    biu_max #(.CYC_MUL(781), .CYC_SHIFT(10)) BIU (
         .CORE_CLK_INT(core_clk),
         .CLK(cpu_clk), .RESET_INT(~reset_n), .READY_IN(ready_in),
         .NMI(nmi_pulse), .INTR(1'b0),

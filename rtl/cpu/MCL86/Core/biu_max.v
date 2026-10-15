@@ -45,8 +45,16 @@
 //------------------------------------------------------------------------
 
 
+// DIAG-REVERT-2026-10-15: original header was "module biu_max" with no parameter list
 module biu_max
-  (  
+  #(
+    // DIAG: microcode cycle counts assume CORE_CLK 100 MHz = a 4.77 MHz 8088; loads are scaled by MUL>>SHIFT.
+    parameter integer CYC_MUL   = 1,
+    parameter integer CYC_SHIFT = 0,
+    // DIAG-REVERT-2026-10-15: new, delete on revert. 1 = skip the bus FSM's idle counts (8 core clocks per T at 80 MHz/10 MHz)
+    parameter integer FAST_BUS  = 0
+  )
+  (
     input               CORE_CLK_INT,           // Core Clock
 
     
@@ -147,6 +155,7 @@ reg  [15:0] biu_return_data_int;
 reg  [15:0] biu_return_data_int_d1;
 reg  [15:0] biu_return_data_int_d2;
 reg  [12:0] clock_cycle_counter;
+wire [25:0] cyc_scaled = EU_BIU_DATAOUT[12:0] * CYC_MUL;   // DIAG-REVERT-2026-10-15: new, delete on revert
 reg  [15:0] eu_register_r3_d;
 reg  [7:0]  latched_data_in;
 reg  [15:0] pfq_addr_out;
@@ -417,7 +426,9 @@ else
     // Strobe from EU to set the 8088 clock cycle counter
     if (eu_biu_strobe==2'b10)
       begin
-        clock_cycle_counter <= EU_BIU_DATAOUT[12:0];
+        // DIAG-REVERT-2026-10-15: original below, uncomment to restore
+        // clock_cycle_counter <= EU_BIU_DATAOUT[12:0];
+        clock_cycle_counter <= cyc_scaled[CYC_SHIFT +: 13];   // DIAG
       end
     else if (clock_cycle_counter!=13'h0000)
       begin
@@ -744,13 +755,25 @@ else
               end
                 
               
-      8'h58 : begin 
+      8'h58 : begin
                 biu_state <= 8'h01;
               end
 
-                 
-      default : ;             
+
+      default : ;
     endcase
+
+    // DIAG-REVERT-2026-10-15: new block, delete on revert. Jumps only from idle states, so every action keeps its order.
+    if (FAST_BUS != 0)
+      case (biu_state)
+        8'h02 : biu_state <= 8'h14;   // T1 sync -> 1A in 8 clocks
+        8'h1B : biu_state <= 8'h2C;   // 1A -> READY sample in 12
+        8'h22 : biu_state <= 8'h30;   // wait state = 8 clocks (reached only from 36)
+        8'h41 : biu_state <= 8'h44;   // data steer -> cycle end
+        8'h47 : biu_state <= 8'h4D;   // done -> 4E -> 00
+        8'h51 : biu_state <= 8'h57;   // word cycle second byte -> 58 -> 01
+        default : ;
+      endcase
 
 
     

@@ -28,7 +28,8 @@ assign ADC_BUS  = 'Z;
 assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
+// DIAG-REVERT-2026-10-15: original below -- SDRAM now carries DL2's RAM (dl2_sdram)
+// assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
 
 assign VGA_F1 = 0;
 assign VGA_SCALER = 0;
@@ -188,6 +189,10 @@ localparam CONF_STR = {
 	"P3O13,Seek Delay,0,1,2,3,4,5;",
 	"P3O8,Hold Frame Seek,Off,On;",
 	"P3O57,Segment Tail,MRA Default,0,1,2,3,4,5;",
+	// DIAG-REVERT-2026-10-15: new page, delete on revert. DPS step = 800 MHz VCO / 8 = 156 ps, 5 steps per entry.
+	"P4,SDRAM Options;",
+	"P4O[38:36],SDRAM Read Latch,Auto,Normal,Early,Late,Later;",
+	"P4O[35:32],SDRAM Clk Phase,Auto,0.0ns,0.8ns,1.6ns,2.3ns,3.1ns,3.9ns,4.7ns,5.5ns,6.3ns,7.0ns,7.8ns,8.6ns,9.4ns,10.2ns,10.9ns;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -199,11 +204,15 @@ localparam CONF_STR = {
 
 wire        forced_scandoubler;
 wire  [1:0] buttons;
-wire [31:0] status;
+// DIAG-REVERT-2026-10-15: original below
+// wire [31:0] status;
+wire [63:0] status;   // DIAG: widened for the SDRAM options at O[38:32]
 wire [10:0] ps2_key;
 
 wire        ioctl_download;
 wire        gpw_ioctl_wait;         // GP World sprite ROM -> DDR download stall
+wire        d2_sd_ioctl_wait;       // DIAG-REVERT-2026-10-15: new, delete on revert. DL2 ROM -> SDRAM stall
+wire        d2_cal_hold;            // DIAG-REVERT-2026-10-15: new, delete on revert. SDRAM phase sweep holds DL2
 wire        ioctl_upload;
 wire        ioctl_upload_req;
 wire  [7:0] ioctl_index;
@@ -258,7 +267,9 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_dout(ioctl_dout),
 	.ioctl_din(ioctl_din),
 	.ioctl_index(ioctl_index),
-	.ioctl_wait(gpw_ioctl_wait),
+	// DIAG-REVERT-2026-10-15: original below
+	// .ioctl_wait(gpw_ioctl_wait),
+	.ioctl_wait(gpw_ioctl_wait | (brd[BRD_DL2] & d2_sd_ioctl_wait)),   // DIAG: DL2 ROM bytes also land in SDRAM
 
 
 	.joystick_0(joystick_0),
@@ -295,13 +306,98 @@ wire CLK_100M;                  // PLL outclk_1, 100 MHz. Was an unused 10 MHz K
                                 // VCO stays at 800 MHz; only the C1 divider changed (80 -> 8).
 wire locked;
 
+// DIAG-REVERT-2026-10-15: original block below
+// pll pll
+// (
+//     .refclk(CLK_50M),
+//     .rst(0),
+//     .outclk_0(CLK_CORE),
+//     .outclk_1(CLK_100M),
+//     .locked(locked)
+// );
+// DIAG: outclk_1 is now CLK_SDRAM (80 MHz, copy of C0) and the PLL's reconfig port drives its phase.
+wire        CLK_SDRAM;
+wire [63:0] reconfig_to_pll;
+wire [63:0] reconfig_from_pll;
+wire        cfg_waitrequest;
+wire        cfg_write;
+wire  [5:0] cfg_address;
+wire [31:0] cfg_data;
+
 pll pll
 (
     .refclk(CLK_50M),
     .rst(0),
     .outclk_0(CLK_CORE),
-    .outclk_1(CLK_100M),
+    .outclk_1(CLK_SDRAM),
+    .reconfig_to_pll(reconfig_to_pll),
+    .reconfig_from_pll(reconfig_from_pll),
     .locked(locked)
+);
+
+pll_cfg pll_cfg
+(
+    .mgmt_clk(CLK_50M),
+    .mgmt_reset(0),
+    .mgmt_waitrequest(cfg_waitrequest),
+    .mgmt_read(0),
+    .mgmt_readdata(),
+    // writes come from sdram_phase_ctl
+    .mgmt_write(cfg_write),
+    .mgmt_address(cfg_address),
+    .mgmt_writedata(cfg_data),
+    .reconfig_to_pll(reconfig_to_pll),
+    .reconfig_from_pll(reconfig_from_pll)
+);
+
+// SDRAM clock phase. One DPS step = VCO/8 = 156 ps (800 MHz VCO), 80 per 80 MHz period;
+// manual OSD entries are 5 steps. Auto: dl2_sdram sweeps all 80 after a DL2 load and parks mid-window.
+wire       ph_auto = (status[35:32] == 4'd0);
+wire [6:0] cal_ph;
+wire       cal_tgl, ph_ack_tgl;
+
+sdram_phase_ctl #(.CNT_SEL(5'd1), .MAN_STEP(7'd5)) phase_ctl
+(
+    .clk(CLK_50M),
+    .sel(status[35:32]),
+    .cal_val(cal_ph),
+    .cal_tgl(cal_tgl),
+    .ack_tgl(ph_ack_tgl),
+    .cfg_waitrequest(cfg_waitrequest),
+    .cfg_write(cfg_write),
+    .cfg_address(cfg_address),
+    .cfg_data(cfg_data)
+);
+
+// Phase moved: ack the calibrator and re-measure the read latch.
+reg  [2:0] ph_ack_s = 3'd0;
+always @(posedge CLK_CORE) ph_ack_s <= {ph_ack_s[1:0], ph_ack_tgl};
+wire       sdr_recal = ph_ack_s[2] ^ ph_ack_s[1];
+
+// SDRAM_CLK: same inverted DDR output as sdram.sv's, on the phase-steppable CLK_SDRAM.
+altddio_out
+#(
+    .extend_oe_disable("OFF"),
+    .intended_device_family("Cyclone V"),
+    .invert_output("OFF"),
+    .lpm_hint("UNUSED"),
+    .lpm_type("altddio_out"),
+    .oe_reg("UNREGISTERED"),
+    .power_up_high("OFF"),
+    .width(1)
+)
+sdramclk_ddr
+(
+    .datain_h(1'b0),
+    .datain_l(1'b1),
+    .outclock(CLK_SDRAM),
+    .dataout(SDRAM_CLK),
+    .aclr(1'b0),
+    .aset(1'b0),
+    .oe(1'b1),
+    .outclocken(1'b1),
+    .sclr(1'b0),
+    .sset(1'b0)
 );
 
 assign CLK_VIDEO = CLK_CORE;   // scaler reference clock (paired with ce_pix from CE_DIV_LOG2)
@@ -885,7 +981,9 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 (
 	.rom_addr(d2_rom_a), .rom_data(prog_q),
 	.core_clk(CLK_CORE),
-	.reset_n(game_run & brd[BRD_DL2]),
+	// DIAG-REVERT-2026-10-15: original below
+	// .reset_n(game_run & brd[BRD_DL2]),
+	.reset_n(game_run & brd[BRD_DL2] & ~d2_cal_hold),   // DIAG: held while the SDRAM phase sweep runs
 
 	// DL2 has no DIPs (EEPROM-configured); controls only.
 	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),
@@ -907,16 +1005,62 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 	.dbg_addr(), .dbg_type(), .dbg_halt()
 );
 
-// DL2's main RAM in DDR, through the port the framebuffer does not use.
-ddram_byte_port #(.BASE(28'h1000000)) dl2_ram
+// DIAG-REVERT-2026-10-15: original block below (DL2's main RAM in DDR)
+// // DL2's main RAM in DDR, through the port the framebuffer does not use.
+// ddram_byte_port #(.BASE(28'h1000000)) dl2_ram
+// (
+// 	.clk(CLK_CORE), .reset_n(game_run & brd[BRD_DL2]),
+// 	.cpu_addr(d2_ram_addr), .cpu_din(d2_ram_din),
+// 	.cpu_rd(d2_ram_rd), .cpu_wr(d2_ram_wr),
+// 	.cpu_dout(d2_ram_dout), .busy(d2_ram_busy),
+// 	.mem_addr(d2_mem_addr), .mem_din(d2_mem_din), .mem_be(d2_mem_be),
+// 	.mem_we(d2_mem_we), .mem_req(d2_mem_req), .mem_ack(d2_mem_ack),
+// 	.mem_dout(d2_mem_dout)
+// );
+// DIAG: DL2's main RAM in SDRAM. Its DDR rom-port side is tied off (no requests ever start).
+assign {d2_mem_addr, d2_mem_din, d2_mem_be, d2_mem_we, d2_mem_req} = '0;
+
+wire       sdr_rd_auto = (status[38:36] == 3'd0);
+wire [1:0] sdr_rd_mode = (status[38:36] == 3'd2) ? 2'd0 :
+                         (status[38:36] == 3'd3) ? 2'd2 :
+                         (status[38:36] == 3'd4) ? 2'd3 : 2'd1;
+
+dl2_sdram dl2_ram
 (
-	.clk(CLK_CORE), .reset_n(game_run & brd[BRD_DL2]),
-	.cpu_addr(d2_ram_addr), .cpu_din(d2_ram_din),
-	.cpu_rd(d2_ram_rd), .cpu_wr(d2_ram_wr),
-	.cpu_dout(d2_ram_dout), .busy(d2_ram_busy),
-	.mem_addr(d2_mem_addr), .mem_din(d2_mem_din), .mem_be(d2_mem_be),
-	.mem_we(d2_mem_we), .mem_req(d2_mem_req), .mem_ack(d2_mem_ack),
-	.mem_dout(d2_mem_dout)
+	.clk(CLK_CORE),
+	.por_reset(~locked),
+
+	.ioctl_download(ioctl_download),
+	.ioctl_wr2(ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < 25'h10000) & brd[BRD_DL2]),
+	.ioctl_addr(ioctl_addr),
+	.ioctl_dout(ioctl_dout),
+	.ioctl_wait(d2_sd_ioctl_wait),
+
+	.rd_auto(sdr_rd_auto),
+	.rd_mode(sdr_rd_mode),
+	.ram_addr(d2_ram_addr), .ram_din(d2_ram_din),
+	.ram_rd(d2_ram_rd), .ram_wr(d2_ram_wr),
+	.ram_dout(d2_ram_dout), .ram_busy(d2_ram_busy),
+
+	.recal(sdr_recal),
+	.ph_auto(ph_auto),
+	.ld_hold(status[0]),
+	.ph_req_val(cal_ph),
+	.ph_req_tgl(cal_tgl),
+	.cal_hold(d2_cal_hold),
+
+	.SDRAM_DQ(SDRAM_DQ),
+	.SDRAM_A(SDRAM_A),
+	.SDRAM_DQML(SDRAM_DQML),
+	.SDRAM_DQMH(SDRAM_DQMH),
+	.SDRAM_BA(SDRAM_BA),
+	.SDRAM_nCS(SDRAM_nCS),
+	.SDRAM_nWE(SDRAM_nWE),
+	.SDRAM_nRAS(SDRAM_nRAS),
+	.SDRAM_nCAS(SDRAM_nCAS),
+	.SDRAM_CKE(SDRAM_CKE),
+	// SDRAM_CLK is driven from CLK_SDRAM by sdramclk_ddr
+	.SDRAM_CLK()
 );
 
 // DL2's Sony LDP-1450, in the core domain so its strobes are never crossed.
