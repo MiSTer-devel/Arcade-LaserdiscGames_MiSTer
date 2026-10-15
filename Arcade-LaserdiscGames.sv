@@ -551,6 +551,11 @@ wire [15:0] ovl_sx     = ovl_sx_mul[18:3];
 // boundary, so using the raw value would slide the overlay mid-raster.
 wire [15:0] ovl_vrel   = (rr_vpos >= rr_band_act) ? (rr_vpos - rr_band_act) : 16'd0;
 wire [15:0] ovl_sy     = crt_mode ? ovl_vrel : {1'b0, ovl_vrel[15:1]};
+// DIAG-REVERT-2026-10-14: new block, delete on revert. ovl_sy of the NEXT raster line, for
+// SuperDon's hblank prefetch of a line's first cell; the reader runs vpos backwards when flipped.
+wire [15:0] rr_vpos_nx  = flip ? (rr_vpos - 16'd1) : (rr_vpos + 16'd1);
+wire [15:0] ovl_vrel_nx = (rr_vpos_nx >= rr_band_act) ? (rr_vpos_nx - rr_band_act) : 16'd0;
+wire [15:0] ovl_sy_nx   = crt_mode ? ovl_vrel_nx : {1'b0, ovl_vrel_nx[15:1]};
 
 // Priority: LED band (DL/SA only) > DL2 text overlay > Cliff's TMS overlay >
 // seek black > disc video.  Each term is inert outside its own game.
@@ -802,6 +807,7 @@ SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 	.ld_playing_o(ld_playing_sd),
 
 	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+	.ovl_hraw(rr_hpos), .ovl_vnext(ovl_sy_nx), .ovl_flip(flip),   // DIAG-REVERT-2026-10-14: new, delete on revert
 	.ovl_rgb(sdq_ovl_rgb), .ovl_opaque(sdq_ovl_opaque),
 	.dbg_led(dbg_led_sd)
 );

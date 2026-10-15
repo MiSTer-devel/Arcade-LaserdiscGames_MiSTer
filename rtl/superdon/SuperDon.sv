@@ -56,6 +56,9 @@ module SuperDon
     // ---- overlay, already in the core's shared 320x240 space ----
     input         [15:0] ovl_hpos,
     input         [15:0] ovl_vpos,
+    input         [15:0] ovl_hraw,      // DIAG-REVERT-2026-10-14: new port, delete on revert
+    input         [15:0] ovl_vnext,     // DIAG-REVERT-2026-10-14: new port, delete on revert
+    input                ovl_flip,      // DIAG-REVERT-2026-10-14: new port, delete on revert
     input                ovl_ce_pix,
     output reg    [23:0] ovl_rgb,
     output reg           ovl_opaque,
@@ -288,16 +291,29 @@ module SuperDon
     // including blanking (R4/R5), and VRAM rows 28..31 are never scanned out.
     // Both axes are therefore a stretch onto the shared 320x240 overlay space,
     // so no source row or column is ever dropped.
-    wire [23:0] sx_mul = ovl_hpos * 16'd205;   // 320 -> 256 columns
-    wire [23:0] sy_mul = ovl_vpos * 16'd239;   // 240 -> 224 rows
-    wire  [7:0] src_x  = sx_mul[15:8];
+    // DIAG-REVERT-2026-10-14: original block commented out below
+    // wire [23:0] sx_mul = ovl_hpos * 16'd205;   // 320 -> 256 columns
+    // wire [23:0] sy_mul = ovl_vpos * 16'd239;   // 240 -> 224 rows
+    // wire  [7:0] src_x  = sx_mul[15:8];
+    // wire  [7:0] src_y  = sy_mul[15:8];
+    // wire        in_win = (sx_mul[23:16] == 8'd0) && (sy_mul[23:16] == 8'd0);
+    //
+    // // Free-run the fetch one cell ahead and adopt it at the cell boundary; the
+    // // displayed pixel is a bit-select from the latched row. Sampling a pass in
+    // // flight returns the previous cell -- see the Cliff Hanger renderer.
+    // wire [7:0] px_pf = src_x + 8'd8;
+    // DIAG: columns from the raw 512-px raster (exactly 2 px each); in hblank the fetch targets the
+    // NEXT line's first cell, which nothing else fetches (it showed cell 7 via the old src_x wrap).
+    wire        h_act  = (ovl_hraw < 16'd512);
+    wire  [7:0] src_x  = ovl_hraw[8:1];
+    wire [23:0] sy_mul = ovl_vpos  * 16'd239;  // 240 -> 224 rows
+    wire [23:0] sn_mul = ovl_vnext * 16'd239;
     wire  [7:0] src_y  = sy_mul[15:8];
-    wire        in_win = (sx_mul[23:16] == 8'd0) && (sy_mul[23:16] == 8'd0);
-
-    // Free-run the fetch one cell ahead and adopt it at the cell boundary; the
-    // displayed pixel is a bit-select from the latched row. Sampling a pass in
-    // flight returns the previous cell -- see the Cliff Hanger renderer.
-    wire [7:0] px_pf = src_x + 8'd8;
+    wire  [7:0] src_yn = sn_mul[15:8];
+    wire        in_win = h_act && (sy_mul[23:16] == 8'd0);
+    wire  [4:0] cell_nx = ovl_flip ? (src_x[7:3] - 5'd1) : (src_x[7:3] + 5'd1);
+    wire  [4:0] pf_tgt  = h_act ? cell_nx : (ovl_flip ? 5'd31 : 5'd0);
+    wire  [7:0] pf_ytgt = h_act ? src_y   : src_yn;
 
     reg  [3:0]  fs;
     reg  [7:0]  pf_code;
@@ -330,9 +346,13 @@ module SuperDon
             // the glyph shifted right one byte and its last two pixels lost.
             case (fs)
                 4'd0: begin
-                    vram_A_r <= {src_y[7:3], px_pf[7:3]};
-                    pf_cell  <= px_pf[7:3];
-                    pf_py    <= src_y;
+                    // DIAG-REVERT-2026-10-14: original below, uncomment to restore
+                    // vram_A_r <= {src_y[7:3], px_pf[7:3]};
+                    // pf_cell  <= px_pf[7:3];
+                    // pf_py    <= src_y;
+                    vram_A_r <= {pf_ytgt[7:3], pf_tgt};   // DIAG
+                    pf_cell  <= pf_tgt;                   // DIAG
+                    pf_py    <= pf_ytgt;                  // DIAG
                     fs       <= 4'd1;
                 end
                 4'd1: fs <= 4'd2;                                  // vram read in flight
@@ -360,7 +380,9 @@ module SuperDon
             // Testing pf_* instead samples a fetch in flight: the row then holds
             // bytes from two different cells, and because the FSM's phase drifts
             // against the raster the mix changes every cell and every frame.
-            if (done_valid && (src_x[7:3] == done_cell) && (src_y == done_py) &&
+            // DIAG-REVERT-2026-10-14: original below, uncomment to restore
+            // if (done_valid && (src_x[7:3] == done_cell) && (src_y == done_py) &&
+            if (done_valid && h_act && (src_x[7:3] == done_cell) && (src_y == done_py) &&   // DIAG
                 ((src_x[7:3] != cur_cell) || (src_y != cur_py))) begin
                 cur_row  <= done_row;
                 cur_cell <= src_x[7:3];
