@@ -98,6 +98,10 @@ set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_y_ac.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_cx_dc.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_cx_ac.v
+set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_y_dc_flat.v
+set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_y_ac_flat.v
+set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_cx_dc_flat.v
+set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dht_std_cx_ac_flat.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_dqt.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_mcu_id.v
 set_global_assignment -name VERILOG_FILE rtl/video/core_jpeg/src_v/jpeg_mcu_proc.v
