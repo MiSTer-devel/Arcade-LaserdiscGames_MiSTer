@@ -91,14 +91,8 @@ module ldp_transport
     assign film_tick   = (vcnt >= film_period - 22'd1);
     assign field_phase = fcnt;
 
-    // DIAG-REVERT-2026-10-14: new, delete on revert. A SKIP keeps the disc moving through the
-    // video hold: the game dead-reckons the frame from its IRQ between polls (SDQ $030F/$02D4).
-    reg  skip_run, disc_hold_q;
-    wire hold_eff = disc_hold && !skip_run;
     // Written as the SAME expression as the advance gate below so the two cannot drift apart.
-    // DIAG-REVERT-2026-10-14: original below, uncomment to restore
-    // wire disc_moving = (mode == M_PLAY) && !disc_hold;
-    wire disc_moving = (mode == M_PLAY) && !hold_eff;   // DIAG
+    wire disc_moving = (mode == M_PLAY) && !disc_hold;
     reg  disc_moving_q;
     wire motion_rise = disc_moving && !disc_moving_q;
 
@@ -149,11 +143,7 @@ module ldp_transport
             play_speed_q4 <= 5'd4; speed_acc <= 2'd0;
             seek_tail_cnt <= 4'd0;
             skip_frame <= 17'd0; skip_land <= 1'b0;
-            skip_run <= 1'b0; disc_hold_q <= 1'b0;   // DIAG-REVERT-2026-10-14: new, delete on revert
         end else if (!pause) begin     // paused -> hold all state (disc frozen, in sync)
-            // DIAG-REVERT-2026-10-14: new block, delete on revert. Ends at the hold's release.
-            disc_hold_q <= disc_hold;
-            if (disc_hold_q && !disc_hold) skip_run <= 1'b0;
 
             // Field phase. Deliberately NOT frozen by disc_hold: freezing fcnt gates frame_tick,
             // which gates the atomic land, which releases the hold -- that is a deadlock.
@@ -168,9 +158,7 @@ module ldp_transport
 
             // PLAY advances on the FILM tick. M_SEARCH's busy countdown and M_SCAN's head slew
             // stay on frame_tick -- they are wall-clock, not disc motion.
-            // DIAG-REVERT-2026-10-14: original below, uncomment to restore
-            // if (film_tick && (mode == M_PLAY) && !disc_hold) begin
-            if (film_tick && (mode == M_PLAY) && !hold_eff) begin   // DIAG
+            if (film_tick && (mode == M_PLAY) && !disc_hold) begin
                 curr_frame <= curr_frame + {14'd0, speed_adv};
                 speed_acc  <= speed_rem;
                 if (stop_valid && ((curr_frame + {14'd0, speed_adv}) >= stop_frame)) begin
@@ -248,7 +236,6 @@ module ldp_transport
 
                 case (cmd_op)
                     OP_SEARCH: begin
-                        skip_run <= 1'b0;   // DIAG-REVERT-2026-10-14: new, delete on revert
                         search_frame <= cmd_arg; mode <= M_SEARCH;
                         stop_valid <= 1'b0;
                         // Only arm the tail when we were actually PLAYING -- hold-frame seeks
@@ -304,7 +291,6 @@ module ldp_transport
                         skip_frame   <= curr_frame + cmd_arg;
                         skip_land    <= 1'b1;
                         search_cmd_o <= 1'b1;
-                        skip_run     <= 1'b1;   // DIAG-REVERT-2026-10-14: new, delete on revert
                     end
                     default: ;   // OP_NOP: consumes the accumulator in the front-end only
                 endcase
