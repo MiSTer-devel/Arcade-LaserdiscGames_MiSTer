@@ -56,6 +56,8 @@ module ldp_transport
     reg  [4:0]  play_speed_q4;
     reg  [1:0]  speed_acc;
     reg  [3:0]  seek_tail_cnt;
+    reg  [16:0] skip_frame;
+    reg         skip_land;     // SKIP target lands next cycle, after its search_cmd_o pulse
 
     // Busy-report countdown in field ticks (59.94 Hz), holding Daphne's 0.5 s search fiction.
     // Times the STATUS report only -- the disc POSITION lands atomically.
@@ -89,8 +91,14 @@ module ldp_transport
     assign film_tick   = (vcnt >= film_period - 22'd1);
     assign field_phase = fcnt;
 
+    // DIAG-REVERT-2026-10-14: new, delete on revert. A SKIP keeps the disc moving through the
+    // video hold: the game dead-reckons the frame from its IRQ between polls (SDQ $030F/$02D4).
+    reg  skip_run, disc_hold_q;
+    wire hold_eff = disc_hold && !skip_run;
     // Written as the SAME expression as the advance gate below so the two cannot drift apart.
-    wire disc_moving = (mode == M_PLAY) && !disc_hold;
+    // DIAG-REVERT-2026-10-14: original below, uncomment to restore
+    // wire disc_moving = (mode == M_PLAY) && !disc_hold;
+    wire disc_moving = (mode == M_PLAY) && !hold_eff;   // DIAG
     reg  disc_moving_q;
     wire motion_rise = disc_moving && !disc_moving_q;
 
@@ -140,7 +148,12 @@ module ldp_transport
             audio_en1 <= 1'b1; audio_en2 <= 1'b1;
             play_speed_q4 <= 5'd4; speed_acc <= 2'd0;
             seek_tail_cnt <= 4'd0;
+            skip_frame <= 17'd0; skip_land <= 1'b0;
+            skip_run <= 1'b0; disc_hold_q <= 1'b0;   // DIAG-REVERT-2026-10-14: new, delete on revert
         end else if (!pause) begin     // paused -> hold all state (disc frozen, in sync)
+            // DIAG-REVERT-2026-10-14: new block, delete on revert. Ends at the hold's release.
+            disc_hold_q <= disc_hold;
+            if (disc_hold_q && !disc_hold) skip_run <= 1'b0;
 
             // Field phase. Deliberately NOT frozen by disc_hold: freezing fcnt gates frame_tick,
             // which gates the atomic land, which releases the hold -- that is a deadlock.
@@ -155,7 +168,9 @@ module ldp_transport
 
             // PLAY advances on the FILM tick. M_SEARCH's busy countdown and M_SCAN's head slew
             // stay on frame_tick -- they are wall-clock, not disc motion.
-            if (film_tick && (mode == M_PLAY) && !disc_hold) begin
+            // DIAG-REVERT-2026-10-14: original below, uncomment to restore
+            // if (film_tick && (mode == M_PLAY) && !disc_hold) begin
+            if (film_tick && (mode == M_PLAY) && !hold_eff) begin   // DIAG
                 curr_frame <= curr_frame + {14'd0, speed_adv};
                 speed_acc  <= speed_rem;
                 if (stop_valid && ((curr_frame + {14'd0, speed_adv}) >= stop_frame)) begin
@@ -214,6 +229,14 @@ module ldp_transport
                 park_track <= 1'b0;
             end
 
+            // SKIP lands the cycle AFTER its search_cmd_o pulse, so the streamer is armed
+            // before the frame jumps (it only re-points on a jump seen while armed).
+            if (skip_land) begin
+                curr_frame <= skip_frame;
+                speed_acc  <= 2'd0;
+                skip_land  <= 1'b0;
+            end
+
             // ---- command bus ----
             if (cmd_action) begin
                 if (cmd_op == OP_SEARCH) park_track <= 1'b0;
@@ -225,6 +248,7 @@ module ldp_transport
 
                 case (cmd_op)
                     OP_SEARCH: begin
+                        skip_run <= 1'b0;   // DIAG-REVERT-2026-10-14: new, delete on revert
                         search_frame <= cmd_arg; mode <= M_SEARCH;
                         stop_valid <= 1'b0;
                         // Only arm the tail when we were actually PLAYING -- hold-frame seeks
@@ -274,13 +298,13 @@ module ldp_transport
                     // arg[1] = explicit set (a digit was typed), arg[0] = value; else toggle.
                     OP_AUDIO1: audio_en1 <= cmd_arg[1] ? cmd_arg[0] : ~audio_en1;
                     OP_AUDIO2: audio_en2 <= cmd_arg[1] ? cmd_arg[0] : ~audio_en2;
-                    // Relative skip, simplified to a search.
-                    // NOTE: carried over verbatim from DragonsLair_LDV1000.sv -- this does NOT
-                    // fire search_cmd_o, so the video path never flushes on a skip. Neither DL
-                    // nor Space Ace issues one. Flagged, deliberately not changed in the split.
-                    OP_SKIP: begin
-                        mode <= M_SEARCH; search_frame <= curr_frame + cmd_arg;
-                        stop_valid <= 1'b0;
+                    // Relative skip (Daphne ldp.cpp pre_skip_forward): jump and KEEP PLAYING,
+                    // only while playing. Flush the video now, land next cycle (as SEARCH does).
+                    OP_SKIP: if (mode == M_PLAY) begin
+                        skip_frame   <= curr_frame + cmd_arg;
+                        skip_land    <= 1'b1;
+                        search_cmd_o <= 1'b1;
+                        skip_run     <= 1'b1;   // DIAG-REVERT-2026-10-14: new, delete on revert
                     end
                     default: ;   // OP_NOP: consumes the accumulator in the front-end only
                 endcase

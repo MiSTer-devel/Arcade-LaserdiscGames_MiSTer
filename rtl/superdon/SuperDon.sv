@@ -183,24 +183,49 @@ module SuperDon
     wire       ld_cmd_strobe;
     reg  [7:0] ld_cmd_latch;
     reg        ld_cmd_stb;
+    // DIAG-REVERT-2026-10-14: original block commented out below
+    // always @(posedge clk_sys) begin
+    //     ld_cmd_stb <= 1'b0;
+    //     if (!reset) ld_cmd_latch <= 8'd0;
+    //     else if (cpu_ce && cs_ld_w) begin
+    //         ld_cmd_latch <= cpu_Dout;
+    //         ld_cmd_stb   <= 1'b1;
+    //     end
+    // end
+    //
+    // // Pop on the FALLING edge: the byte must stay put for the whole read cycle
+    // // and only advance once the Z80 has latched it.  The 0xC2 frame readback
+    // // hands back five digits on consecutive status reads and needs this strobe.
+    // reg ld_rd_q, ld_status_rd;
+    // always @(posedge clk_sys) begin
+    //     if (!reset) begin ld_rd_q <= 1'b0; ld_status_rd <= 1'b0; end
+    //     else begin
+    //         ld_rd_q      <= cs_ld_r;
+    //         ld_status_rd <= ld_rd_q & ~cs_ld_r;
+    //     end
+    // end
+    // DIAG: latched interface (Daphne superd.cpp OnLDV1000LineChange). The CPU writes a latch the
+    // player takes at the command strobe; the CPU reads a status latched at the status strobe,
+    // which also pops the 0xC2 digit queue. One exchange per field, as on the real board.
+    wire       ld_stat_strobe;
+    reg        ld_stat_strobe_q, ld_status_rd;
+    reg  [7:0] ld_in_latch;
+    reg        ld_cmd_edge_q;
     always @(posedge clk_sys) begin
-        ld_cmd_stb <= 1'b0;
-        if (!reset) ld_cmd_latch <= 8'd0;
-        else if (cpu_ce && cs_ld_w) begin
-            ld_cmd_latch <= cpu_Dout;
-            ld_cmd_stb   <= 1'b1;
-        end
-    end
-
-    // Pop on the FALLING edge: the byte must stay put for the whole read cycle
-    // and only advance once the Z80 has latched it.  The 0xC2 frame readback
-    // hands back five digits on consecutive status reads and needs this strobe.
-    reg ld_rd_q, ld_status_rd;
-    always @(posedge clk_sys) begin
-        if (!reset) begin ld_rd_q <= 1'b0; ld_status_rd <= 1'b0; end
-        else begin
-            ld_rd_q      <= cs_ld_r;
-            ld_status_rd <= ld_rd_q & ~cs_ld_r;
+        ld_cmd_stb   <= 1'b0;
+        ld_status_rd <= 1'b0;
+        if (!reset) begin
+            ld_cmd_latch <= 8'hFF; ld_in_latch <= 8'hFC;
+            ld_stat_strobe_q <= 1'b1; ld_cmd_edge_q <= 1'b1;
+        end else begin
+            if (cpu_ce && cs_ld_w) ld_cmd_latch <= cpu_Dout;
+            ld_stat_strobe_q <= ld_stat_strobe;
+            ld_cmd_edge_q    <= ld_cmd_strobe;
+            if (!ld_stat_strobe && ld_stat_strobe_q) begin
+                ld_in_latch  <= ld_status;
+                ld_status_rd <= 1'b1;
+            end
+            if (ld_cmd_strobe && !ld_cmd_edge_q) ld_cmd_stb <= 1'b1;   // same edge as the IRQ
         end
     end
 
@@ -209,7 +234,9 @@ module SuperDon
         .player_sel(4'd0),              // PLAYER_LDV1000
         .cmd_stb(ld_cmd_stb), .cmd_byte(ld_cmd_latch),
         .blip(1'b0),
-        .status(ld_status), .status_strobe(), .command_strobe(ld_cmd_strobe),
+        // DIAG-REVERT-2026-10-14: original below, uncomment to restore
+        // .status(ld_status), .status_strobe(), .command_strobe(ld_cmd_strobe),
+        .status(ld_status), .status_strobe(ld_stat_strobe), .command_strobe(ld_cmd_strobe),   // DIAG
         .ready_n(), .frame_valid(),
         .tx_valid(), .tx_byte(), .tx_pop(1'b0),
         .search_cmd_o(ld_search_cmd_o), .play_end_o(ld_play_end_o),
@@ -272,7 +299,9 @@ module SuperDon
                 8'h01:   cpu_Din = in1;
                 8'h02:   cpu_Din = dsw[7:0];
                 8'h03:   cpu_Din = dsw[15:8];
-                8'h04:   cpu_Din = ld_status;
+                // DIAG-REVERT-2026-10-14: original below, uncomment to restore
+                // 8'h04:   cpu_Din = ld_status;
+                8'h04:   cpu_Din = ld_in_latch;   // DIAG
                 default: cpu_Din = 8'hFF;
             endcase
         end

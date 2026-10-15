@@ -44,7 +44,7 @@ module ldp_ldv1000
 `include "ldp_bus.svh"
 
     reg [7:0] status_r;                 // player state byte, behind the 0xC2 queue
-    reg       search_pend;              // SEARCH/SKIP accepted, transport not yet landed
+    reg       search_pend;              // SEARCH accepted, transport not yet landed
 
     // ---- status codes (ldv1000hle.h) ----
     localparam [7:0] ST_PARK=8'h7c, ST_PLAY=8'h64, ST_STOP=8'h65,
@@ -124,16 +124,17 @@ module ldp_ldv1000
                 CMD_FWD_X3:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd12; end
                 CMD_FWD_X4:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd16; end
                 CMD_FWD_X5:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd20; end
-                CMD_SKIP_FWD_10:  begin cmd_op = OP_SKIP; cmd_arg = 17'd10;  end
-                CMD_SKIP_FWD_20:  begin cmd_op = OP_SKIP; cmd_arg = 17'd20;  end
-                CMD_SKIP_FWD_30:  begin cmd_op = OP_SKIP; cmd_arg = 17'd30;  end
-                CMD_SKIP_FWD_40:  begin cmd_op = OP_SKIP; cmd_arg = 17'd40;  end
-                CMD_SKIP_FWD_50:  begin cmd_op = OP_SKIP; cmd_arg = 17'd50;  end
-                CMD_SKIP_FWD_60:  begin cmd_op = OP_SKIP; cmd_arg = 17'd60;  end
-                CMD_SKIP_FWD_70:  begin cmd_op = OP_SKIP; cmd_arg = 17'd70;  end
-                CMD_SKIP_FWD_80:  begin cmd_op = OP_SKIP; cmd_arg = 17'd80;  end
-                CMD_SKIP_FWD_90:  begin cmd_op = OP_SKIP; cmd_arg = 17'd90;  end
-                CMD_SKIP_FWD_100: begin cmd_op = OP_SKIP; cmd_arg = 17'd100; end
+                // The LD-V1000 skips 10n+1 frames (Daphne ldv1000.cpp:372).
+                CMD_SKIP_FWD_10:  begin cmd_op = OP_SKIP; cmd_arg = 17'd11;  end
+                CMD_SKIP_FWD_20:  begin cmd_op = OP_SKIP; cmd_arg = 17'd21;  end
+                CMD_SKIP_FWD_30:  begin cmd_op = OP_SKIP; cmd_arg = 17'd31;  end
+                CMD_SKIP_FWD_40:  begin cmd_op = OP_SKIP; cmd_arg = 17'd41;  end
+                CMD_SKIP_FWD_50:  begin cmd_op = OP_SKIP; cmd_arg = 17'd51;  end
+                CMD_SKIP_FWD_60:  begin cmd_op = OP_SKIP; cmd_arg = 17'd61;  end
+                CMD_SKIP_FWD_70:  begin cmd_op = OP_SKIP; cmd_arg = 17'd71;  end
+                CMD_SKIP_FWD_80:  begin cmd_op = OP_SKIP; cmd_arg = 17'd81;  end
+                CMD_SKIP_FWD_90:  begin cmd_op = OP_SKIP; cmd_arg = 17'd91;  end
+                CMD_SKIP_FWD_100: begin cmd_op = OP_SKIP; cmd_arg = 17'd101; end
                 default: ;   // CLEAR, the inert group and unrecognized bytes: OP_NOP
             endcase
         end
@@ -246,8 +247,9 @@ module ldp_ldv1000
                         CMD_SKIP_FWD_10, CMD_SKIP_FWD_20, CMD_SKIP_FWD_30, CMD_SKIP_FWD_40,
                         CMD_SKIP_FWD_50, CMD_SKIP_FWD_60, CMD_SKIP_FWD_70, CMD_SKIP_FWD_80,
                         CMD_SKIP_FWD_90, CMD_SKIP_FWD_100: begin
-                            status_r <= ST_SEARCH; number <= 17'd0;
-                            search_pend <= 1'b1;
+                            // A skip keeps PLAYING: status keeps its code, nothing pending, FF
+                            // re-arms at once. Super Don sends no PLAY after one ($157D).
+                            number <= 17'd0;
                         end
                         CMD_STORE, CMD_RECALL, CMD_DISPLAY, CMD_DISPLAY_ENABLE,
                         CMD_DISPLAY_DISABLE, CMD_GET_FRAME_NUM, CMD_GET_1ST_DISPLAY,
