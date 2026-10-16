@@ -430,7 +430,10 @@ module DragonsLair2
     // Identical mix and bias to DragonsLair_CPU.sv so both games present the
     // same thing to the shared volume chain.
     wire [9:0] ay_sum = {2'b00, ay_A} + {2'b00, ay_B} + {2'b00, ay_C};
-    assign audio = {1'b0, ay_sum, 5'd0} - 16'sd12288;
+    // DIAG-REVERT-2026-10-15: original below (one AY channel was too quiet to hear the move beeps)
+    // assign audio = {1'b0, ay_sum, 5'd0} - 16'sd12288;
+    wire [9:0] ay_sum_x4 = {ay_sum[7:0], 2'b00};    // tone A only (<= 255), so x4 cannot overflow
+    assign audio = {1'b0, ay_sum_x4, 5'd0} - 16'sd12288;
 
     //--------------------------------------------------- 8259 + timer --------
     // MAME models two interrupts: a 60 Hz periodic one whose vector_r returns

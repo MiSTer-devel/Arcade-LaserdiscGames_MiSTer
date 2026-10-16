@@ -430,6 +430,8 @@ module ldp_ldp1450
                         C_PLAY, C_STILL, C_CH1_ON, C_CH1_OFF, C_CH2_ON, C_CH2_OFF: begin
                             number <= 17'd0;
                             push_en <= 1'b1; push_val <= ACK;   // immediate
+                            // DIAG-REVERT-2026-10-15: new line, delete on revert. Daphne keeps a running REPEAT across PLAY; OP_PLAY disarms the stop, so re-arm it
+                            if (cmd_byte == C_PLAY && rp == RP_RUN && !rp_replay) rp_req <= RQ_AUTO;
                         end
                         8'h80: tcmd    <= 1'b1;                 // USER INDEX CONTROL
                         8'h81: text_on <= 1'b1;                 // USER INDEX ON
