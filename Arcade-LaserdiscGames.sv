@@ -1340,7 +1340,7 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
     .ld_playing(ld_playing_top),
     .disc_2997(disc_2997_w), .disc_leader(ld_leader_w),
-    .hdr_valid()
+    .hdr_valid(), .hdr_ver(), .hdr_game_id()
 );
 
 // ---- JPEG frame decoder: byte stream -> px writes (block-order, addressed by x,y) ----

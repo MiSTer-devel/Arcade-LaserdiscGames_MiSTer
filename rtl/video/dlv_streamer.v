@@ -77,7 +77,9 @@ module dlv_streamer #(
     // First content frame of the mounted disc (header@28) -> the player's park
     // position, so a never-commanded transport does not walk the leader in real time.
     output     [16:0] disc_leader,
-    output            hdr_valid     // .dlv header parsed
+    output            hdr_valid,    // .dlv header parsed
+    output      [7:0] hdr_ver,      // header@4: .dlv version (< 3 = re-pack)
+    output      [7:0] hdr_game_id   // header@104 (v3): MRA game ID it was packed for, FF = unknown
 );
     //------------------------------------------------------------------------
     // Compressed-frame BRAM (video)
@@ -103,8 +105,13 @@ module dlv_streamer #(
     reg [31:0] ld_leader_off;   // header@28: disc frame where the captured content begins (was: LD_LEADER const)
     // header@24 is RESERVED=0 and this reg is repurposed for the v2 field.
     reg [31:0] spf_q16_hdr;     // header@96: samples per DISC frame, 16.16 fixed point (.dlv v2)
+    reg  [7:0] ver_hdr;         // header@4
+    reg [15:0] disc_num_hdr;    // header@20 (v3): disc rate numerator, 30000 or 24000 (/1001)
+    reg  [7:0] game_id_hdr;     // header@104 (v3)
     reg        header_valid;
-    assign     hdr_valid = header_valid;
+    assign     hdr_valid   = header_valid;
+    assign     hdr_ver     = ver_hdr;
+    assign     hdr_game_id = game_id_hdr;
     // Set by a mount, cleared by an unmount; never by reset, so a reset re-reads the header.
     reg        img_present = 1'b0;
     always @(posedge clk) if (img_mounted) img_present <= (img_size != 64'd0);
@@ -285,7 +292,10 @@ module dlv_streamer #(
                                           && (spf_q16_hdr <  32'd134217728);   // <  2048.0
     wire [29:0] spf_q16    = spf_hdr_ok ? spf_q16_hdr[29:0] : {samp_per_frame, 16'd0};
     wire [13:0] samp_per_tick = spf_hdr_ok ? spf_q16[29:16] : 14'd1839;
-    assign      disc_2997     = spf_hdr_ok && (spf_q16 < 30'd108_134_400);   // < 1650.0 samp/frame
+    // v3 states the game's disc rate at header@20 (the packer derives header@96 from the same
+    // value); older files keep the header@96 inference.
+    assign      disc_2997     = (header_valid && ver_hdr >= 8'd3) ? (disc_num_hdr == 16'd30000)
+                                : (spf_hdr_ok && (spf_q16 < 30'd108_134_400));   // < 1650.0 samp/frame
 
     // Slave the audio drain to the DISC FRAME POSITION rather than a free-running 44.1 kHz clock,
     // so audio and video share one master (the disc, which the Z80 controls) and cannot drift.
@@ -425,6 +435,7 @@ module dlv_streamer #(
             // 0 => "absent", so a v1 image deterministically takes the
             // samp_per_frame fallback instead of powering up on an undefined value.
             spf_q16_hdr  <= 32'd0;
+            ver_hdr <= 8'd0; disc_num_hdr <= 16'd0; game_id_hdr <= 8'hFF;
             cur_frame <= 17'd0;
     // Sentinel, not 0: a real vid_target of 0 is legitimate (first mapped frame).
             last_fetched_frame <= {17{1'b1}};
@@ -559,6 +570,10 @@ module dlv_streamer #(
                     case (cap_mode)
                     2'd0: begin // header
                         case (sd_buff_addr)
+                        9'd4:   ver_hdr            <= sd_buff_dout;
+                        9'd20:  disc_num_hdr[7:0]  <= sd_buff_dout;   // v3 disc rate numerator
+                        9'd21:  disc_num_hdr[15:8] <= sd_buff_dout;
+                        9'd104: game_id_hdr        <= sd_buff_dout;   // v3; v1/v2 read 0 here
                         9'd16: frame_count[7:0]   <= sd_buff_dout;
                         9'd17: frame_count[15:8]  <= sd_buff_dout;
                         9'd18: frame_count[23:16] <= sd_buff_dout;

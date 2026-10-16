@@ -764,7 +764,18 @@ else
     endcase
 
     // DIAG-REVERT-2026-10-15: new block, delete on revert. Jumps only from idle states, so every action keeps its order.
-    if (FAST_BUS != 0)
+    if (FAST_BUS == 2)
+      case (biu_state)
+        8'h02 : biu_state <= 8'h18;   // T1 sync -> 1A in 4 clocks
+        8'h1B : biu_state <= 8'h33;   // 1A -> READY sample in 5
+        8'h22 : biu_state <= 8'h33;   // wait state = 5 clocks (reached only from 36)
+        8'h37 : biu_state <= 8'h3B;   // READY seen -> data latch in 4
+        8'h41 : biu_state <= 8'h44;   // data steer -> cycle end
+        8'h47 : biu_state <= 8'h4D;   // done -> 4E -> 00
+        8'h51 : biu_state <= 8'h57;   // word cycle second byte -> 58 -> 01
+        default : ;
+      endcase
+    else if (FAST_BUS != 0)
       case (biu_state)
         8'h02 : biu_state <= 8'h14;   // T1 sync -> 1A in 8 clocks
         8'h1B : biu_state <= 8'h2C;   // 1A -> READY sample in 12

@@ -77,6 +77,7 @@ from PIL import Image, ImageTk
 
 # Shared with the .dlv side so both browsers report identical digits/opcodes.
 from browse_dlv import digits_of, searchable, opcode_seq, hexs
+import dlv_games                # the games table, shared with pack_dlv.py
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 PIC_TYPE = {1: "I", 2: "P", 3: "B", 4: "D"}
@@ -90,10 +91,20 @@ class M2v:
         self.path = path
         self.f = open(path, "rb")
         self.mm = mmap.mmap(self.f.fileno(), 0, access=mmap.ACCESS_READ)
+        self.framefile = None       # set by _read_framefile; feeds game detection
         self.leader = leader if leader is not None else self._read_framefile()
         self._scan()
         self.w, self.h, self.fps = self._probe_geometry()
         self._cache_gop = None      # (first_gop_idx, [PIL.Image, ...], base_display)
+
+    def game_line(self):
+        """The game this m2v belongs to, and the disc rate pack_dlv.py will pack it at."""
+        g = dlv_games.detect(self.framefile or self.path, [self.path])
+        if not g:
+            return "game: not detected -- pack_dlv.py will need --game KEY"
+        how = "1:1" if abs(g[2][0] / g[2][1] - self.fps) < 0.001 else "resampled when packed"
+        return (f"game: {g[1]} ({g[0]})  disc {dlv_games.rate_str(g[2])} fps, "
+                f"this file {self.fps:.3f} -> {how}")
 
     # ---- Daphne framefile: "<offset>  <file.m2v>" (pack_dlv.py:153 reads the same) ----
     def _read_framefile(self):
@@ -106,6 +117,7 @@ class M2v:
                         m = re.match(r"\s*(-?\d+)\s+(\S+\.m2v)\s*$", line, re.I)
                         if m and os.path.basename(m.group(2)).lower() == base.lower():
                             print(f"[framefile] {txt}: leader {m.group(1)} for {base}")
+                            self.framefile = txt
                             return int(m.group(1))
             except OSError:
                 pass
@@ -423,6 +435,7 @@ class App:
         m.insert("end", f" {v.w}x{v.h}  pictures={v.frame_count}  {v.fps:.3f}fps"
                         f"  I-frames={v.i_frames}\n")
         m.insert("end", f" leader={v.leader}   GOPs={len(v.gops)}\n")
+        m.insert("end", f" {v.game_line()}\n")
         m.insert("end", "-" * 52 + "\n")
         m.insert("end", f" VIDEO frame   {self.vid}   [{order.upper()} order]\n")
         # The whole point: same number, two enumerations, and the gap between them.
@@ -521,6 +534,7 @@ def main():
     print(f"      {v.w}x{v.h} pictures={v.frame_count} fps={v.fps:.4f} "
           f"I-frames={v.i_frames} GOPs={len(v.gops)} leader={v.leader} "
           f"dur={v.duration_s():.1f}s")
+    print(f"      {v.game_line()}")
     print(f"      >>> compare 'pictures' against the .dlv header's frame_count <<<")
     if v.gaps:
         print(f"      WARNING: {len(v.gaps)} display slots have no picture; "

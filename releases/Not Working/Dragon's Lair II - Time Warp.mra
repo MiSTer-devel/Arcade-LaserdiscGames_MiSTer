@@ -37,7 +37,7 @@
     <!-- GAME-ID byte 0: 04 = Dragon's Lair II. -->
     <!-- POST-SEEK-FRAMES byte 1: extra film ticks before seek commits. 0=instant, 5≈208ms. -->
     <rom index="1">
-        <part>04 03</part>
+        <part>04 00</part>
     </rom>
 
     <!-- Index 0: single 64KB IPL ROM (MAME cinematronics/dlair2.cpp). -->
@@ -45,6 +45,6 @@
         <part crc="e9453a1b" name="dl2_319.bin"/>
     </rom>
 
-    <remark>Dragon's Lair II (Leland) - Sony LDP-1450. CORE SUPPORT NOT PRESENT: the board is an i86, and no i86 CPU exists in this core yet. This MRA will load but not run.</remark>
-    <mratimestamp>20260907000000</mratimestamp>
+    <remark>Dragon's Lair II - Time Warp (Leland)</remark>
+    <mratimestamp>20261015000000</mratimestamp>
 </misterromdescription>

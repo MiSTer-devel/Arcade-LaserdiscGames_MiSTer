@@ -93,7 +93,9 @@ module DragonsLair2
     reg       cpu_clk;
     always @(posedge core_clk) begin
         if (!reset_n) begin clkdiv <= 2'd0; cpu_clk <= 1'b0; end
-        else if (clkdiv == 2'd3) begin clkdiv <= 2'd0; cpu_clk <= ~cpu_clk; end
+        // DIAG-REVERT-2026-10-15: original below (10 MHz bus clock), uncomment to restore
+        // else if (clkdiv == 2'd3) begin clkdiv <= 2'd0; cpu_clk <= ~cpu_clk; end
+        else if (clkdiv == 2'd1) begin clkdiv <= 2'd0; cpu_clk <= ~cpu_clk; end   // DIAG: 20 MHz bus, EU timing stays 10 MHz
         else clkdiv <= clkdiv + 2'd1;
     end
 
@@ -117,7 +119,8 @@ module DragonsLair2
     // DIAG: 8 core clocks per 8088 clock (10 MHz) vs the microcode's 100/4.77 = 20.96: x391>>10 = 0.3818.
     // DIAG-REVERT-2026-10-15: previous line below, uncomment to restore
     // biu_max #(.CYC_MUL(391), .CYC_SHIFT(10)) BIU (
-    biu_max #(.CYC_MUL(391), .CYC_SHIFT(10), .FAST_BUS(1)) BIU (   // DIAG: bus cycles at 10 MHz T-states too
+    // biu_max #(.CYC_MUL(391), .CYC_SHIFT(10), .FAST_BUS(1)) BIU (
+    biu_max #(.CYC_MUL(391), .CYC_SHIFT(10), .FAST_BUS(2)) BIU (   // DIAG: 4-clock T-states (20 MHz bus) so the bus never limits the EU, as in Daphne
 
         .CORE_CLK_INT(core_clk),
         .CLK(cpu_clk), .RESET_INT(~reset_n), .READY_IN(ready_in),
@@ -440,9 +443,12 @@ module DragonsLair2
     // a wrong assumption here shows up as a wrong vector instead of silently
     // working. POST writes ICW1 to 0x020 then ICW2/3/4 to 0x021, so plain OCW1
     // mask writes have to be told apart from the init sequence.
-    localparam [31:0] TICK_60HZ = CLK_HZ / 32'd60;
-
-    reg  [20:0] tick_cnt;
+    // DIAG-REVERT-2026-10-15: original below (MAME's 60 Hz), uncomment to restore
+    // localparam [31:0] TICK_60HZ = CLK_HZ / 32'd60;
+    //
+    // reg  [20:0] tick_cnt;
+    localparam [31:0] TICK_182 = (64'd10 * CLK_HZ) / 64'd182;   // DIAG: Daphne LAIR2_IRQ_PERIOD = 1000/18.2 ms
+    reg  [22:0] tick_cnt;                                       // DIAG
     reg         irq0_pend;
     reg   [7:0] pic_imr, pic_isr, pic_icw2;
     reg   [1:0] pic_icw_state;          // 0 OCW1, 1 want ICW2, 2 want ICW3, 3 want ICW4
@@ -469,15 +475,22 @@ module DragonsLair2
 
     always @(posedge core_clk) begin
         if (!reset_n) begin
-            tick_cnt <= 21'd0; irq0_pend <= 1'b0;
+            // DIAG-REVERT-2026-10-15: original below, uncomment to restore
+            // tick_cnt <= 21'd0; irq0_pend <= 1'b0;
+            tick_cnt <= 23'd0; irq0_pend <= 1'b0;   // DIAG
             pic_imr <= 8'hFF; pic_isr <= 8'h00; pic_icw2 <= 8'h08;
             pic_icw_state <= 2'd0; pic_single <= 1'b0; pic_need4 <= 1'b0;
             inta_phase <= 1'b0; inta_vec <= 8'h08;
         end else begin
-            if (tick_cnt == TICK_60HZ[20:0] - 21'd1) begin
-                tick_cnt  <= 21'd0;
+            // DIAG-REVERT-2026-10-15: original block below, uncomment to restore
+            // if (tick_cnt == TICK_60HZ[20:0] - 21'd1) begin
+            //     tick_cnt  <= 21'd0;
+            //     irq0_pend <= 1'b1;
+            // end else tick_cnt <= tick_cnt + 21'd1;
+            if (tick_cnt == TICK_182[22:0] - 23'd1) begin   // DIAG
+                tick_cnt  <= 23'd0;
                 irq0_pend <= 1'b1;
-            end else tick_cnt <= tick_cnt + 21'd1;
+            end else tick_cnt <= tick_cnt + 23'd1;
 
             if (pic_wr) begin
                 if (!io_a[0]) begin

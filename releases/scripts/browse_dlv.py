@@ -37,6 +37,8 @@ from tkinter import ttk
 
 from PIL import Image, ImageTk
 
+import dlv_games                # the games table, shared with pack_dlv.py
+
 DEFAULT_DLV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "dragonslair", "dlair.dlv")
 
@@ -70,7 +72,15 @@ class Dlv:
         # v2: samples-per-disc-frame in 16.16, and the largest coded frame.
         self.spf_q16, self.max_frame = (struct.unpack_from("<II", h, 96)
                                         if len(h) >= 104 else (0, 0))
-        if self.ver >= 2 and 1 << 20 <= self.spf_q16 < 1 << 27:
+        # v3: @20/@24 = the game's disc rate (num/den), @104 game id, @108 game key.
+        self.stale = self.ver < 3
+        self.game_id, self.game_key = 0xFF, ""
+        if not self.stale:
+            self.disc_rate = (self.disc_fpks, self.mpeg_fpks)
+            self.game_id = struct.unpack_from("<I", h, 104)[0]
+            self.game_key = h[108:124].rstrip(b"\0").decode("ascii", "replace")
+            self.fps = self.disc_rate[0] / self.disc_rate[1]
+        elif self.ver >= 2 and 1 << 20 <= self.spf_q16 < 1 << 27:
             # fps derived from the AUDIO, which is the only self-consistent source; mpeg_fpks was
             # removed in v2 precisely because it assumed audio duration == video duration.
             self.fps = self.srate / (self.spf_q16 / 65536.0)
@@ -107,6 +117,16 @@ class Dlv:
 
     def duration_s(self):
         return self.total_samples / self.srate if self.srate else 0.0
+
+    def version_line(self):
+        """One line: version, game and disc rate -- or the re-pack warning."""
+        if self.stale:
+            return (f"v{self.ver}  STALE -- re-pack with pack_dlv.py (v3). "
+                    f"Rate {self.fps:.3f} fps is a guess from the audio.")
+        g = dlv_games.BY_KEY.get(self.game_key)
+        title = f"{g[1]} ({g[0]})" if g else "not in the games table"
+        return (f"v{self.ver}  game={title}  id={self.game_id:02X}  "
+                f"disc={dlv_games.rate_str(self.disc_rate)} fps")
 
 
 def digits_of(disc_frame, n=5):
@@ -161,6 +181,7 @@ class App:
         self.meta = tk.Text(top, width=54, height=17, font=("monospace", 9),
                             bg="#0d0d0d", fg="#d8d8d8", relief="flat")
         self.meta.grid(row=0, column=1, sticky="nsew")
+        self.meta.tag_configure("stale", foreground="#ff6666")
 
         self.diff = tk.Text(top, width=54, height=11, font=("monospace", 9),
                             bg="#0d0d0d", fg="#9fd6a0", relief="flat")
@@ -252,7 +273,7 @@ class App:
         m.insert("end", f" file        {os.path.basename(d.path)}\n")
         m.insert("end", f" v{d.ver} {d.w}x{d.h}  frames={d.frame_count}  {d.fps:.3f}fps"
                        f"  ldoff={d.ldoff}" + (f"  maxframe={d.max_frame}" if d.max_frame else "") + "\n")
-        m.insert("end", f" ldoff(leader)={d.ldoff}   disc={d.disc_fpks/1000:.2f}fps\n")
+        m.insert("end", f" {d.version_line()}\n", "stale" if d.stale else ())
         m.insert("end", "-" * 52 + "\n")
         m.insert("end", f" VIDEO frame   {self.vid}\n")
         m.insert("end", f"   blob offset {off}  size {size}\n")
@@ -308,6 +329,7 @@ def main():
     except Exception as ex:
         sys.exit(f"failed to open {path}: {ex}")
     print(f"[dlv] {path}")
+    print(f"      {dlv.version_line()}")
     print(f"      v{dlv.ver} {dlv.w}x{dlv.h} frames={dlv.frame_count} fps={dlv.fps:.4f} "
           f"ldoff={dlv.ldoff} dur={dlv.duration_s():.1f}s")
     root = tk.Tk()

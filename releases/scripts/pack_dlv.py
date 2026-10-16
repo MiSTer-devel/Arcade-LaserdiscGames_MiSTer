@@ -21,13 +21,18 @@ streamer can seek at sector granularity):
   [Audio blob  s16le 44100 stereo PCM]
 
 Usage:
-  pack_dlv.py dlair --src ~/daphne/dl  --dest ~/dlv
-  pack_dlv.py ace   --src ~/daphne/sa  --dest ~/dlv
-  pack_dlv.py tq    --src ~/daphne/tq  --dest ~/dlv  -q 2
-  pack_dlv.py       --src ~/daphne/dl  --dest ~/dlv     # <name> auto-discovered
+  pack_dlv.py       --src ~/daphne/dl  --dest ~/dlv     # everything auto-detected
+  pack_dlv.py lair  --src ~/daphne/dl  --dest ~/dlv
+  pack_dlv.py ThayersQuest --src ~/daphne/tq --dest ~/dlv -q 2
+  pack_dlv.py --src ~/alg/maddog --dest ~/dlv --game unknown --disc-fps 29.97   # not in the table
 
-  <name>         game base name (matches <name>.txt in --src). Optional when --src
+  <name>         framefile base name (matches <name>.txt in --src). Optional when --src
                  holds exactly one .txt.
+  --game KEY     which game this is. Normally NOT needed: it is auto-detected from the
+                 framefile / m2v names, and it sets the disc rate. Keys: see dlv_games.py.
+                 'laireuro' (25 fps PAL) is selectable ONLY here, and the core cannot play
+                 it yet. 'unknown' = a game not in the table; then --disc-fps is required.
+  --disc-fps R   override the game's disc rate: 23.976 or 29.97 (the rates the core plays).
   --src DIR      directory holding ALL source files: the .txt framefile, every .m2v
                  it names, and the audio. Nothing is read from anywhere else.
   --dest DIR     where <name>.dlv (and its companion <name>.idx) is written.
@@ -45,15 +50,15 @@ Usage:
   --reuse        reuse an existing intermediate .mjpeg instead of re-running ffmpeg
   --jobs N       parallel jpegtran workers (default: cpu_count)
 
-=============================== HEADER v2 =====================================
+=============================== HEADER v3 =====================================
 off  type  field                notes
   0  4s    MAGIC "DLV1"
-  4  u32   VER = 2              v1 files remain readable; see samp_per_frame_q16
+  4  u32   VER = 3              the core asks for a re-pack of anything older
   8  u32   width
  12  u32   height
  16  u32   frame_count          <- read by dlv_streamer
- 20  u32   disc_fpks = 29970    NTSC, fixed
- 24  u32   RESERVED = 0         *** was mpeg_fpks -- REMOVED, see below ***
+ 20  u32   disc_num             *** v3 *** the GAME's disc rate, e.g. 30000 (v2: 29970, unused)
+ 24  u32   disc_den             *** v3 *** e.g. 1001                  (v2: 0, was mpeg_fpks)
  28  s32   ldframe_offset       <- read by dlv_streamer.  SIGNED (TQ = -16)
  32  u32   srate = 44100
  36  u32   chans = 2
@@ -64,9 +69,19 @@ off  type  field                notes
  72  u64   video_size
  80  u64   audio_off            <- read by dlv_streamer
  88  u64   audio_size           <- read by dlv_streamer
- 96  u32   samp_per_frame_q16   *** NEW *** 16.16 fixed point, see below
-100  u32   max_frame_size       *** NEW *** largest single JPEG, for FBUF sizing
-104..511   reserved, zero
+ 96  u32   samp_per_frame_q16   16.16 fixed point, samples per DISC frame, see below
+100  u32   max_frame_size       largest single JPEG, for FBUF sizing
+104  u32   game_id              *** v3 *** MRA GAME-ID byte; 0xFF = no board / unknown
+108  16s   game_key             *** v3 *** dlv_games.py key, ASCII, zero padded
+124..511   reserved, zero
+
+*** v3: THE DISC RATE (offsets 20/24) ***
+Daphne counts disc frames at the GAME's rate (game.cpp m_disc_fps) and maps every m2v as
+    mpeg_frame = (disc - file_start) * file_fps / disc_fps
+so the index is dense at the DISC rate and each file is resampled onto it. Dragon's Lair
+II is 29.97 over 209 files at 23.976 (+1 at 29.97, 2 at 47.952); packed 1:1 its hints ran
+a move late. When every file already runs at the disc rate (DL, SA, Cliff, ...) the
+index and audio are byte-identical to v2; only the header changes.
 
 *** WHY mpeg_fpks IS GONE (offset 24, now RESERVED=0) ***
 It was derived by ASSUMING audio duration == video duration, which gives Space Ace
@@ -110,13 +125,14 @@ un-repacked .dlv keeps working exactly as it does today.  No flag day.
 """
 import os, re, sys, mmap, struct, shutil, argparse, subprocess, tempfile
 from multiprocessing import Pool, cpu_count
+from fractions import Fraction
+import dlv_games                # the games table, shared with browse_dlv.py / browse_m2v.py
 
 SECTOR    = 512
-DISC_FPKS = 29970          # NTSC, fixed for all these games
 SRATE     = 44100
 CHANS     = 2
 MAGIC     = b"DLV1"
-VER       = 2
+VER       = 3
 
 
 # ----------------------------------------------------------------------------
@@ -430,6 +446,10 @@ def main():
     ap.add_argument("--jobs", type=int, default=cpu_count())
     ap.add_argument("--keep", action="store_true",
                     help="keep the .mjpeg/.pcm/.idx intermediates instead of deleting them")
+    ap.add_argument("--game", default=None, choices=sorted(dlv_games.BY_KEY) + ["unknown"],
+                    help="which game this is (normally auto-detected; sets the disc rate)")
+    ap.add_argument("--disc-fps", default=None, choices=sorted(dlv_games.CORE_RATES),
+                    help="override the game's disc rate")
     a = ap.parse_args()
 
     W, H = (int(v) for v in a.size.lower().split("x"))
@@ -455,7 +475,7 @@ def main():
                      f"e.g.  pack_dlv.py dlair --src {src} --dest {dest}")
         name = found[0][:-4]
         txt  = os.path.join(src, found[0])
-        print(f"[auto] framefile {found[0]} -> game '{name}'")
+        print(f"[auto] framefile {found[0]} -> name '{name}'")
 
     out   = os.path.join(dest, f"{name}.dlv")
     idxo  = os.path.join(work, f"{name}.idx")   # companion index is an INTERMEDIATE
@@ -486,7 +506,39 @@ def main():
     base = segs[0][0]                            # disc frame of index entry 0
     multi = len(segs) > 1
     print(f"[framefile] {len(segs)} segment(s), base disc frame {base}: " +
-          ", ".join(f"{o}->{n}" for o, n in segs))
+          ", ".join(f"{o}->{n}" for o, n in segs[:8]) + (" ..." if len(segs) > 8 else ""))
+
+    # ---- v3: which game, and therefore which disc rate --------------------------------
+    keys = ", ".join(sorted(dlv_games.BY_KEY))
+    if a.game == "unknown":
+        game, how = None, "--game unknown"
+    elif a.game:
+        game, how = dlv_games.BY_KEY[a.game], "--game"
+    else:
+        game, how = dlv_games.detect(txt, [n for _, n in segs]), f"auto-detected from {os.path.basename(txt)}"
+    if game is None and not a.disc_fps:
+        sys.exit(f"[fatal] cannot tell which game {os.path.basename(txt)} is, so the disc rate is unknown.\n"
+                 f"        Name it:      --game KEY   ({keys})\n"
+                 f"        or, for a game not in that list:  --game unknown --disc-fps 23.976|29.97")
+    disc_fps = dlv_games.CORE_RATES[a.disc_fps] if a.disc_fps else game[2]
+    game_id  = game[3] if game else dlv_games.GAME_UNKNOWN
+    game_key = game[0] if game else "unknown"
+    print(f"[game] {game[1] if game else 'not in the games table'} ({game_key}, {how}), "
+          f"disc rate {dlv_games.rate_str(disc_fps)} "
+          f"{'(--disc-fps)' if a.disc_fps else '(Daphne)'}")
+    if disc_fps not in dlv_games.CORE_RATES.values():
+        print(f"[warn] {dlv_games.rate_str(disc_fps)} fps: the core cannot play this rate yet. "
+              f"The .dlv will be written but will not play correctly.")
+
+    # Each file is resampled onto the disc rate (Daphne ldp-vldp.cpp). Only needed when a
+    # file's own rate differs; otherwise the index/audio are exactly the v2 1:1 layout.
+    seg_fps = [probe_fps(find_src(n)) for _, n in segs]
+    remap   = any(Fraction(*f) != Fraction(*disc_fps) for f in seg_fps)
+    rates   = {}
+    for f in seg_fps:
+        rates[f"{f[0]/f[1]:.3f}"] = rates.get(f"{f[0]/f[1]:.3f}", 0) + 1
+    print(f"[fps] file rates {', '.join(f'{n} x {r}' for r, n in rates.items())} -> "
+          + ("resampled onto the disc rate" if remap else "all at the disc rate, 1:1"))
 
     # =========================================================================
     # Pass 1: per segment -- encode, split, normalise, append to the video blob.
@@ -631,12 +683,25 @@ def main():
     # frame, so the streamer always has a valid JPEG to fetch and the picture simply
     # holds across the gap instead of being fed a zero-length frame.
     # =========================================================================
-    span_end    = max(off + len(ent) for off, ent in seg_info)
+    def disc_span(si):                           # disc frames segment si covers
+        n = len(seg_info[si][1])
+        if not remap:
+            return n
+        fn, fd = seg_fps[si]; dn, dd = disc_fps
+        return -(-n * dn * fd // (dd * fn))      # ceil(n * disc_fps / file_fps)
+    span_end    = max(off + disc_span(si) for si, (off, ent) in enumerate(seg_info))
     frame_count = span_end - base
     covered     = [None] * frame_count
-    for off, ent in seg_info:
-        for k, e in enumerate(ent):
-            covered[off - base + k] = e
+    for si, (off, ent) in enumerate(seg_info):
+        fn, fd = seg_fps[si]
+        dn, dd = disc_fps
+        for k in range(disc_span(si)):
+            j = (k * fn * dd) // (fd * dn) if remap else k   # file frame shown at disc frame off+k
+            if j < len(ent):
+                covered[off - base + k] = ent[j]
+    if remap:
+        print(f"[index] {frame_count} disc frames at {dlv_games.rate_str(disc_fps)} "
+              f"from {sum(len(e) for _, e in seg_info)} video frames")
     gaps = sum(1 for c in covered if c is None)
     last = next(c for c in covered if c is not None)
     for i in range(frame_count):                 # hold-last across gaps
@@ -669,6 +734,8 @@ def main():
     # samples per DISC frame: exact for a single segment; from segment 0 otherwise.
     n0  = len(seg_info[0][1])
     spf = (os.path.getsize(seg_pcm[0]) // (CHANS * 2)) / n0
+    if remap:                                    # samples per DISC frame
+        spf = SRATE * disc_fps[1] / disc_fps[0]  # 1471.47 @ 30000/1001
     asize = round(frame_count * spf) * CHANS * 2
     total_samples = asize // (CHANS * 2)
     # ---- FILM-RATE-SPF-2026-07-24 ----------------------------------------------------------
@@ -686,11 +753,11 @@ def main():
     # The blob geometry (asize / total_samples) is deliberately UNCHANGED -- those describe how much
     # audio exists; spf_q16 describes the RATE. They are independent fields.
     # ORIGINAL: spf_q16 = round(total_samples * 65536 / frame_count)
-    fps_num, fps_den = probe_fps(find_src(segs[0][1]))
+    fps_num, fps_den = disc_fps                        # v3: the DISC rate, not file 0's
     spf_film  = SRATE * fps_den / fps_num              # 1839.3375 @ 24000/1001
     spf_q16   = round(spf_film * 65536)                # 120542822 for all three games
     spf_ratio = total_samples / frame_count            # the OLD value -- now only a sanity check
-    print(f"[fps] {segs[0][1]}: {fps_num}/{fps_den} = {fps_num/fps_den:.5f} fps "
+    print(f"[fps] disc {fps_num}/{fps_den} = {fps_num/fps_den:.5f} fps "
           f"-> samp/frame {spf_film:.4f}")
     if abs(spf_ratio - spf_film) / spf_film > 0.01:
         print(f"[warn] AUDIO DOES NOT SPAN THE VIDEO: ratio-derived samp/frame {spf_ratio:.3f} vs "
@@ -711,15 +778,17 @@ def main():
 
     hdr = bytearray(SECTOR)
     struct.pack_into("<4sIIII", hdr,  0, MAGIC, VER, W, H, frame_count)
-    struct.pack_into("<II",     hdr, 20, DISC_FPKS, 0)      # 24 = RESERVED (was mpeg_fpks)
+    struct.pack_into("<II",     hdr, 20, disc_fps[0], disc_fps[1])   # v3: the game's disc rate
     struct.pack_into("<i",      hdr, 28, base)              # SIGNED -- TQ is -16
     struct.pack_into("<IIQ",    hdr, 32, SRATE, CHANS, total_samples)
     struct.pack_into("<QQ",     hdr, 48, idx_off, idx_len)
     struct.pack_into("<QQ",     hdr, 64, vid_off, vsize)
     struct.pack_into("<QQ",     hdr, 80, aud_off, asize)
-    struct.pack_into("<II",     hdr, 96, spf_q16, max_sz)   # NEW in v2
+    struct.pack_into("<II",     hdr, 96, spf_q16, max_sz)
+    struct.pack_into("<I16s",   hdr, 104, game_id, game_key.encode("ascii"))   # v3
 
-    print(f"[dlv] {out}: v{VER} {W}x{H} q{a.quality} discframes={frame_count} "
+    print(f"[dlv] {out}: v{VER} game={game_key} disc={dlv_games.rate_str(disc_fps)} "
+          f"{W}x{H} q{a.quality} discframes={frame_count} "
           f"ldoff={base}\n      samp/frame={spf_q16/65536:.5f} (q16={spf_q16})  "
           f"video={vsize} audio={asize} ({total_samples/SRATE:.1f}s)")
 
@@ -734,6 +803,8 @@ def main():
             want = abase + round((off - base) * spf) * CHANS * 2
             if f.tell() < want:
                 f.write(b"\x00" * (want - f.tell()))        # silence across the gap
+            if remap and f.tell() > want:
+                f.seek(want)                                # resampled overlap: the next file owns its start
             with open(p, "rb") as ain:
                 shutil.copyfileobj(ain, f, 1 << 20)
         if f.tell() < abase + asize:
