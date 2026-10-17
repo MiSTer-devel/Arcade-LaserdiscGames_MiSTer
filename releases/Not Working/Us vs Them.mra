@@ -24,8 +24,8 @@
     <players>2</players>
     <joystick>8-way</joystick>
     <special_controls></special_controls>
-    <num_buttons>3</num_buttons>
-    <buttons names="Fire,Missile,Button 3,-,Coin,Start 1P,Start 2P,Pause" default="A,B,X,Start,R,L"/>
+    <num_buttons>4</num_buttons>
+    <buttons names="Fire,Missile,Button 3,-,Coin,Start 1P,Start 2P,Pause" default="A,B,X,Select,Start,R,L"/>
 
     <!-- Same board as M.A.C.H. 3 (MAME g2laser), but note this game reads THREE
          buttons at IN4 bits 4,5,6 where M.A.C.H. 3 and Cobra Command use bits 5,6.

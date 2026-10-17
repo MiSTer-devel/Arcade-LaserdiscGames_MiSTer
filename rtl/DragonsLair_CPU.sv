@@ -111,7 +111,19 @@ module DragonsLair_CPU
     output        ld_playing_o,
     // MRA-tunable post-seek tail drain (index 1, byte 1). 0 = instant flush.
     input   [3:0] post_seek_frames,
-    input         disc_2997       // .dlv encode rate -> LD transport
+    input         disc_2997,      // .dlv encode rate -> LD transport
+
+    // ---- shared chip pool (Arcade-LaserdiscGames.sv) ----
+    output chip_pool_pkg::z80w_i_t z80w_0_i,
+    input  chip_pool_pkg::z80w_o_t z80w_0_o,
+    output chip_pool_pkg::ldp_i_t  ldp_0_i,
+    input  chip_pool_pkg::ldp_o_t  ldp_0_o,
+    output chip_pool_pkg::ay_i_t   ay_0_i,
+    input  chip_pool_pkg::ay_o_t   ay_0_o,
+    output chip_pool_pkg::ram_i_t  ram0_i,      // work RAM
+    input  chip_pool_pkg::ram_o_t  ram0_o,
+    output chip_pool_pkg::t400_i_t t400_0_i,    // Thayer's COP421
+    input  chip_pool_pkg::t400_o_t t400_0_o
 );
 
 //------------------------------------------------------- Clock Enables -------------------------------------------------------//
@@ -131,28 +143,23 @@ wire [15:0] cpu_A;
 wire  [7:0] cpu_Dout;
 wire        n_m1, n_mreq, n_iorq, n_rd, n_wr, n_rfsh;
 
-T80s #(.Mode(0), .T2Write(1), .IOWait(1)) main_cpu
-(
-    .RESET_n(reset),
-    .CLK(clk_sys),
-    // CEN is gated by disc_hold to freeze GAME TIME while the video path primes after a seek:
-    // the Z80 runs on a real-time ~30.5 Hz IRQ, so if the picture is held but the CPU keeps
-    // counting it schedules the segment end from a moment the player has not seen yet.
-    .CEN(cen_4m & ~pause & ~disc_hold),
-    .WAIT_n(cpu_wait_n),
-    .INT_n(n_irq),
-    .NMI_n(1'b1),
-    .BUSRQ_n(1'b1),
-    .M1_n(n_m1),
-    .MREQ_n(n_mreq),
-    .IORQ_n(n_iorq),
-    .RD_n(n_rd),
-    .WR_n(n_wr),
-    .RFSH_n(n_rfsh),
-    .A(cpu_A),
-    .DI(cpu_Din),
-    .DO(cpu_Dout)
-);
+// The shared T80 (z80w_0).
+// CEN is gated by disc_hold to freeze GAME TIME while the video path primes after a seek:
+// the Z80 runs on a real-time ~30.5 Hz IRQ, so if the picture is held but the CPU keeps
+// counting it schedules the segment end from a moment the player has not seen yet.
+assign z80w_0_i.ce     = cen_4m & ~pause & ~disc_hold;
+assign z80w_0_i.wait_n = cpu_wait_n;
+assign z80w_0_i.int_n  = n_irq;
+assign z80w_0_i.nmi_n  = 1'b1;
+assign z80w_0_i.di     = cpu_Din;
+assign cpu_A    = z80w_0_o.a;
+assign cpu_Dout = z80w_0_o.dout;
+assign n_m1     = z80w_0_o.m1_n;
+assign n_mreq   = z80w_0_o.mreq_n;
+assign n_iorq   = z80w_0_o.iorq_n;
+assign n_rd     = z80w_0_o.rd_n;
+assign n_wr     = z80w_0_o.wr_n;
+assign n_rfsh   = z80w_0_o.rfsh_n;
 
 //------------------------------------------------------ Address Decoding ------------------------------------------------------//
 
@@ -311,20 +318,12 @@ assign rom_D    = rom_data;
 // still mirrors x4 exactly as before); Thayer's uses all of it linearly across 0x8000-0xBFFF.
 wire [13:0] ram_A = is_thayers ? cpu_A[13:0] : {3'b000, cpu_A[10:0]};
 
-dpram_dc #(.widthad_a(14)) work_ram
-(
-    .clock_a(clk_sys),
-    .wren_a(cs_ram & ~n_wr),
-    .address_a(ram_A),
-    .data_a(cpu_Dout),
-    .q_a(workram_D),
-
-    .clock_b(clk_sys),
-    .wren_b(1'b0),
-    .address_b(14'b0),
-    .data_b(8'b0),
-    .q_b()
-);
+// The shared ram0 block.
+assign ram0_i.a_addr = ram_A;
+assign ram0_i.a_we   = cs_ram & ~n_wr;
+assign ram0_i.a_din  = cpu_Dout;
+assign ram0_i.b_addr = 14'd0;
+assign workram_D     = ram0_o.a_q;
 
 //-------------------------------------------------------- AY-3-8910 -----------------------------------------------------------//
 
@@ -338,24 +337,17 @@ wire ay_bc1  = cs_ay_addr_w;
 
 wire [7:0] ay_A, ay_B, ay_C;
 
-jt49_bus #(.COMP(3'b010)) ay_chip
-(
-    .rst_n(reset),
-    .clk(clk_sys),
-    .clk_en(cen_2m),
-    .bdir(ay_bdir),
-    .bc1(ay_bc1),
-    .din(cpu_Dout),
-    .sel(1'b1),
-    .dout(ay_dout),
-    .sound(),
-    .A(ay_A),
-    .B(ay_B),
-    .C(ay_C),
-    .sample(),
-    .IOA_in(dsw[7:0]),   .IOA_out(),
-    .IOB_in(dsw[15:8]),  .IOB_out()
-);
+// The shared AY (ay_0).
+assign ay_0_i.ce     = cen_2m;
+assign ay_0_i.bdir   = ay_bdir;
+assign ay_0_i.bc1    = ay_bc1;
+assign ay_0_i.din    = cpu_Dout;
+assign ay_0_i.ioa_in = dsw[7:0];
+assign ay_0_i.iob_in = dsw[15:8];
+assign ay_dout = ay_0_o.dout;
+assign ay_A    = ay_0_o.a;
+assign ay_B    = ay_0_o.b;
+assign ay_C    = ay_0_o.c;
 
 // Mix three unsigned 8-bit channels -> signed 16-bit (as in the Kangaroo copy).
 wire [9:0] ay_sum = {2'b00, ay_A} + {2'b00, ay_B} + {2'b00, ay_C};
@@ -416,35 +408,33 @@ wire [16:0] dbg_seek_frame_w;
 wire [19:0] dbg_end_frame_w;   // raw SEARCH digits (5 nibbles)   // segment start/end frame probe
 wire  [3:0] dbg_flags_w;                         // sticky autostop telemetry
 
-ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (   // thread the core clock down
-    .clk            (clk_sys),
-    .reset_n        (reset),          // core reset is active-low
-    .cmd_stb        (ld_cmd_stb),
-    .cmd_byte       (ld_data_latch),
-    .status         (ld_status),
-    .status_strobe  (ld_status_strobe),
-    .command_strobe (ld_command_strobe),
-    .player_sel     ({3'd0, pr7820_mode}),   // 0 = LD-V1000, 1 = PR-7820
-    .blip           (1'b0),                 // PR-8210 only
-    .tx_pop         (1'b0),                 // LDP-1450 only
-    .ready_n        (ld_ready_n),
-    .search_cmd_o   (search_cmd_o),
-    .play_end_o     (play_end_o),
-    .curr_frame     (ld_curr_frame),
-    .pause          (pause),            // freeze disc motion during pause
-    .disc_hold      (disc_hold),        // video path still priming
-    .playing        (ld_playing_w),
-    .dbg_seek_frame (dbg_seek_frame_w), // segment START frame
-    .dbg_end_frame  (dbg_end_frame_w), // segment END frame
-    .dbg_flags      (dbg_flags_w),     // autostop armed/fired
-    .post_seek_frames(post_seek_frames),
-    .disc_2997      (disc_2997),
-    // DL / Space Ace / Thayer's never send 0xC2, so the frame-readback queue is
-    // unreachable here and status_rd is provably don't-care: tied off to keep
-    // these three bit-identical to the build they are known good on.
-    .park_frame     (17'd0),
-    .status_rd      (1'b0)
-);
+// The shared laserdisc player (ldp_0).
+assign ldp_0_i.player_sel       = {3'd0, pr7820_mode};   // 0 = LD-V1000, 1 = PR-7820
+assign ldp_0_i.pr8210_555       = 1'b0;
+assign ldp_0_i.cmd_stb          = ld_cmd_stb;
+assign ldp_0_i.cmd_byte         = ld_data_latch;
+assign ldp_0_i.blip             = 1'b0;                  // PR-8210 only
+assign ldp_0_i.tx_pop           = 1'b0;                  // LDP-1450 only
+assign ldp_0_i.pause            = pause;                 // freeze disc motion during pause
+assign ldp_0_i.disc_hold        = disc_hold;             // video path still priming
+assign ldp_0_i.post_seek_frames = post_seek_frames;
+assign ldp_0_i.disc_2997        = disc_2997;
+// DL / Space Ace / Thayer's never send 0xC2, so the frame-readback queue is
+// unreachable here and status_rd is provably don't-care: tied off to keep
+// these three bit-identical to the build they are known good on.
+assign ldp_0_i.park_frame       = 17'd0;
+assign ldp_0_i.status_rd        = 1'b0;
+assign ld_status         = ldp_0_o.status;
+assign ld_status_strobe  = ldp_0_o.status_strobe;
+assign ld_command_strobe = ldp_0_o.command_strobe;
+assign ld_ready_n        = ldp_0_o.ready_n;
+assign search_cmd_o      = ldp_0_o.search_cmd;
+assign play_end_o        = ldp_0_o.play_end;
+assign ld_curr_frame     = ldp_0_o.curr_frame;
+assign ld_playing_w      = ldp_0_o.playing;
+assign dbg_seek_frame_w  = ldp_0_o.dbg_seek_frame;   // segment START frame
+assign dbg_end_frame_w   = ldp_0_o.dbg_end_frame;    // segment END frame
+assign dbg_flags_w       = ldp_0_o.dbg_flags;        // autostop armed/fired
 
 // expose disc frame to the top (streamer maps -> mjpeg frame + audio sample)
 // Latch what the ROM read, and remember whether the player ever produced the
@@ -526,7 +516,8 @@ Thayers_COP #(.CLK_HZ(CLK_HZ)) u_cop
     .rom_cs_i(cop_rom_cs_i), .ioctl_addr(ioctl_addr), .ioctl_data(ioctl_data), .ioctl_wr(ioctl_wr),
     .z80_dout(cpu_Dout), .wr_g(cs_tq_copg), .wr_data(cs_tq_copwr), .rd_data(cop_rd),
     .cop_d(cop_d),
-    .keys(tq_keys)
+    .keys(tq_keys),
+    .t400_0_i(t400_0_i), .t400_0_o(t400_0_o)
 );
 
 // Four LATCHED active-low sources ORed onto the Z80 IRQ.  Each is asserted by its hardware and

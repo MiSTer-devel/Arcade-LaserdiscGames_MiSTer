@@ -1,3 +1,4 @@
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/chip_pool_pkg.sv
 set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 
 # Game Logic
@@ -22,6 +23,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/superdon/SuperDon.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/gpworld/GPWorld.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/gpworld/gpw_sprites.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/gpworld/gpw_spr_mem.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/boards/astron/Astron.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mach3/Mach3.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mach3/mach3_video.sv
 # Speech - Votrax SC-02 / SSI-263A formant synthesiser (Thayer's Quest)

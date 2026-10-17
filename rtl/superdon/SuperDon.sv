@@ -67,7 +67,19 @@ module SuperDon
     // port-0x08 write. A blinking LED means this board is not selected at all
     // (the Dragon's Lair heartbeat is showing through), so the three states are
     // visually distinct: blinking = not selected, solid = alive, dark = dead.
-    output               dbg_led
+    output               dbg_led,
+
+    // ---- shared chip pool (Arcade-LaserdiscGames.sv) ----
+    output chip_pool_pkg::z80w_i_t    z80w_0_i,
+    input  chip_pool_pkg::z80w_o_t    z80w_0_o,
+    output chip_pool_pkg::ldp_i_t     ldp_0_i,
+    input  chip_pool_pkg::ldp_o_t     ldp_0_o,
+    output chip_pool_pkg::sn76489_i_t sn76489_0_i,
+    input  chip_pool_pkg::sn76489_o_t sn76489_0_o,
+    output chip_pool_pkg::ram_i_t     ram0_i,      // work RAM
+    input  chip_pool_pkg::ram_o_t     ram0_o,
+    output chip_pool_pkg::ram_i_t     ram1_i,      // video RAM
+    input  chip_pool_pkg::ram_o_t     ram1_o
 );
 
     //--------------------------------------------------------- clocking ------
@@ -93,13 +105,12 @@ module SuperDon
     wire        n_rd, n_wr, n_mreq, n_iorq, n_m1;
     reg         n_irq;
 
-    T80s cpu (
-        .RESET_n(reset), .CLK(clk_sys), .CEN(cpu_ce),
-        .WAIT_n(1'b1), .INT_n(n_irq), .NMI_n(1'b1), .BUSRQ_n(1'b1),
-        .M1_n(n_m1), .MREQ_n(n_mreq), .IORQ_n(n_iorq),
-        .RD_n(n_rd), .WR_n(n_wr),
-        .A(cpu_A), .DI(cpu_Din), .DO(cpu_Dout)
-    );
+    // The shared T80 (z80w_0).
+    assign z80w_0_i.ce = cpu_ce;  assign z80w_0_i.wait_n = 1'b1;
+    assign z80w_0_i.int_n = n_irq;  assign z80w_0_i.nmi_n = 1'b1;  assign z80w_0_i.di = cpu_Din;
+    assign cpu_A = z80w_0_o.a;  assign cpu_Dout = z80w_0_o.dout;
+    assign n_m1 = z80w_0_o.m1_n;  assign n_mreq = z80w_0_o.mreq_n;  assign n_iorq = z80w_0_o.iorq_n;
+    assign n_rd = z80w_0_o.rd_n;  assign n_wr = z80w_0_o.wr_n;
 
     wire mem_access = ~n_mreq;
     wire io_access  = ~n_iorq & n_m1;
@@ -124,21 +135,18 @@ module SuperDon
     assign rom_addr = {2'b00, cpu_A[13:0]};
     assign rom_D    = rom_data;
 
-    dpram_dc #(.widthad_a(11)) u_ram (
-        .clock_a(clk_sys), .address_a(cpu_A[10:0]), .q_a(ram_D),
-        .wren_a(cs_ram & ~n_wr), .data_a(cpu_Dout),
-        .clock_b(clk_sys), .address_b(11'd0), .data_b(8'd0), .wren_b(1'b0), .q_b()
-    );
+    // Work RAM: the shared ram0 block.
+    assign ram0_i.a_addr = {3'd0, cpu_A[10:0]};  assign ram0_i.a_we = cs_ram & ~n_wr;
+    assign ram0_i.a_din = cpu_Dout;  assign ram0_i.b_addr = 14'd0;
+    assign ram_D = ram0_o.a_q;
 
     // Port A is the CPU, port B is the renderer -- the renderer never writes.
     wire  [9:0] vram_rd_A;
     wire  [7:0] vram_rd_D;
-    dpram_dc #(.widthad_a(10)) u_vram (
-        .clock_a(clk_sys), .address_a(cpu_A[9:0]), .q_a(vram_cpu_D),
-        .wren_a(cs_vram & ~n_wr), .data_a(cpu_Dout),
-        .clock_b(clk_sys), .address_b(vram_rd_A), .data_b(8'd0),
-        .wren_b(1'b0), .q_b(vram_rd_D)
-    );
+    // Video RAM: the shared ram1 block.
+    assign ram1_i.a_addr = {4'd0, cpu_A[9:0]};  assign ram1_i.a_we = cs_vram & ~n_wr;
+    assign ram1_i.a_din = cpu_Dout;  assign ram1_i.b_addr = {4'd0, vram_rd_A};
+    assign vram_cpu_D = ram1_o.a_q;  assign vram_rd_D = ram1_o.b_q;
 
     // Character generator lives in the TOP-LEVEL shared graphics pool, alongside
     // Mach 3's background tiles: one 8K memory, since only one board ever runs.
@@ -210,22 +218,18 @@ module SuperDon
         end
     end
 
-    ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (
-        .clk(clk_sys), .reset_n(reset),
-        .player_sel(4'd0),              // PLAYER_LDV1000
-        .cmd_stb(ld_cmd_stb), .cmd_byte(ld_cmd_latch),
-        .blip(1'b0),
-        .status(ld_status), .status_strobe(ld_stat_strobe), .command_strobe(ld_cmd_strobe),
-        .ready_n(), .frame_valid(),
-        .tx_valid(), .tx_byte(), .tx_pop(1'b0),
-        .search_cmd_o(ld_search_cmd_o), .play_end_o(ld_play_end_o),
-        .curr_frame(ld_frame_o),
-        .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
-        .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
-        .post_seek_frames(post_seek_frames),
-        .disc_2997(disc_2997),
-        .park_frame(disc_leader), .status_rd(ld_status_rd)
-    );
+    // The shared laserdisc player (ldp_0), as an LD-V1000.
+    assign ldp_0_i.player_sel = 4'd0;   // PLAYER_LDV1000
+    assign ldp_0_i.pr8210_555 = 1'b0;
+    assign ldp_0_i.cmd_stb = ld_cmd_stb;  assign ldp_0_i.cmd_byte = ld_cmd_latch;
+    assign ldp_0_i.blip = 1'b0;  assign ldp_0_i.tx_pop = 1'b0;
+    assign ldp_0_i.pause = pause;  assign ldp_0_i.disc_hold = disc_hold;
+    assign ldp_0_i.post_seek_frames = post_seek_frames;  assign ldp_0_i.disc_2997 = disc_2997;
+    assign ldp_0_i.park_frame = disc_leader;  assign ldp_0_i.status_rd = ld_status_rd;
+    assign ld_status = ldp_0_o.status;  assign ld_stat_strobe = ldp_0_o.status_strobe;
+    assign ld_cmd_strobe = ldp_0_o.command_strobe;
+    assign ld_search_cmd_o = ldp_0_o.search_cmd;  assign ld_play_end_o = ldp_0_o.play_end;
+    assign ld_frame_o = ldp_0_o.curr_frame;  assign ld_playing_o = ldp_0_o.playing;
 
     // IRQ is the LD-V1000 command strobe (Daphne superd.cpp); port 0x08 b6 acks.
     reg ld_cmd_strobe_q;
@@ -257,12 +261,11 @@ module SuperDon
         else if (sn_ce) sn_wr_n <= 1'b1;
     end
 
+    // The shared SN76496 (sn76489_0).
     wire signed [10:0] sn_snd;
-    jt89 u_sn (
-        .rst(~reset), .clk(clk_sys), .clk_en(sn_ce),
-        .wr_n(sn_wr_n), .cs_n(1'b0), .din(sn_din),
-        .sound(sn_snd), .ready()
-    );
+    assign sn76489_0_i.rst = ~reset;  assign sn76489_0_i.ce = sn_ce;
+    assign sn76489_0_i.wr_n = sn_wr_n;  assign sn76489_0_i.cs_n = 1'b0;  assign sn76489_0_i.din = sn_din;
+    assign sn_snd = sn76489_0_o.sound;
     wire signed [15:0] sn_out = {sn_snd, 5'd0};
     assign sound_l = sn_out;
     assign sound_r = sn_out;

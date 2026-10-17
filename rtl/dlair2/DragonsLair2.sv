@@ -84,7 +84,13 @@ module DragonsLair2
     // ---- telemetry ----
     output        [19:0] dbg_addr,
     output         [2:0] dbg_type,
-    output               dbg_halt
+    output               dbg_halt,
+
+    // ---- shared chip pool (Arcade-LaserdiscGames.sv) ----
+    output chip_pool_pkg::mcl86eu_i_t mcl86eu_0_i,
+    input  chip_pool_pkg::mcl86eu_o_t mcl86eu_0_o,
+    output chip_pool_pkg::jt49_i_t    jt49_0_i,
+    input  chip_pool_pkg::jt49_o_t    jt49_0_o
 );
     //--------------------------------------------------- 8088 pin clock ------
     // CLK = CORE_CLK_INT / 10 = 10 MHz, 50% duty (5 high, 5 low).
@@ -141,14 +147,28 @@ module DragonsLair2
     // BIU_CLK_COUNTER_ZERO is wired to the real counter, NOT tied to 1 as the
     // author's Lattice example does -- that tie-off is what disables the
     // microcode's instruction timing.
+    // The shared 8088 execution unit (mcl86eu_0); the bus unit above stays on the board.
+    // DIAG-REVERT-2026-10-16: pooled-EU hookup commented out below -- DL2 AND Mach 3 both dead on HW
+    // after the chip-pool refactor; this restores a private EU per board (pre-refactor arrangement).
+    // assign mcl86eu_0_i.reset_n = reset_n;
+    // assign mcl86eu_0_i.biu_done = biu_done;  assign mcl86eu_0_i.biu_clk_counter_zero = biu_clk_counter_zero;
+    // assign mcl86eu_0_i.biu_nmi_caught = biu_nmi_caught;  assign mcl86eu_0_i.biu_intr = biu_intr;
+    // assign mcl86eu_0_i.pfq_top_byte = pfq_top_byte;  assign mcl86eu_0_i.pfq_empty = pfq_empty;
+    // assign mcl86eu_0_i.pfq_addr_out = pfq_addr_out;
+    // assign mcl86eu_0_i.biu_es = biu_es;  assign mcl86eu_0_i.biu_ss = biu_ss;  assign mcl86eu_0_i.biu_cs = biu_cs;
+    // assign mcl86eu_0_i.biu_ds = biu_ds;  assign mcl86eu_0_i.biu_rm = biu_rm;  assign mcl86eu_0_i.biu_reg = biu_reg;
+    // assign mcl86eu_0_i.biu_ret = biu_ret;
+    // assign eu_biu_command = mcl86eu_0_o.eu_biu_command;  assign eu_biu_dataout = mcl86eu_0_o.eu_biu_dataout;
+    // assign eu_register_r3 = mcl86eu_0_o.eu_register_r3;  assign eu_prefix_lock = mcl86eu_0_o.eu_prefix_lock;
+    // assign eu_flag_i = mcl86eu_0_o.eu_flag_i;  assign biu_nmi_debounce = mcl86eu_0_o.biu_nmi_debounce;
+    // DIAG: private execution unit, same connections the pool made.
+    assign mcl86eu_0_i = '0;
     mcl86_eu_core EU (
         .CORE_CLK_INT(core_clk), .RESET_INT(~reset_n), .TEST_N_INT(1'b1),
         .EU_BIU_COMMAND(eu_biu_command), .EU_BIU_DATAOUT(eu_biu_dataout),
-        .EU_REGISTER_R3(eu_register_r3), .EU_PREFIX_LOCK(eu_prefix_lock),
-        .EU_FLAG_I(eu_flag_i),
+        .EU_REGISTER_R3(eu_register_r3), .EU_PREFIX_LOCK(eu_prefix_lock), .EU_FLAG_I(eu_flag_i),
         .BIU_DONE(biu_done), .BIU_CLK_COUNTER_ZERO(biu_clk_counter_zero),
-        .BIU_NMI_CAUGHT(biu_nmi_caught), .BIU_NMI_DEBOUNCE(biu_nmi_debounce),
-        .BIU_INTR(biu_intr),
+        .BIU_NMI_CAUGHT(biu_nmi_caught), .BIU_NMI_DEBOUNCE(biu_nmi_debounce), .BIU_INTR(biu_intr),
         .PFQ_TOP_BYTE(pfq_top_byte), .PFQ_EMPTY(pfq_empty), .PFQ_ADDR_OUT(pfq_addr_out),
         .BIU_REGISTER_ES(biu_es), .BIU_REGISTER_SS(biu_ss), .BIU_REGISTER_CS(biu_cs),
         .BIU_REGISTER_DS(biu_ds), .BIU_REGISTER_RM(biu_rm), .BIU_REGISTER_REG(biu_reg),
@@ -420,12 +440,11 @@ module DragonsLair2
     end
 
     wire [7:0] ay_A, ay_B, ay_C;
-    jt49 #(.COMP(3'b010)) ay_beep (          // same COMP as DL's ay_chip
-        .rst_n(reset_n), .clk(core_clk), .clk_en(cen_2m), .sel(1'b1),
-        .addr(ay_addr), .cs_n(ay_cs_n), .wr_n(ay_wr_n), .din(ay_din),
-        .dout(), .sound(), .A(ay_A), .B(ay_B), .C(ay_C), .sample(),
-        .IOA_in(8'd0), .IOA_out(), .IOB_in(8'd0), .IOB_out()
-    );
+    // The shared beep AY register core (jt49_0, COMP 3'b010 = DL's ay_chip).
+    assign jt49_0_i.rst_n = reset_n;  assign jt49_0_i.ce = cen_2m;
+    assign jt49_0_i.addr = ay_addr;  assign jt49_0_i.cs_n = ay_cs_n;  assign jt49_0_i.wr_n = ay_wr_n;
+    assign jt49_0_i.din = ay_din;
+    assign ay_A = jt49_0_o.a;  assign ay_B = jt49_0_o.b;  assign ay_C = jt49_0_o.c;
 
     // Identical mix and bias to DragonsLair_CPU.sv so both games present the
     // same thing to the shared volume chain.

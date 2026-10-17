@@ -32,6 +32,8 @@ module ldp_pr8210
     // carry an estimate of the pulse duration, so this is the number to sweep
     // first if words fail to frame.
     parameter [31:0] BIT_ONE_US  = 32'd870,
+    // Second boundary, picked at run time by alt_bit (one shared player serves every board).
+    parameter [31:0] BIT_ONE_US_ALT = BIT_ONE_US,
     // Kept at Daphne's figure (12000 Z80 cycles @ 4 MHz); comfortably above a 1.
     parameter [31:0] TIMEOUT_US  = 32'd3000
 )
@@ -40,6 +42,7 @@ module ldp_pr8210
     input             reset_n,
     input             pause,
     input             sel,
+    input             alt_bit,          // 1 = BIT_ONE_US_ALT
 
     input             blip,             // 1-cyc pulse per blip from the game
 
@@ -74,6 +77,7 @@ module ldp_pr8210
     // Multiply before dividing, and divide by a literal -- the idiom the rest of
     // the LD modules use. Dividing first truncates CLK_HZ to whole MHz.
     localparam [31:0] ONE_TICKS = (BIT_ONE_US * CLK_HZ) / 64'd1_000_000;
+    localparam [31:0] ONE_TICKS_ALT = (BIT_ONE_US_ALT * CLK_HZ) / 64'd1_000_000;
     localparam [31:0] TMO_TICKS = (TIMEOUT_US * CLK_HZ) / 64'd1_000_000;
 
     reg [31:0] gap;            // clocks since the previous blip
@@ -107,7 +111,7 @@ module ldp_pr8210
     assign frame_valid = (mode != M_SEARCH);
 
     // The bit for THIS blip comes from the interval that preceded it.
-    wire [9:0] new_word = {sr[8:0], (gap >= ONE_TICKS)};
+    wire [9:0] new_word = {sr[8:0], (gap >= (alt_bit ? ONE_TICKS_ALT : ONE_TICKS))};
 
     wire [3:0] dig = digit_of(word_cmd);
 

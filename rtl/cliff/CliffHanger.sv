@@ -55,9 +55,22 @@ module CliffHanger
     // so without this the game is effectively unplayable.
     input         [15:0] ovl_hpos,     // raster position, core's active area
     input         [15:0] ovl_vpos,
+    input         [15:0] ovl_hraw,     // raw raster column, 0..511 active (DIAG-REVERT-2026-10-16: new)
+    input         [15:0] ovl_vrel,     // raw video-relative raster row: 0..239 (CRT) / 0..479 (film)
+    input                ovl_crt,      // 1 = 240-line CRT raster, 0 = 480-line film raster
     input                ovl_ce_pix,   // pixel clock enable, samples the result
     output reg     [3:0] ovl_color,    // TMS colour index (0 = transparent)
-    output reg           ovl_opaque    // 1 = draw ovl_color, 0 = show video
+    output reg           ovl_opaque,   // 1 = draw ovl_color, 0 = show video
+
+    // ---- shared chip pool (Arcade-LaserdiscGames.sv) ----
+    output chip_pool_pkg::z80w_i_t z80w_0_i,
+    input  chip_pool_pkg::z80w_o_t z80w_0_o,
+    output chip_pool_pkg::ldp_i_t  ldp_0_i,
+    input  chip_pool_pkg::ldp_o_t  ldp_0_o,
+    output chip_pool_pkg::ram_i_t  ram0_i,      // work RAM
+    input  chip_pool_pkg::ram_o_t  ram0_o,
+    output chip_pool_pkg::ram_i_t  ram1_i,      // TMS9928A VRAM
+    input  chip_pool_pkg::ram_o_t  ram1_o
 );
     //--------------------------------------------------------- clocking ------
     // Z80 at 4 MHz (CLIFF_CPU_HZ) from the 80 MHz core clock.
@@ -80,13 +93,12 @@ module CliffHanger
     wire        n_rd, n_wr, n_mreq, n_iorq, n_m1;
     reg         n_irq, n_nmi;
 
-    T80s cpu (
-        .RESET_n(reset), .CLK(clk_sys), .CEN(cpu_ce),
-        .WAIT_n(1'b1), .INT_n(n_irq), .NMI_n(n_nmi), .BUSRQ_n(1'b1),
-        .M1_n(n_m1), .MREQ_n(n_mreq), .IORQ_n(n_iorq),
-        .RD_n(n_rd), .WR_n(n_wr),
-        .A(cpu_A), .DI(cpu_Din), .DO(cpu_Dout)
-    );
+    // The shared T80 (z80w_0).
+    assign z80w_0_i.ce = cpu_ce;  assign z80w_0_i.wait_n = 1'b1;
+    assign z80w_0_i.int_n = n_irq;  assign z80w_0_i.nmi_n = n_nmi;  assign z80w_0_i.di = cpu_Din;
+    assign cpu_A = z80w_0_o.a;  assign cpu_Dout = z80w_0_o.dout;
+    assign n_m1 = z80w_0_o.m1_n;  assign n_mreq = z80w_0_o.mreq_n;  assign n_iorq = z80w_0_o.iorq_n;
+    assign n_rd = z80w_0_o.rd_n;  assign n_wr = z80w_0_o.wr_n;
 
     wire mem_access = ~n_mreq;
     wire io_access  = ~n_iorq & n_m1;      // M1 high excludes the interrupt ack
@@ -108,11 +120,10 @@ module CliffHanger
     assign rom_addr = cpu_A;
     assign rom_D    = rom_data;
 
-    dpram_dc #(.widthad_a(12)) u_ram (
-        .clock_a(clk_sys), .address_a(cpu_A[11:0]), .q_a(ram_D),
-        .wren_a(cs_ram & ~n_wr), .data_a(cpu_Dout),
-        .clock_b(clk_sys), .address_b(12'd0), .data_b(8'd0), .wren_b(1'b0), .q_b()
-    );
+    // Work RAM: the shared ram0 block.
+    assign ram0_i.a_addr = {2'd0, cpu_A[11:0]};  assign ram0_i.a_we = cs_ram & ~n_wr;
+    assign ram0_i.a_din = cpu_Dout;  assign ram0_i.b_addr = 14'd0;
+    assign ram_D = ram0_o.a_q;
 
     //--------------------------------------------------------- I/O decode -----
     // MAME mainport (global mask 0xFF).
@@ -202,23 +213,18 @@ module CliffHanger
     wire [16:0] ld_curr_frame;
     wire        ld_frame_valid;
 
-    ldp_top #(.CLK_HZ(CLK_HZ)) u_ldp (
-        .clk(clk_sys), .reset_n(reset),
-        .player_sel(4'd2),              // PLAYER_PR8210
-        .cmd_stb(1'b0), .cmd_byte(8'd0),
-        .blip(ld_blip),
-        .status(), .status_strobe(), .command_strobe(), .ready_n(),
-        .frame_valid(ld_frame_valid),
-        .tx_valid(), .tx_byte(), .tx_pop(1'b0),
-        .search_cmd_o(ld_search_cmd_o), .play_end_o(ld_play_end_o),
-        .curr_frame(ld_curr_frame),
-        .pause(pause), .disc_hold(disc_hold), .playing(ld_playing_o),
-        .dbg_seek_frame(), .dbg_end_frame(), .dbg_flags(),
-        .post_seek_frames(post_seek_frames),
-        .disc_2997(disc_2997),
-        // PR-8210 has no status read, and Cliff/GTG discs park at frame 1.
-        .park_frame(17'd0), .status_rd(1'b0)
-    );
+    // The shared laserdisc player (ldp_0), as a PR-8210 with bit-banged blips.
+    assign ldp_0_i.player_sel = 4'd2;   // PLAYER_PR8210
+    assign ldp_0_i.pr8210_555 = 1'b0;
+    assign ldp_0_i.cmd_stb = 1'b0;  assign ldp_0_i.cmd_byte = 8'd0;
+    assign ldp_0_i.blip = ld_blip;  assign ldp_0_i.tx_pop = 1'b0;
+    assign ldp_0_i.pause = pause;  assign ldp_0_i.disc_hold = disc_hold;
+    assign ldp_0_i.post_seek_frames = post_seek_frames;  assign ldp_0_i.disc_2997 = disc_2997;
+    // PR-8210 has no status read, and Cliff/GTG discs park at frame 1.
+    assign ldp_0_i.park_frame = 17'd0;  assign ldp_0_i.status_rd = 1'b0;
+    assign ld_frame_valid = ldp_0_o.frame_valid;
+    assign ld_search_cmd_o = ldp_0_o.search_cmd;  assign ld_play_end_o = ldp_0_o.play_end;
+    assign ld_curr_frame = ldp_0_o.curr_frame;  assign ld_playing_o = ldp_0_o.playing;
     assign ld_frame_o = ld_curr_frame;
 
     // 59.94 Hz field tick for the VDP's vblank interrupt.
@@ -290,12 +296,10 @@ module CliffHanger
     // Port A is the CPU side; port B is the display side, read-only.
     wire [13:0] vram_rd_A;
     wire  [7:0] vram_rd_Q;
-    dpram_dc #(.widthad_a(14)) u_vram (
-        .clock_a(clk_sys), .address_a(vram_A), .q_a(vram_Q),
-        .wren_a(vram_we), .data_a(vram_D),
-        .clock_b(clk_sys), .address_b(vram_rd_A), .data_b(8'd0),
-        .wren_b(1'b0), .q_b(vram_rd_Q)
-    );
+    // TMS9928A VRAM: the shared ram1 block.
+    assign ram1_i.a_addr = vram_A;  assign ram1_i.a_we = vram_we;
+    assign ram1_i.a_din = vram_D;  assign ram1_i.b_addr = vram_rd_A;
+    assign vram_Q = ram1_o.a_q;  assign vram_rd_Q = ram1_o.b_q;
 
     wire [63:0] tms_regs;
 
@@ -340,15 +344,27 @@ module CliffHanger
     localparam [15:0] OVL_W = 16'd320;
     localparam [15:0] OVL_H = 16'd240;
 
-    wire in_ovl = (ovl_hpos < OVL_W) && (ovl_vpos < OVL_H);
+    // DIAG-REVERT-2026-10-16: original below
+    // wire in_ovl = (ovl_hpos < OVL_W) && (ovl_vpos < OVL_H);
+    wire in_ovl = (ovl_hraw < 16'd512) && (ovl_vrel < (ovl_crt ? 16'd240 : 16'd480));   // DIAG
 
     // video pixel -> TMS pixel. Horizontal: 256/320 = 0.8 (x205 >> 8) in
     // graphics, 240/320 = 0.75 (x192 >> 8) in text. Vertical: 192/240 = 0.8 both.
-    wire [23:0] ovl_x_g2  = ovl_hpos * 16'd205;
-    wire [23:0] ovl_x_tx  = ovl_hpos * 16'd192;
-    wire [23:0] ovl_y_mul = ovl_vpos * 16'd205;
-    wire [15:0] ovl_x     = gfx2_mode ? ovl_x_g2[23:8] : ovl_x_tx[23:8];
-    wire [15:0] ovl_y     = ovl_y_mul[23:8];
+    // DIAG-REVERT-2026-10-16: original below -- scaled from the 320x240 overlay space, i.e. two
+    // floors (512->320->256), so TMS pixels came out 1, 2 or 3 raster pixels wide; and the film
+    // raster was halved to 240 rows before the 240->192 step.
+    // wire [23:0] ovl_x_g2  = ovl_hpos * 16'd205;
+    // wire [23:0] ovl_x_tx  = ovl_hpos * 16'd192;
+    // wire [23:0] ovl_y_mul = ovl_vpos * 16'd205;
+    // wire [15:0] ovl_x     = gfx2_mode ? ovl_x_g2[23:8] : ovl_x_tx[23:8];
+    // wire [15:0] ovl_y     = ovl_y_mul[23:8];
+    // DIAG: one step straight from the raw raster. Graphics II: 512 -> 256 is exactly 2 px each.
+    // Text: 512 -> 240 is x15/32 (2 px, every 16th 3). Rows: 240 -> 192 (x205/256) on the CRT
+    // raster, 480 -> 192 (x205/512, rows 2 and 3 lines alternately) on the film raster.
+    wire [19:0] ovl_x_tx  = ovl_hraw[9:0] * 10'd15;
+    wire [23:0] ovl_y_mul = ovl_vrel * 16'd205;
+    wire [15:0] ovl_x     = gfx2_mode ? {8'd0, ovl_hraw[8:1]} : {6'd0, ovl_x_tx[14:5]};
+    wire [15:0] ovl_y     = ovl_crt ? ovl_y_mul[23:8] : {1'b0, ovl_y_mul[23:9]};
 
     wire [3:0] rnd_color;
     wire       rnd_transparent;

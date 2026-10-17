@@ -1,0 +1,79 @@
+<misterromdescription>
+    <name>Astron Belt</name>
+    <region>US</region>
+    <homebrew>no</homebrew>
+    <bootleg>no</bootleg>
+    <version></version>
+    <alternative></alternative>
+    <platform></platform>
+    <series>Astron Belt</series>
+    <year>1983</year>
+    <manufacturer>Sega</manufacturer>
+    <category>LaserDisc</category>
+
+    <setname same_dir="1">astronp</setname>
+    <parent>astron</parent>
+    <mameversion>0270</mameversion>
+    <rbf>LaserdiscGames</rbf>
+    <about></about>
+
+    <resolution>15kHz</resolution>
+    <rotation>horizontal</rotation>
+    <flip>no</flip>
+
+    <players>1</players>
+    <joystick>8-way</joystick>
+    <special_controls></special_controls>
+    <num_buttons>4</num_buttons>
+    <buttons names="Fire,Continue,-,-,Coin,Start 1P,Start 2P,Pause" default="A,B,Select,Start,R,L"/>
+
+    <!-- DSW A at $D000, DSW B at $D001, read straight (active low, every switch OFF = 1).
+         Values from MAME sega/segald.cpp INPUT_PORTS astron; defaults FF,FF. -->
+    <switches default="FF,FF">
+        <!-- DSW A (byte 0) -->
+        <dip bits="0,3"   name="Coin B" ids="1C/2C+,3C/1C,2C/1C 4C/3C,1C/4C,1C/1C+ 4C/5C,1C/6C,2C/3C,1C/2C,1C/1C 2C/3C,2C/1C,2C/1C+ 6C/4C,1C/3C,1C/1C+ 5C/6C,1C/5C,4C/1C,1C/1C"/>
+        <dip bits="4,7"   name="Coin A" ids="1C/2C+,3C/1C,2C/1C 4C/3C,1C/4C,1C/1C+ 4C/5C,1C/6C,2C/3C,1C/2C,1C/1C 2C/3C,2C/1C,2C/1C+ 6C/4C,1C/3C,1C/1C+ 5C/6C,1C/5C,4C/1C,1C/1C"/>
+        <!-- DSW B (byte 1) -->
+        <dip bits="9"     name="Allow Continue"      ids="Off,On"/>
+        <dip bits="10,11" name="Reserve Ships Score" ids="10K 20K 40K,5K 20K 40K,10K 20K 30K,5K 10K 20K"/>
+        <dip bits="12"    name="Difficulty"          ids="Hard,Normal"/>
+        <dip bits="13,14" name="Play Timer"          ids="Infinite,50 sec,40 sec,60 sec"/>
+        <dip bits="15"    name="Demo Sounds"         ids="Off,On"/>
+    </switches>
+
+    <!-- GAME-ID byte 0: 0B = Astron Belt (Pioneer LD-V1000 board). -->
+    <!-- POST-SEEK-FRAMES byte 1: extra film ticks before seek commits. -->
+    <rom index="1">
+        <part>0B 03</part>
+    </rom>
+
+    <!-- Index 0, packed to match rtl/boards/astron/Astron.sv + the top-level pools:
+           0x00000  64K  Z80 program: 5282, 5283, 5284 (bank 0), 5285 (bank 1)
+           0x10000   4K  char generator 5280 (plane 0), 5281 (plane 1)  -> chr pool
+           0x11000  512  tile colour PROM 5279
+           0x11200       pr-5278 (256), pr-5277 (256), pr-5276 (32), pr-5275 (32)
+           0x20000  64K  sprites: 5286 at +0x0000, 5338 at +0x8000 (Daphne/MAME gfx2) -->
+    <rom index="0" md5="none" zip="astron.zip">
+        <part crc="fd0dcfc9" name="5282"/>
+        <part crc="a3746393" name="5283"/>
+        <part crc="eec6db27" name="5284"/>
+        <part crc="820e154e" name="5285"/>
+
+        <part crc="583af1ff" name="5280"/>
+        <part crc="7b5c820c" name="5281"/>
+        <part crc="8716aeb5" name="5279"/>
+        <part crc="e81613da" name="pr-5278.bin"/>
+        <part crc="bf2c33ab" name="pr-5277.bin"/>
+        <part crc="91267e8a" name="pr-5276.bin"/>
+        <part crc="0c872a9b" name="pr-5275.bin"/>
+        <part repeat="0xEBC0">00</part>
+
+        <part crc="8eb1c28e" name="5286"/>
+        <part repeat="0x4000">00</part>
+        <part crc="94ca5f9a" name="5338"/>
+        <part repeat="0x4000">00</part>
+    </rom>
+
+    <remark>Astron Belt (Sega)</remark>
+    <mratimestamp>20261016000000</mratimestamp>
+</misterromdescription>

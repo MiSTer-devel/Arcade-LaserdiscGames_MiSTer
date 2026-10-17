@@ -19,13 +19,16 @@ module ldp_top
     // PR-8210 one/zero bit boundary, microseconds.  Default suits Cliff Hanger
     // and Goal To Go, which bit-bang the blip (~705us zero / ~1035us one).
     // Gottlieb drives it from a 555: 998us = 0, 1996us = 1, boundary ~1497.
-    parameter [31:0] BIT_ONE_US = 32'd870
+    parameter [31:0] BIT_ONE_US = 32'd870,
+    // Boundary used while pr8210_555 is high (Gottlieb / M.A.C.H. 3 board).
+    parameter [31:0] BIT_ONE_US_555 = 32'd1497
 )
 (
     input             clk,
     input             reset_n,
 
     input      [3:0]  player_sel,      // see PLAYER_* below
+    input             pr8210_555,      // PR-8210 blips come from a 555 (BIT_ONE_US_555)
 
     // ---- parallel / serial byte interface (LD-V1000, PR-7820, LDP-1450) ----
     input             cmd_stb,
@@ -142,8 +145,8 @@ module ldp_top
     // ---- PR-8210 ----
     wire        fvalid_pr82;
     wire [9:0]  word_pr82;
-    ldp_pr8210 #(.CLK_HZ(CLK_HZ), .BIT_ONE_US(BIT_ONE_US)) u_pr8210 (
-        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_pr8210),
+    ldp_pr8210 #(.CLK_HZ(CLK_HZ), .BIT_ONE_US(BIT_ONE_US), .BIT_ONE_US_ALT(BIT_ONE_US_555)) u_pr8210 (
+        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_pr8210), .alt_bit(pr8210_555),
         .blip(blip),
         .cmd_action(act_pr82), .cmd_op(op_pr82), .cmd_arg(arg_pr82),
         .mode(mode),

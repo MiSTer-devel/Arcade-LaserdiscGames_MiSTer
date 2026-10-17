@@ -86,7 +86,19 @@ module Mach3
     // ---- telemetry ----
     output        [19:0] dbg_addr,
     output         [2:0] dbg_type,
-    output               dbg_halt
+    output               dbg_halt,
+
+    // ---- shared chip pool (Arcade-LaserdiscGames.sv) ----
+    output chip_pool_pkg::mcl86eu_i_t mcl86eu_0_i,
+    input  chip_pool_pkg::mcl86eu_o_t mcl86eu_0_o,
+    output chip_pool_pkg::ram_i_t     ram0_i,      // work RAM
+    input  chip_pool_pkg::ram_o_t     ram0_o,
+    output chip_pool_pkg::ram_i_t     ram1_i,      // tile RAM
+    input  chip_pool_pkg::ram_o_t     ram1_o,
+    output chip_pool_pkg::ram_i_t     ram2_i,      // character RAM
+    input  chip_pool_pkg::ram_o_t     ram2_o,
+    output chip_pool_pkg::ram_i_t     ram3_i,      // sprite RAM
+    input  chip_pool_pkg::ram_o_t     ram3_o
 );
     //--------------------------------------------------- 8088 pin clock ------
     // 5.0 MHz = core_clk / 16, 50% duty (8 high, 8 low).
@@ -119,9 +131,11 @@ module Mach3
     wire nmi_pulse = vblank & ~vblank_q;
     always @(posedge core_clk) vblank_q <= vblank;
 
+    // DIAG-REVERT-2026-10-16: 10-15 scaling disabled below -- 10-14 rbf boots, later black (HW).
     // DIAG-REVERT-2026-10-15: original was "biu_max BIU (" with no parameters
     // DIAG: 16 core clocks per 8088 clock (5 MHz) vs the microcode's 100/4.77 = 20.96: x781>>10 = 0.7627.
-    biu_max #(.CYC_MUL(781), .CYC_SHIFT(10)) BIU (
+    // biu_max #(.CYC_MUL(781), .CYC_SHIFT(10)) BIU (
+    biu_max BIU (   // DIAG-REVERT-2026-10-16: original restored (defaults = unscaled)
         .CORE_CLK_INT(core_clk),
         .CLK(cpu_clk), .RESET_INT(~reset_n), .READY_IN(ready_in),
         .NMI(nmi_pulse), .INTR(1'b0),
@@ -138,14 +152,28 @@ module Mach3
         .BIU_RETURN_DATA(biu_ret)
     );
 
+    // The shared 8088 execution unit (mcl86eu_0); the bus unit above stays on the board.
+    // DIAG-REVERT-2026-10-16: pooled-EU hookup commented out below -- DL2 AND Mach 3 both dead on HW
+    // after the chip-pool refactor; this restores a private EU per board (pre-refactor arrangement).
+    // assign mcl86eu_0_i.reset_n = reset_n;
+    // assign mcl86eu_0_i.biu_done = biu_done;  assign mcl86eu_0_i.biu_clk_counter_zero = biu_clk_counter_zero;
+    // assign mcl86eu_0_i.biu_nmi_caught = biu_nmi_caught;  assign mcl86eu_0_i.biu_intr = biu_intr;
+    // assign mcl86eu_0_i.pfq_top_byte = pfq_top_byte;  assign mcl86eu_0_i.pfq_empty = pfq_empty;
+    // assign mcl86eu_0_i.pfq_addr_out = pfq_addr_out;
+    // assign mcl86eu_0_i.biu_es = biu_es;  assign mcl86eu_0_i.biu_ss = biu_ss;  assign mcl86eu_0_i.biu_cs = biu_cs;
+    // assign mcl86eu_0_i.biu_ds = biu_ds;  assign mcl86eu_0_i.biu_rm = biu_rm;  assign mcl86eu_0_i.biu_reg = biu_reg;
+    // assign mcl86eu_0_i.biu_ret = biu_ret;
+    // assign eu_biu_command = mcl86eu_0_o.eu_biu_command;  assign eu_biu_dataout = mcl86eu_0_o.eu_biu_dataout;
+    // assign eu_register_r3 = mcl86eu_0_o.eu_register_r3;  assign eu_prefix_lock = mcl86eu_0_o.eu_prefix_lock;
+    // assign eu_flag_i = mcl86eu_0_o.eu_flag_i;  assign biu_nmi_debounce = mcl86eu_0_o.biu_nmi_debounce;
+    // DIAG: private execution unit, same connections the pool made.
+    assign mcl86eu_0_i = '0;
     mcl86_eu_core EU (
         .CORE_CLK_INT(core_clk), .RESET_INT(~reset_n), .TEST_N_INT(1'b1),
         .EU_BIU_COMMAND(eu_biu_command), .EU_BIU_DATAOUT(eu_biu_dataout),
-        .EU_REGISTER_R3(eu_register_r3), .EU_PREFIX_LOCK(eu_prefix_lock),
-        .EU_FLAG_I(eu_flag_i),
+        .EU_REGISTER_R3(eu_register_r3), .EU_PREFIX_LOCK(eu_prefix_lock), .EU_FLAG_I(eu_flag_i),
         .BIU_DONE(biu_done), .BIU_CLK_COUNTER_ZERO(biu_clk_counter_zero),
-        .BIU_NMI_CAUGHT(biu_nmi_caught), .BIU_NMI_DEBOUNCE(biu_nmi_debounce),
-        .BIU_INTR(biu_intr),
+        .BIU_NMI_CAUGHT(biu_nmi_caught), .BIU_NMI_DEBOUNCE(biu_nmi_debounce), .BIU_INTR(biu_intr),
         .PFQ_TOP_BYTE(pfq_top_byte), .PFQ_EMPTY(pfq_empty), .PFQ_ADDR_OUT(pfq_addr_out),
         .BIU_REGISTER_ES(biu_es), .BIU_REGISTER_SS(biu_ss), .BIU_REGISTER_CS(biu_cs),
         .BIU_REGISTER_DS(biu_ds), .BIU_REGISTER_RM(biu_rm), .BIU_REGISTER_REG(biu_reg),
@@ -213,29 +241,19 @@ module Mach3
         .clock_b(core_clk), .address_b(12'd0), .data_b(8'd0), .wren_b(1'b0), .q_b()
     );
     wire [12:0] ram_a = a[12:0] - 13'h1000;   // 1000-2FFF -> 0000-1FFF
-    dpram_dc #(.widthad_a(13)) u_ram (
-        .clock_a(core_clk), .address_a(ram_a), .q_a(ram_q),
-        .wren_a(req & req_ack & is_memwr & in_ram), .data_a(req_wdata),
-        .clock_b(core_clk), .address_b(13'd0), .data_b(8'd0), .wren_b(1'b0), .q_b()
-    );
-    dpram_dc #(.widthad_a(8)) u_spram (
-        .clock_a(core_clk), .address_a(a[7:0]), .q_a(spr_q),
-        .wren_a(req & req_ack & is_memwr & in_spr), .data_a(req_wdata),
-        .clock_b(core_clk), .address_b(spram_rd_a), .data_b(8'd0),
-        .wren_b(1'b0), .q_b(spram_rd_d)
-    );
-    dpram_dc #(.widthad_a(10)) u_vram (
-        .clock_a(core_clk), .address_a(a[9:0]), .q_a(vram_q),
-        .wren_a(req & req_ack & is_memwr & in_vram), .data_a(req_wdata),
-        .clock_b(core_clk), .address_b(vram_rd_a[9:0]), .data_b(8'd0),
-        .wren_b(1'b0), .q_b(vram_rd_d)
-    );
-    dpram_dc #(.widthad_a(12)) u_chram (
-        .clock_a(core_clk), .address_a(a[11:0]), .q_a(chram_q),
-        .wren_a(req & req_ack & is_memwr & in_chram), .data_a(req_wdata),
-        .clock_b(core_clk), .address_b(chram_rd_a), .data_b(8'd0),
-        .wren_b(1'b0), .q_b(chram_rd_d)
-    );
+    // Work, sprite, tile and character RAM: the shared ram0 / ram3 / ram1 / ram2 blocks.
+    assign ram0_i.a_addr = {1'b0, ram_a};  assign ram0_i.a_we = req & req_ack & is_memwr & in_ram;
+    assign ram0_i.a_din = req_wdata;  assign ram0_i.b_addr = 14'd0;
+    assign ram_q = ram0_o.a_q;
+    assign ram3_i.a_addr = {6'd0, a[7:0]};  assign ram3_i.a_we = req & req_ack & is_memwr & in_spr;
+    assign ram3_i.a_din = req_wdata;  assign ram3_i.b_addr = {6'd0, spram_rd_a};
+    assign spr_q = ram3_o.a_q;  assign spram_rd_d = ram3_o.b_q;
+    assign ram1_i.a_addr = {4'd0, a[9:0]};  assign ram1_i.a_we = req & req_ack & is_memwr & in_vram;
+    assign ram1_i.a_din = req_wdata;  assign ram1_i.b_addr = {4'd0, vram_rd_a[9:0]};
+    assign vram_q = ram1_o.a_q;  assign vram_rd_d = ram1_o.b_q;
+    assign ram2_i.a_addr = {2'd0, a[11:0]};  assign ram2_i.a_we = req & req_ack & is_memwr & in_chram;
+    assign ram2_i.a_din = req_wdata;  assign ram2_i.b_addr = {2'd0, chram_rd_a};
+    assign chram_q = ram2_o.a_q;  assign chram_rd_d = ram2_o.b_q;
     assign pal_we = req & req_ack & is_memwr & in_pal;
     assign pal_wa = a[4:0];
     assign pal_wd = req_wdata;

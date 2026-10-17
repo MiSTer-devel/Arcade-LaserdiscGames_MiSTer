@@ -65,7 +65,19 @@ module DragonsLair
     output               ld_playing_o,  // LD playing flag -> streamer audio gate
     // MRA-tunable post-seek tail drain (index 1, byte 1). 0 = instant flush.
     input          [3:0] post_seek_frames,
-    input                disc_2997    // .dlv encode rate -> LD transport
+    input                disc_2997,   // .dlv encode rate -> LD transport
+
+    // ---- shared chip pool (Arcade-LaserdiscGames.sv), straight through to the CPU board ----
+    output chip_pool_pkg::z80w_i_t z80w_0_i,
+    input  chip_pool_pkg::z80w_o_t z80w_0_o,
+    output chip_pool_pkg::ldp_i_t  ldp_0_i,
+    input  chip_pool_pkg::ldp_o_t  ldp_0_o,
+    output chip_pool_pkg::ay_i_t   ay_0_i,
+    input  chip_pool_pkg::ay_o_t   ay_0_o,
+    output chip_pool_pkg::ram_i_t  ram0_i,
+    input  chip_pool_pkg::ram_o_t  ram0_o,
+    output chip_pool_pkg::t400_i_t t400_0_i,
+    input  chip_pool_pkg::t400_o_t t400_0_o
 );
 
 //------------------------------------------------------- ROM Selector --------------------------------------------------------//
@@ -118,7 +130,13 @@ DragonsLair_CPU #(.CLK_HZ(CLK_HZ)) cpu_board   // thread the core clock down
     .ld_frame_o(ld_frame_o),
     .ld_playing_o(ld_playing_o),
     .post_seek_frames(post_seek_frames),
-    .disc_2997(disc_2997)
+    .disc_2997(disc_2997),
+
+    .z80w_0_i(z80w_0_i), .z80w_0_o(z80w_0_o),
+    .ldp_0_i(ldp_0_i),   .ldp_0_o(ldp_0_o),
+    .ay_0_i(ay_0_i),     .ay_0_o(ay_0_o),
+    .ram0_i(ram0_i),     .ram0_o(ram0_o),
+    .t400_0_i(t400_0_i), .t400_0_o(t400_0_o)
 );
 
 // Mono -> stereo

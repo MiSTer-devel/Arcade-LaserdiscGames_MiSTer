@@ -34,7 +34,11 @@ module Thayers_COP
     output  [3:0] cop_d,
 
     // 40-key panel matrix, 10 rows x 4 bits, active HIGH. Row r bit b = keys[r*4+b].
-    input  [39:0] keys
+    input  [39:0] keys,
+
+    // ---- the shared COP421 (t400_0) in the dispatcher's chip pool ----
+    output chip_pool_pkg::t400_i_t t400_0_i,
+    input  chip_pool_pkg::t400_o_t t400_0_o
 );
 
 // 2 MHz enable for the COP (the core divides by 32 internally for CKI/32).
@@ -88,48 +92,22 @@ wire [3:0] dm_data_o, dm_data_i;
 wire [3:0] d_en, g_from_cop, g_en;
 wire       por_n;
 
-t400_por #(.delay_g(4), .cnt_width_g(2)) u_por
-(
-    .clk_i   (clk_sys),
-    .por_n_o (por_n)
-);
-
-// Generic overrides: opt_type_g = t400_opt_type_421_c (1),
-// opt_ck_div_g = t400_opt_ck_div_32_c (3), opt_cko_g = t400_opt_cko_crystal_c (0).
-t400_core #(.opt_type_g(1), .opt_ck_div_g(3), .opt_cko_g(0)) u_cop
-(
-    .ck_i      (clk_sys),
-    .ck_en_i   (cen_2m),
-    .por_n_i   (por_n),
-    .reset_n_i (reset_n),
-    .cko_i     (1'b0),
-
-    .pm_addr_o (pm_addr),
-    .pm_data_i (pm_data),
-
-    .dm_addr_o (dm_addr),
-    .dm_we_o   (dm_we),
-    .dm_data_o (dm_data_o),
-    .dm_data_i (dm_data_i),
-
-    .io_l_i    (z80_to_cop),
-    .io_l_o    (l_from_cop),
-    .io_l_en_o (l_en),
-
-    .io_d_o    (cop_d),
-    .io_d_en_o (d_en),
-
-    .io_g_i    (g_latch),
-    .io_g_o    (g_from_cop),
-    .io_g_en_o (g_en),
-
-    .io_in_i   (4'hF),
-    .si_i      (kbdata),        // keyboard serial data, shifted out below
-    .so_o      (),
-    .so_en_o   (),
-    .sk_o      (sk_from_cop),   // keyboard serial clock, driven by the COP
-    .sk_en_o   ()
-);
+// The shared COP421 core (t400_0, with its power-on reset) lives in the dispatcher.
+assign t400_0_i.ck_en   = cen_2m;
+assign t400_0_i.pm_data = pm_data;
+assign t400_0_i.dm_data = dm_data_i;
+assign t400_0_i.io_l    = z80_to_cop;
+assign t400_0_i.io_g    = g_latch;
+assign pm_addr     = t400_0_o.pm_addr;
+assign dm_addr     = t400_0_o.dm_addr;
+assign dm_we       = t400_0_o.dm_we;
+assign dm_data_o   = t400_0_o.dm_data;
+assign l_from_cop  = t400_0_o.io_l;
+assign l_en        = t400_0_o.io_l_en;
+assign cop_d       = t400_0_o.io_d;
+assign d_en        = t400_0_o.io_d_en;
+assign g_from_cop  = t400_0_o.io_g;
+assign g_en        = t400_0_o.io_g_en;
 
 //------------------------------------------------------- Keyboard -------------------------------------------------------------//
 // The panel is a SERIAL device on the COP's SK/SI pins, not a Z80 port.  The COP
@@ -147,6 +125,8 @@ reg  [3:0] rx_bit   = 4'd0;    // 0..10
 reg  [3:0] keylatch = 4'd0;    // current row 0..9
 reg  [3:0] keydata  = 4'd0;    // row bits, shifted out MSB first
 reg        kbdata   = 1'b1;    // -> SI, idles high
+assign t400_0_i.si = kbdata;     // keyboard serial data -> the shared COP421
+assign sk_from_cop = t400_0_o.sk; // keyboard serial clock, driven by the COP
 
 wire [3:0] rx_nxt  = rx_bit + 4'd1;
 wire [3:0] kl_nxt  = (keylatch == 4'd9) ? 4'd0 : keylatch + 4'd1;

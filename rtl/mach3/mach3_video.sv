@@ -103,7 +103,10 @@ module mach3_video
     wire [23:0] sx_mul = ovl_hpos * 16'd205;      // 320 -> 256
     wire  [7:0] sx     = sx_mul[15:8];
     wire  [7:0] sy     = ovl_vpos[7:0];
-    wire        in_win = (ovl_vpos < 16'd240);
+    // DIAG-REVERT-2026-10-16: original below -- no horizontal gate, so the hblank pixel (ovl_hpos 396
+    // -> sx wraps to 61) is still opaque when the compositor shows it at x=0 (overlay lags rr by 1 px).
+    // wire        in_win = (ovl_vpos < 16'd240);
+    wire        in_win = (ovl_vpos < 16'd240) && (ovl_hpos < 16'd320);   // DIAG: active columns only
 
     //--------------------------------------------------- background ----------
     // Addresses are driven straight from the overlay position; both reads settle
