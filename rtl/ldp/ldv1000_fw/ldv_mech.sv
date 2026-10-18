@@ -29,6 +29,19 @@
 //               Lead-in is forced on both fields (MAME), lead-out likewise.  Only
 //               lead-in, lead-out and CAV picture codes are decoded; all zero
 //               unless focus_on && laser_on at the VBI moment.
+//   FILM        film = 1 (a 23.976 disc: Dragon's Lair, Space Ace): film-source CAV
+//               with 3:2 pulldown, 4 picture numbers per 5 tracks (Pioneer interface
+//               manual p.10; Daphne hitachi.cpp x1.25).  Program field n (n = 0 =
+//               field 0 of track LEADIN+1) shows film frame
+//               f(n) = floor((2n + FILM_PHASE) / 5) + 1; only the FIRST field of
+//               each picture carries its code (MAME is_start_of_frame: a frame
+//               code marks the start of a frame), the others carry none.
+//               `frame` is then the picture on the track's field 1 -- the one a
+//               still on that track was searched to.  The picture comes from the
+//               transport / .dlv at film rate, never from here: this is only what
+//               the firmware reads.
+//   Frame / code / lead-in-out are registered 2 clocks behind the track; the
+//   code latch and the fetch_done output wait for them.
 // Port-select 4 + offset-3 reads return the VBI stream (handled by the caller,
 // which supplies vbi_idx and gets vbi_byte).
 //============================================================================
@@ -43,12 +56,19 @@ module ldv_mech
     // late and holds target+1); <= 32 lines it does (bench sweep 2026-10-16).  Line 17/18
     // data on a real player is ready ~0.95 ms (~30 lines) after the VSYNC edge.
     parameter  [7:0] FETCH_LINES = 8'd20,     // track update (revolution boundary)
-    parameter  [7:0] VBI_LINES   = 8'd26      // VBI ready (decoder IRQ, PPI0 PC5)
+    parameter  [7:0] VBI_LINES   = 8'd26,     // VBI ready (decoder IRQ, PPI0 PC5)
+    parameter  [3:0] FILM_PHASE  = 4'd0,      // film: C in f(n) = floor((2n + C) / 5) + 1, 0..9
+    parameter  [0:0] VSYNC_GATE  = 1'b0,      // 1: no field timing (VSYNC / fetch / VBI) unless the spindle
+                                              // runs -- a stopped disc has no video (park cycle 21 ms vs
+                                              // 16.6 ms playing, interface manual fig. 6).  0 = MAME.
+    parameter  [9:0] SEEK_FAST   = 10'd133    // fast-scan tracks/field (PB4=0).  MAME 4000/30 per vsync = 133;
+                                              // a full-disc search then takes ~7 s, manual says max ~3 s
 )
 (
     input             clk,
     input             reset_n,
     input             run,            // !pause: freezes every timer and the slider
+    input             film,           // 1 = film-source disc (3:2 pulldown), 0 = 29.97
     input             field_tick,     // 1-clk start of field
     input      [16:0] last_frame,     // last program frame; beyond it = lead-out
 
@@ -68,10 +88,11 @@ module ldv_mech
 
     output reg [16:0] track,
     output reg        fieldnum,
-    output reg        fetch_done,     // 1-clk after the fetch updated track / frame
+    output reg        fetch_done,     // 1-clk once the fetch's track / frame are settled
     output            frame_valid,    // track is inside program material
     output     [16:0] frame,          // program frame number under the head
-    output reg [19:0] vbi_bcd         // BCD digits of the picture code (dbg)
+    output reg [19:0] vbi_bcd,        // BCD digits of the picture code (dbg)
+    output reg [16:0] pic_code        // last CAV picture number the decoder delivered (focus && laser)
 );
     // ---- timing constants (MAME NTSC laserdisc screen) ----
     localparam [63:0] PIX_HZ     = 64'd28_636_363;
@@ -89,7 +110,7 @@ module ldv_mech
     wire laser_on =  ppi1_pb[6];
     wire dir_out  =  ppi1_pb[5];
     wire scanning = ~ppi1_pb[3];
-    wire [7:0] scan_spd = ppi1_pb[4] ? 8'd66 : 8'd133;
+    wire [9:0] scan_spd = ppi1_pb[4] ? 10'd66 : SEEK_FAST;
 
     reg       pb1_q2;                 // PPI1 PB2 last
     reg [1:0] pc0_q;                  // PPI0 PC1..0 last
@@ -100,12 +121,45 @@ module ldv_mech
     assign at_min = (track == 17'd1);
     assign at_max = (track >= MAXTRACK - 17'd1);
 
-    // ---- frame under the head ----
-    wire        in_leadin = (track <= LEADIN);
-    wire [16:0] f_raw     = track - LEADIN;
+    // ---- frame under the head (registered, 2 clocks behind track) ----
+    // 29.97: frame = track - LEADIN.  Film: x0 = 2n + C for field 0 of the track
+    // (n = 2p), k = floor(x / 5) via x * 209716 >> 20 (exact for x < 2^18; x0 <= 4*56099+9).
+    wire [16:0] p_trk  = track - LEADIN - 17'd1;               // program track index
+    wire [17:0] x0     = {p_trk[15:0], 2'b00} + {14'd0, FILM_PHASE};
+    reg  [17:0] x0_q;
+    reg  [37:0] mul_q;
+    reg  [16:0] trk_q;
+    wire [17:0] k0     = mul_q[37:20];
+    wire [17:0] r0w    = x0_q - ({k0[15:0], 2'b00} + k0);       // x0 mod 5
+    wire  [2:0] rem0   = r0w[2:0];
+    wire        c1     = (rem0 >= 3'd3);                       // field 1 is in the next picture
+    wire  [2:0] rem1   = c1 ? rem0 - 3'd3 : rem0 + 3'd2;
+    reg         lin_r;                                         // in lead-in
+    reg  [16:0] ff0_r, ff1_r;                                  // picture on field 0 / field 1
+    reg         fc0_r, fc1_r;                                  // field 0 / 1 carries a code
+    always @(posedge clk) begin
+        x0_q  <= x0;
+        mul_q <= {20'd0, x0} * 38'd209716;
+        trk_q <= track;
+        lin_r <= (trk_q <= LEADIN);
+        if (film) begin
+            ff0_r <= k0[16:0] + 17'd1;
+            ff1_r <= k0[16:0] + {16'd0, c1} + 17'd1;
+            fc0_r <= (rem0 < 3'd2);
+            fc1_r <= (rem1 < 3'd2);
+        end else begin
+            ff0_r <= trk_q - LEADIN;
+            ff1_r <= trk_q - LEADIN;
+            fc0_r <= (PIC_FIELD == 2'd2) || (PIC_FIELD[0] == 1'b0);
+            fc1_r <= (PIC_FIELD == 2'd2) || (PIC_FIELD[0] == 1'b1);
+        end
+    end
+    wire        in_leadin  = lin_r;
+    wire [16:0] f_raw      = ff1_r;                            // picture of the track
     wire        in_leadout = !in_leadin && (f_raw > last_frame);
     assign frame       = f_raw;
     assign frame_valid = !in_leadin && !in_leadout;
+    reg   [2:0] fd_q;                                          // fetch -> pipeline settled
 
     // ---- field position ----
     reg [31:0] fpos;
@@ -122,6 +176,7 @@ module ldv_mech
     reg  [1:0] vbi_kind;
     reg [19:0] vbi_dig;
     reg  [4:0] vbi_idx;
+    reg [16:0] pend_pic;       // picture number of the field just read (latched with code_kind)
 
     // binary -> BCD (double dabble), restarted at each fetch
     reg [16:0] bb_bin;
@@ -145,7 +200,7 @@ module ldv_mech
         fetch_now = run && fpos_run && (fpos == FETCH_AT);
         adv_now   = fetch_now && fieldnum;
         mj_step   = run && mj_active && (mj_cnt == MJ_CLKS - 32'd1);
-        scan_step = run && scanning && (scan_acc + {24'd0, scan_spd} >= FIELD_CLKS);
+        scan_step = run && scanning && (scan_acc + {22'd0, scan_spd} >= FIELD_CLKS);
         delta = 4'sd0;
         if (adv_now)                 delta = delta + 4'sd1;
         if (run && jump_trig)        delta = dir_out ? delta + 4'sd1 : delta - 4'sd1;
@@ -156,9 +211,15 @@ module ldv_mech
         if (nt > $signed({2'b00, MAXTRACK - 17'd1}))  nt = $signed({2'b00, MAXTRACK - 17'd1});
     end
 
+    // the field being read now (fieldnum toggled at the fetch)
+    wire [16:0] fld_frame = fieldnum ? ff1_r : ff0_r;
+    wire        fld_code  = fieldnum ? fc1_r : fc0_r;
+    wire        fld_lout  = !in_leadin && (fld_frame > last_frame);
+
     always @(posedge clk) begin
         fetch_done <= 1'b0;
         if (!reset_n) begin
+            fd_q <= 3'd0;
             track <= 17'd1; fieldnum <= 1'b0;
             fpos <= 32'd0; fpos_run <= 1'b0;
             vsync <= 1'b0; vbiready <= 1'b0;
@@ -166,18 +227,20 @@ module ldv_mech
             pb1_q2 <= 1'b1; pc0_q <= 2'b11;
             trg_min <= 1'b0; trg_max <= 1'b0;
             code_kind <= 2'd2; vbi_valid <= 1'b0; vbi_kind <= 2'd0; vbi_dig <= 20'd0;
-            vbi_idx <= 5'd0; vbi_bcd <= 20'd0;
+            vbi_idx <= 5'd0; vbi_bcd <= 20'd0; pend_pic <= 17'd0; pic_code <= 17'd0;
             bb_bin <= 17'd0; bb_bcd <= 20'd0; bb_cnt <= 5'd0;
         end else if (run) begin
             pb1_q2 <= ppi1_pb[2];
             pc0_q  <= ppi0_pc[1:0];
 
             // ---- field timing ----
-            if (field_tick) begin
-                fpos <= 32'd0; fpos_run <= 1'b1;
-                vsync <= 1'b1;
+            if (field_tick) begin            // slider comparators, not video: never gated
                 trg_min <= at_min;           // player_vsync: ctc->trg1/trg2
                 trg_max <= at_max;
+            end
+            if (field_tick && (!VSYNC_GATE || !ppi1_pb[1])) begin
+                fpos <= 32'd0; fpos_run <= 1'b1;
+                vsync <= 1'b1;
             end else if (fpos_run) begin
                 fpos <= fpos + 32'd1;
                 if (fpos == VSYNC_END) vsync <= 1'b0;
@@ -186,17 +249,19 @@ module ldv_mech
             // ---- slider ----
             track <= nt[16:0];
 
-            if (fetch_now) begin
-                fieldnum   <= ~fieldnum;
-                fetch_done <= 1'b1;          // track/frame are updated by the time this is seen
-            end
-            // latch the code for the track just read (one clock after the update)
-            if (fetch_done) begin
+            if (fetch_now)
+                fieldnum <= ~fieldnum;
+            // track updates with the fetch; the frame pipeline settles 3 clocks later
+            fd_q <= {fd_q[1:0], fetch_now};
+            if (fd_q[2]) fetch_done <= 1'b1;
+            // latch the code for the field just read, once the pipeline has settled
+            if (fd_q[2]) begin
                 // fieldnum has already toggled: it is the field being read now
-                code_kind <= in_leadin  ? 2'd2 :
-                             in_leadout ? 2'd3 :
-                             ((PIC_FIELD == 2'd2) || (fieldnum == PIC_FIELD[0])) ? 2'd1 : 2'd0;
-                bb_bin <= f_raw; bb_bcd <= 20'd0; bb_cnt <= 5'd17;
+                code_kind <= in_leadin ? 2'd2 :
+                             fld_lout  ? 2'd3 :
+                             fld_code  ? 2'd1 : 2'd0;
+                bb_bin <= fld_frame; bb_bcd <= 20'd0; bb_cnt <= 5'd17;
+                pend_pic <= fld_frame;
             end else if (bb_cnt != 5'd0) begin
                 bb_bcd <= {d4[2:0], d3, d2, d1, d0, bb_bin[16]};
                 bb_bin <= {bb_bin[15:0], 1'b0};
@@ -210,6 +275,7 @@ module ldv_mech
                 vbi_kind  <= code_kind;
                 vbi_dig   <= vbi_bcd;
                 vbiready  <= 1'b1;
+                if (focus_on && laser_on && code_kind == 2'd1) pic_code <= pend_pic;
                 vbi_idx   <= 5'd0;
             end
 
@@ -228,8 +294,8 @@ module ldv_mech
 
             // scan accumulator: one step per FIELD_CLKS/scan_spd clocks
             if (!scanning)      scan_acc <= 32'd0;
-            else if (scan_step) scan_acc <= scan_acc + {24'd0, scan_spd} - FIELD_CLKS;
-            else                scan_acc <= scan_acc + {24'd0, scan_spd};
+            else if (scan_step) scan_acc <= scan_acc + {22'd0, scan_spd} - FIELD_CLKS;
+            else                scan_acc <= scan_acc + {22'd0, scan_spd};
         end
 
         // VBI read consumes regardless of run (bus side effect of a CPU that is running)
@@ -264,6 +330,7 @@ module ldv_mech
     end
     assign vbi_byte = (code_ok && !line16) ? vb : 8'h00;
     /* verilator lint_off UNUSED */
-    wire unused_ok = &{1'b0, d4[3], idx_m7[4:3], idx_m14[4:3], ppi0_pc[7:2], ppi1_pb[7], ppi1_pb[1]};
+    wire unused_ok = &{1'b0, d4[3], idx_m7[4:3], idx_m14[4:3], ppi0_pc[7:2], ppi1_pb[7], ppi1_pb[1],
+                       p_trk[16], mul_q[19:0], r0w[17:3]};
     /* verilator lint_on UNUSED */
 endmodule

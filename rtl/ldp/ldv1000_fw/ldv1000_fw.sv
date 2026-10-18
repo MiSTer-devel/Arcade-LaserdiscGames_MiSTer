@@ -26,7 +26,14 @@ module ldv1000_fw
     parameter [16:0] LAST_FRAME = 17'd54000,      // used when disc_last_frame == 0
     parameter  [1:0] PIC_FIELD  = 2'd0,           // ldv_mech: field carrying the picture code
     parameter  [7:0] FETCH_LINES = 8'd20,         // ldv_mech: track update after VSYNC (MAME: 33)
-    parameter  [7:0] VBI_LINES   = 8'd26          // ldv_mech: VBI ready after VSYNC (MAME: 39 -- search never completes)
+    parameter  [7:0] VBI_LINES   = 8'd26,         // ldv_mech: VBI ready after VSYNC (MAME: 39 -- search never completes)
+    parameter  [3:0] FILM_PHASE  = 4'd0,          // ldv_mech: 3:2 pulldown phase on film discs
+    // Hardware behaviour MAME leaves out (service manual VRT-018-0); 0 = MAME.
+    parameter [15:0] MOTOR_STOP_MS = 16'd0,       // PPI1 PA4 MOTOR STOP: 1 once the spindle has been off this long
+    parameter  [0:0] VSYNC_GATE    = 1'b0,        // ldv_mech: no VSYNC unless the spindle runs (no disc video)
+    parameter  [0:0] LIVE_CMD      = 1'b0,        // IO 40 reads the host's port live (CONT Z8 74LS540), not
+                                                  // MAME's write-latch + read-to-clear
+    parameter  [9:0] SEEK_FAST     = 10'd133      // ldv_mech: fast-scan tracks/field (133 = MAME)
 )
 (
     input             clk,
@@ -56,6 +63,7 @@ module ldv1000_fw
     input      [2:0]  t_mode,           // ldp_transport mode
     input             field_tick,       // ldp_transport frame_tick (59.94 Hz field)
     input      [16:0] disc_last_frame,  // 0 = use LAST_FRAME
+    input             film,             // 23.976 disc (.dlv header): 3:2 pulldown picture numbers
 
     // ---- firmware download ----
     input             ioctl_download,
@@ -63,11 +71,13 @@ module ldv1000_fw
     input      [24:0] ioctl_addr,
     input      [7:0]  ioctl_dout,
     input             ioctl_wr,
+    input             cmd_oe,           // LIVE_CMD: the host drives the bus; else it reads FF (R26 pull-ups)
 
     // ---- pooled Z80 ----
     output chip_pool_pkg::z80_i_t z80_i,
     input  chip_pool_pkg::z80_o_t z80_o,
     output            z80_rst_n,        // AND into the pooled LD CPU's RESET_n
+    output            fw_ready,         // firmware downloaded (power-up 0; ldp_top falls back to HLE)
 
     // ---- player outputs not yet consumed by the core ----
     output            video_squelch,
@@ -120,6 +130,7 @@ module ldv1000_fw
         if (!rom_dl && rom_dl_q && rom_got) rom_ok <= 1'b1;
     end
     assign z80_rst_n = reset_n && sel && rom_ok && !rom_dl;
+    assign fw_ready  = rom_ok;
 
     // ------------------------------------------------------------ bus decode
     wire [15:0] A    = z80_o.a;
@@ -193,17 +204,19 @@ module ldv1000_fw
     wire [16:0] frame, track;
     wire       fieldnum;
     wire [19:0] vbi_bcd;
+    wire [16:0] pic_code;
     wire [7:0] vbi_byte;
     reg  [7:0] portsel;
-    ldv_mech #(.CLK_HZ(CLK_HZ), .PIC_FIELD(PIC_FIELD), .FETCH_LINES(FETCH_LINES), .VBI_LINES(VBI_LINES)) u_mech (
-        .clk(clk), .reset_n(z80_rst_n), .run(run), .field_tick(field_tick),
+    ldv_mech #(.CLK_HZ(CLK_HZ), .PIC_FIELD(PIC_FIELD), .FETCH_LINES(FETCH_LINES), .VBI_LINES(VBI_LINES),
+               .FILM_PHASE(FILM_PHASE), .VSYNC_GATE(VSYNC_GATE), .SEEK_FAST(SEEK_FAST)) u_mech (
+        .clk(clk), .reset_n(z80_rst_n), .run(run), .film(film), .field_tick(field_tick),
         .last_frame((disc_last_frame != 17'd0) ? disc_last_frame : LAST_FRAME),
         .ppi0_pa(ppi0_pa), .ppi0_pc(ppi0_pc), .ppi1_pb(ppi1_pb),
         .counter(counter), .vsync(vsync), .vbiready(vbiready),
         .vbi_consume(dec_re && (portsel == 8'd4)), .vbi_byte(vbi_byte),
         .at_min(at_min), .at_max(at_max), .trg_min(trg_min), .trg_max(trg_max),
         .track(track), .fieldnum(fieldnum), .fetch_done(fetch_done),
-        .frame_valid(frame_valid), .frame(frame), .vbi_bcd(vbi_bcd)
+        .frame_valid(frame_valid), .frame(frame), .vbi_bcd(vbi_bcd), .pic_code(pic_code)
     );
 
     // ------------------------------------------------------------ PPIs
@@ -213,7 +226,27 @@ module ldv1000_fw
     //   PB out -> mechanics; PC out -> AUD1, AUD2, AUDEN, /VIDEO SQ, COMMAND, STATUS, SIZE, /LED CAV
     wire [7:0] ppi0_do, ppi1_do;
     wire [7:0] ppi0_pc_in = {2'b00, ~vbiready, ~vsync, 4'h0};
-    wire [7:0] ppi1_pa_in = {2'b00, 1'b1, 1'b0, at_max, at_min, ppi1_pb[1], ppi1_pb[0]};
+    // MOTOR STOP (JCAB Z6 4/4 -> N31-4, scan p.42): 1 when the spindle has run down.  The spindle is
+    // commanded by PPI1 PB1 (/SPDL RUN); power-up = stopped.  MOTOR_STOP_MS = 0 keeps MAME's constant 0.
+    localparam [31:0] MS_CLKS = CLK_HZ / 32'd1000;
+    reg  [31:0] ms_div;
+    reg  [15:0] spdl_off_ms;
+    reg         motor_stop;
+    always @(posedge clk) begin
+        if (!z80_rst_n) begin
+            ms_div <= 32'd0; spdl_off_ms <= MOTOR_STOP_MS; motor_stop <= (MOTOR_STOP_MS != 16'd0);
+        end else if (run) begin
+            if (!ppi1_pb[1]) begin                       // /SPDL RUN low = running
+                spdl_off_ms <= 16'd0; motor_stop <= 1'b0; ms_div <= 32'd0;
+            end else if (ms_div == MS_CLKS - 32'd1) begin
+                ms_div <= 32'd0;
+                if (spdl_off_ms != 16'hFFFF) spdl_off_ms <= spdl_off_ms + 16'd1;
+                if (MOTOR_STOP_MS != 16'd0 && spdl_off_ms + 16'd1 >= MOTOR_STOP_MS) motor_stop <= 1'b1;
+            end else
+                ms_div <= ms_div + 32'd1;
+        end
+    end
+    wire [7:0] ppi1_pa_in = {2'b00, 1'b1, motor_stop, at_max, at_min, ppi1_pb[1], ppi1_pb[0]};
     ldv_i8255 u_ppi0 (
         .clk(clk), .reset_n(z80_rst_n),
         .wr_stb(ppi0_we), .waddr(ba_q[1:0]), .wdata(bd_q), .raddr(A[1:0]), .dout(ppi0_do),
@@ -251,6 +284,9 @@ module ldv1000_fw
             if (sel && cmd_stb) command <= cmd_byte;      // a fresh game byte wins
         end
     end
+    // Hardware: CONT Z8 (74LS540, inverting) buffers the host DIO bus onto the CPU bus (scan p.58);
+    // R26 pull-ups idle it at FF = NO ENTRY.  A host that HOLDS a byte is read as that byte every poll.
+    wire [7:0] ctl_in = LIVE_CMD ? ((sel && cmd_oe) ? cmd_byte : 8'hFF) : command;
     wire [7:0] dec_do = (A[2:0] == 3'd3 && portsel == 8'd4) ? vbi_byte : 8'h00;
 
     // ------------------------------------------------------------ CPU data in
@@ -267,7 +303,7 @@ module ldv1000_fw
         end else if (io_rd) begin
             case (A[7:6])
                 2'b00:   di = dec_do;
-                2'b01:   di = ~command;
+                2'b01:   di = ~ctl_in;
                 2'b11:   di = ctc_do;
                 default: di = 8'h00;
             endcase
@@ -293,10 +329,10 @@ module ldv1000_fw
 
     ldv_follow u_follow (
         .clk(clk), .reset_n(z80_rst_n), .enable(run),
-        .fetch_done(fetch_done), .frame_valid(frame_valid), .frame(frame),
+        .fetch_done(fetch_done), .frame_valid(frame_valid), .frame(frame), .track(track),
         .video_on(ppi1_pc[3]),
         .aud_en1(ppi1_pc[2] & ppi1_pc[0]), .aud_en2(ppi1_pc[2] & ppi1_pc[1]),
-        .t_mode(t_mode), .t_frame(curr_frame),
+        .t_mode(t_mode), .t_frame(curr_frame), .fw_status(status_r), .pic_code(pic_code),
         .cmd_action(cmd_action), .cmd_op(cmd_op), .cmd_arg(cmd_arg),
         .dbg_class(dbg_class)
     );
@@ -305,7 +341,7 @@ module ldv1000_fw
     assign dbg_digits   = frame_valid ? vbi_bcd : 20'h00000;
     assign dbg_track    = track;
     assign dbg_ctl_rd   = ctl_re;
-    assign dbg_ctl_val  = ~command;
+    assign dbg_ctl_val  = ~ctl_in;
     assign dbg_disp_we  = dec_we && (ba_q[2:0] == 3'd2) && (portsel < 8'd2);
     assign dbg_disp_sel = portsel;
     assign dbg_disp_dat = bd_q;
