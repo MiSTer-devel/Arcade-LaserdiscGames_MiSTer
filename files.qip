@@ -14,6 +14,11 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_ldv1000.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_pr7820.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_pr8210.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_ldp1450.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldv1000_fw/ldv_i8255.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldv1000_fw/ldv_z80ctc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldv1000_fw/ldv_mech.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldv1000_fw/ldv_follow.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldv1000_fw/ldv1000_fw.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ldp/ldp_top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/bin17_to_bcd5.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cliff/tms9928a_regs.sv

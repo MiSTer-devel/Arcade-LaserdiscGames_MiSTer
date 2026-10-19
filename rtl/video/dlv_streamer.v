@@ -62,6 +62,9 @@ module dlv_streamer #(
     // LD in PLAY mode AND both LDV1000 audio channels enabled.  Gates the ring DRAIN, not the
     // fill, so audio stays silent and the read pointer holds during PARK/SEARCH/STOP.
     input             ld_playing,
+    // {channel 1, channel 2} on.  The disc carries two soundtracks (L = 1, R = 2); with only one on,
+    // that one plays on both speakers, as a cabinet hears it.  Thayer's picks one per scene.
+    input       [1:0] ch_en,
 
     // ---- authentic LD seek latency ----
     // A real player stalls visibly while the head moves and the games were built around that pause,
@@ -344,8 +347,11 @@ module dlv_streamer #(
                 pcm_l <= 16'sd0;
                 pcm_r <= 16'sd0;
             end else if (aud_drain) begin   // FRAME-LOCK: 44.1 kHz drain, but only while the disc
-                pcm_l  <= aud_rd_q[15:0];    // position has "paid" for the sample (aud_credit != 0).
-                pcm_r  <= aud_rd_q[31:16];   // Disc stalls -> credit hits 0 -> audio holds with it.
+                // 2026-10-18: one channel on -> it plays on both sides.  Original:
+                // pcm_l  <= aud_rd_q[15:0];    // position has "paid" for the sample (aud_credit != 0).
+                // pcm_r  <= aud_rd_q[31:16];   // Disc stalls -> credit hits 0 -> audio holds with it.
+                pcm_l  <= (ch_en == 2'b01) ? aud_rd_q[31:16] : aud_rd_q[15:0];   // drain only on credit;
+                pcm_r  <= (ch_en == 2'b10) ? aud_rd_q[15:0]  : aud_rd_q[31:16];  // disc stall -> audio holds
                 aud_rd <= aud_rd + 1'b1;
             end
             // underrun (empty OR out of credit while playing): hold last pcm

@@ -222,6 +222,7 @@ module CliffHanger
     assign ldp_0_i.post_seek_frames = post_seek_frames;  assign ldp_0_i.disc_2997 = disc_2997;
     // PR-8210 has no status read, and Cliff/GTG discs park at frame 1.
     assign ldp_0_i.park_frame = 17'd0;  assign ldp_0_i.status_rd = 1'b0;
+    assign ldp_0_i.cmd_oe = 1'b1;   // LD-V1000 firmware only
     assign ld_frame_valid = ldp_0_o.frame_valid;
     assign ld_search_cmd_o = ldp_0_o.search_cmd;  assign ld_play_end_o = ldp_0_o.play_end;
     assign ld_curr_frame = ldp_0_o.curr_frame;  assign ld_playing_o = ldp_0_o.playing;

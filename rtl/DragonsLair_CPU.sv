@@ -395,7 +395,13 @@ sc02_core #(.ROMFILE("rtl/sound/sc02/sc02_phoneme_rom.bin")) u_ssi263 (
 // halved so a loud phrase over a loud AY cannot clip.  Dragon's Lair and Space
 // Ace keep the un-halved AY path exactly as they have it today.
 wire signed [16:0] tq_snd_sum = {ay_signed[15], ay_signed} + {ssi_pcm[15], ssi_pcm};
-assign sound = is_thayers ? tq_snd_sum[16:1] : ay_signed;
+// Space Ace's beeps run at 2x (its Normal = the shared Beep Volume's Max), saturating.  Same -12288 bias.
+wire        [16:0] ay_sa_ac  = {1'b0, ay_sum, 6'd0};                       // 0 .. 48960
+wire        [16:0] ay_sa_sub = ay_sa_ac - 17'd12288;
+wire signed [15:0] ay_sa     = (ay_sa_ac > 17'd45055) ? 16'sd32767 : ay_sa_sub[15:0];
+// 2026-10-18: Space Ace boost added.  Original:
+// assign sound = is_thayers ? tq_snd_sum[16:1] : ay_signed;
+assign sound = is_thayers ? tq_snd_sum[16:1] : is_spaceace ? ay_sa : ay_signed;
 
 
 // Laserdisc player: one shared transport (rtl/ldp/ldp_transport.sv) plus a protocol
@@ -424,6 +430,10 @@ assign ldp_0_i.disc_2997        = disc_2997;
 // these three bit-identical to the build they are known good on.
 assign ldp_0_i.park_frame       = 17'd0;
 assign ldp_0_i.status_rd        = 1'b0;
+// DL/SA: OUT DISC DATA (misc b5) low enables U21 onto the LD bus (Cinematronics O&M manual, "disc player
+// interface"); high = released.  Thayer's: U16 74LS374 /OE = U14 74LS175 Q2-bar, D2 = D5 of OUT $F5
+// (I/O board 834-5004 sheet 1): bit 5 HIGH drives the bus; ROM $1EA2 holds it for one command strobe.
+assign ldp_0_i.cmd_oe           = is_thayers ? misc_reg[5] : ~misc_reg[5];
 assign ld_status         = ldp_0_o.status;
 assign ld_status_strobe  = ldp_0_o.status_strobe;
 assign ld_command_strobe = ldp_0_o.command_strobe;

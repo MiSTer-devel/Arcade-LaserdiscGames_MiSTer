@@ -44,7 +44,8 @@ module ldp_transport
     output reg        search_cmd_o,     // 1-cyc when a SEARCH commits (after the tail drain)
     output reg        play_end_o,       // 1-cyc when playback stops by any mechanism
     output            playing,          // gates the .dlv audio ring
-    output reg [16:0] dbg_seek_frame
+    output reg [16:0] dbg_seek_frame,
+    output      [1:0] audio_en          // {channel 1, channel 2} on: the game picks a disc soundtrack per scene
 );
 `include "ldp_bus.svh"
 
@@ -68,8 +69,13 @@ module ldp_transport
 
     // MAME update_audio_enable(): unmute only at mode==PLAY && speed==1x && both channels on.
     // Stay "playing" through the tail drain so audio does not mute early.
+    // 2026-10-18: was "both channels on".  Thayer's turns channel 2 off mid-scene and lost ALL disc audio;
+    // Daphne ignores the channel commands entirely.  Mute only when both are off.
+    // assign playing = ((mode == M_PLAY) || (mode == M_SEARCH && seek_tail_cnt != 4'd0))
+    //                  && (play_speed_q4 == 5'd4) && audio_en1 && audio_en2;
     assign playing = ((mode == M_PLAY) || (mode == M_SEARCH && seek_tail_cnt != 4'd0))
-                     && (play_speed_q4 == 5'd4) && audio_en1 && audio_en2;
+                     && (play_speed_q4 == 5'd4) && (audio_en1 || audio_en2);
+    assign audio_en = {audio_en1, audio_en2};
 
     // Wall-clock periods scaled from CLK_HZ -- mind the widths, a narrow one truncates silently.
     // The field tick is 59.94 Hz (Daphne ldp.cpp:703); the disc frame advances at the FILM rate.

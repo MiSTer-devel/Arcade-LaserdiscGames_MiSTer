@@ -110,8 +110,10 @@ assign g_from_cop  = t400_0_o.io_g;
 assign g_en        = t400_0_o.io_g_en;
 
 //------------------------------------------------------- Keyboard -------------------------------------------------------------//
-// The panel is a SERIAL device on the COP's SK/SI pins, not a Z80 port.  The COP
-// free-runs SK; on each FALLING edge the panel shifts out one bit of a 10-bit
+// The panel is a SERIAL device on the COP's SO/SI pins, not a Z80 port.  The COP
+// clocks SO (CPU board 834-5003 sheet 2: U5 pin 15 SO -> R11 -> Q1 -> J3 "Y" = keyboard
+// clock; J3 "G" -> pin 14 SI = data; SK is not on J3.  MAME thayers.cpp: write_so ->
+// kbclk_w); on each FALLING edge of SO the panel shifts out one bit of a 10-bit
 // frame (Daphne/MAME thayers.cpp kbclk_w):
 //
 //     1, 0, 1, Q9, P3, P2, P1, P0, 0, <wrap>
@@ -126,7 +128,9 @@ reg  [3:0] keylatch = 4'd0;    // current row 0..9
 reg  [3:0] keydata  = 4'd0;    // row bits, shifted out MSB first
 reg        kbdata   = 1'b1;    // -> SI, idles high
 assign t400_0_i.si = kbdata;     // keyboard serial data -> the shared COP421
-assign sk_from_cop = t400_0_o.sk; // keyboard serial clock, driven by the COP
+// 2026-10-18: was SK -- the keyboard never saw a clock edge from the pin the board actually uses.
+// assign sk_from_cop = t400_0_o.sk;
+assign sk_from_cop = t400_0_o.so; // keyboard serial clock = COP SO (schematic + MAME), not SK
 
 wire [3:0] rx_nxt  = rx_bit + 4'd1;
 wire [3:0] kl_nxt  = (keylatch == 4'd9) ? 4'd0 : keylatch + 4'd1;

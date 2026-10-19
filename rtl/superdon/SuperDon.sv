@@ -91,7 +91,7 @@ module SuperDon
     reg       cpu_ce;
     always @(posedge clk_sys) begin
         if (!reset) begin cdiv <= 6'd0; cpu_ce <= 1'b0; end
-        else if (pause) cpu_ce <= 1'b0;
+        else if (pause | (disc_hold & ldp_0_o.ldv_fw)) cpu_ce <= 1'b0;   // freeze with the firmware player
         else begin
             cpu_ce <= (cdiv == CDIV - 6'd1);
             cdiv   <= (cdiv == CDIV - 6'd1) ? 6'd0 : cdiv + 6'd1;
@@ -226,6 +226,7 @@ module SuperDon
     assign ldp_0_i.pause = pause;  assign ldp_0_i.disc_hold = disc_hold;
     assign ldp_0_i.post_seek_frames = post_seek_frames;  assign ldp_0_i.disc_2997 = disc_2997;
     assign ldp_0_i.park_frame = disc_leader;  assign ldp_0_i.status_rd = ld_status_rd;
+    assign ldp_0_i.cmd_oe = 1'b1;   // #unverified: SDQ board drive not checked against its schematic
     assign ld_status = ldp_0_o.status;  assign ld_stat_strobe = ldp_0_o.status_strobe;
     assign ld_cmd_strobe = ldp_0_o.command_strobe;
     assign ld_search_cmd_o = ldp_0_o.search_cmd;  assign ld_play_end_o = ldp_0_o.play_end;

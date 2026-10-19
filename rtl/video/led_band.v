@@ -100,11 +100,6 @@ module led_band #(
         default: begin sk0 = 5'd31; sk1 = 5'd31; sk2 = 5'd31; end   // not chosen yet -> blank
     endcase
 
-    // Hex for the diagnostic field: 0-9 use the normal codes, F uses its own glyph
-    // so that code 15 still means CLEAR/blank everywhere the GAME writes digits.
-    function [4:0] hexch(input [3:0] n);
-        hexch = (n == 4'hF) ? 5'd20 : {1'b0, n};
-    endfunction
 
     // slot -> character (font code).  Dynamic slots pull led_digits[].
     reg [4:0] ch;
@@ -112,13 +107,12 @@ module led_band #(
         // Thayer's Quest: the game drives only TWO digits (14,15) -- the remaining
         // time -- so the Dragon's Lair scoreboard layout is meaningless here.
         // Time is centred: 't' + 2 digits spans slots 15-18, centre 16.5, which is
-        // the exact centre of the 33-slot band.  Diagnostics live hard left and
-        // never overlap it.  Digits 0-7 are blanked by the game at $00FD and never
-        // written again, so the diagnostic field costs the game nothing.
-        6'd0:  ch = hexch(led_digits[ 0*4 +: 4]);   6'd1:  ch = hexch(led_digits[ 1*4 +: 4]);
-        6'd2:  ch = hexch(led_digits[ 2*4 +: 4]);   6'd3:  ch = hexch(led_digits[ 3*4 +: 4]);
-        6'd4:  ch = hexch(led_digits[ 4*4 +: 4]);   6'd5:  ch = hexch(led_digits[ 5*4 +: 4]);
-        6'd6:  ch = hexch(led_digits[ 6*4 +: 4]);   6'd7:  ch = hexch(led_digits[ 7*4 +: 4]);
+        // the exact centre of the 33-slot band.  Slots 0-7 show the game's digits 0-7
+        // (blanked by the game at $00FD; the self-test's DIGITAL DISPLAY TEST cycles them).
+        6'd0:  ch = {1'b0, led_digits[ 0*4 +: 4]};  6'd1:  ch = {1'b0, led_digits[ 1*4 +: 4]};
+        6'd2:  ch = {1'b0, led_digits[ 2*4 +: 4]};  6'd3:  ch = {1'b0, led_digits[ 3*4 +: 4]};
+        6'd4:  ch = {1'b0, led_digits[ 4*4 +: 4]};  6'd5:  ch = {1'b0, led_digits[ 5*4 +: 4]};
+        6'd6:  ch = {1'b0, led_digits[ 6*4 +: 4]};  6'd7:  ch = {1'b0, led_digits[ 7*4 +: 4]};
         6'd15: ch = 5'd19;                                                        // 't'
         6'd16: ch = {1'b0, led_digits[14*4 +: 4]};  6'd17: ch = {1'b0, led_digits[15*4 +: 4]};
         default: ch = 5'd31;                                                      // blank

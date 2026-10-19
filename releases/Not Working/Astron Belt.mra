@@ -74,6 +74,11 @@
         <part repeat="0x4000">00</part>
     </rom>
 
+    <!-- Index 5: Pioneer LD-V1000 player firmware (the player's own Z80 ROM). Without it the core uses the HLE. -->
+    <rom index="5" md5="none" zip="ldv1000.zip">
+        <part crc="31ec4687" name="z03_1001_vyw-053_v1-0.bin"/>
+    </rom>
+
     <remark>Astron Belt (Sega)</remark>
     <mratimestamp>20261016000000</mratimestamp>
 </misterromdescription>

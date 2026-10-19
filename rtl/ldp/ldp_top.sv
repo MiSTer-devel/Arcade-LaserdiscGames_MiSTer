@@ -21,7 +21,13 @@ module ldp_top
     // Gottlieb drives it from a 555: 998us = 0, 1996us = 1, boundary ~1497.
     parameter [31:0] BIT_ONE_US = 32'd870,
     // Boundary used while pr8210_555 is high (Gottlieb / M.A.C.H. 3 board).
-    parameter [31:0] BIT_ONE_US_555 = 32'd1497
+    parameter [31:0] BIT_ONE_US_555 = 32'd1497,
+    parameter  [7:0] LDV_ROM_INDEX = 8'd5,       // firmware ROM ioctl index
+    parameter  [3:0] LDV_FILM_PHASE = 4'd0,      // ldv_mech FILM_PHASE
+    parameter [15:0] LDV_MOTOR_STOP_MS = 16'd0,  // ldv1000_fw MOTOR_STOP_MS (0 = MAME)
+    parameter  [0:0] LDV_VSYNC_GATE = 1'b0,      // ldv1000_fw VSYNC_GATE (0 = MAME)
+    parameter  [0:0] LDV_LIVE_CMD = 1'b0,        // ldv1000_fw LIVE_CMD (0 = MAME)
+    parameter  [9:0] LDV_SEEK_FAST = 10'd133     // ldv1000_fw SEEK_FAST (133 = MAME)
 )
 (
     input             clk,
@@ -54,6 +60,7 @@ module ldp_top
     input             pause,
     input             disc_hold,
     output            playing,
+    output      [1:0] audio_en,         // {channel 1, channel 2} on, from the transport
     output     [16:0] dbg_seek_frame,
     output     [19:0] dbg_end_frame,
     output      [3:0] dbg_flags,
@@ -71,7 +78,19 @@ module ldp_top
     output      [7:0] txt_glyph,
     output            txt_on,
     output      [7:0] txt_x,
-    output      [7:0] txt_y
+    output      [7:0] txt_y,
+    // ---- LD-V1000 on its real firmware ----
+    input             ldv_fw_en,       // sampled while reset_n is low
+    input             cmd_oe,          // host is driving the LD bus (else it floats: pull-ups -> FF)
+    output            ldv_fw,
+    input             ioctl_download,
+    input      [7:0]  ioctl_index,
+    input      [24:0] ioctl_addr,
+    input      [7:0]  ioctl_dout,
+    input             ioctl_wr,
+    output chip_pool_pkg::z80_i_t z80_i,
+    input  chip_pool_pkg::z80_o_t z80_o,
+    output            z80_rst_n
 );
     localparam [3:0] PLAYER_LDV1000 = 4'd0,
                      PLAYER_PR7820  = 4'd1,
@@ -113,21 +132,60 @@ module ldp_top
         .pause(pause), .disc_hold(disc_hold), .post_seek_frames(post_seek_frames),
         .disc_2997(disc_2997), .park_frame(park_frame),
         .search_cmd_o(search_cmd_o), .play_end_o(play_end_o), .playing(playing),
-        .dbg_seek_frame(dbg_seek_frame)
+        .dbg_seek_frame(dbg_seek_frame),
+        .audio_en(audio_en)
     );
 
-    // ---- LD-V1000 ----
-    wire [7:0]  status_ldv;
-    wire        sstrobe_ldv, cstrobe_ldv;
-    wire [19:0] digits_ldv;
+    // ---- LD-V1000: firmware or HLE ----
+    reg         fw_req;
+    wire        fw_ready;
+    always @(posedge clk) if (!reset_n) fw_req <= ldv_fw_en;
+    wire        use_fw = sel_ldv1000 & fw_req & fw_ready;
+    assign      ldv_fw = use_fw;
+
+    wire [7:0]  status_ldv, status_hle, status_fw;
+    wire        sstrobe_ldv, cstrobe_ldv, sstrobe_hle, cstrobe_hle, sstrobe_fw, cstrobe_fw;
+    wire [19:0] digits_ldv, digits_hle, digits_fw;
+    wire        act_hle, act_fw;
+    wire [3:0]  op_hle, op_fw;
+    wire [16:0] arg_hle, arg_fw;
+    assign act_ldv     = use_fw ? act_fw     : act_hle;
+    assign op_ldv      = use_fw ? op_fw      : op_hle;
+    assign arg_ldv     = use_fw ? arg_fw     : arg_hle;
+    assign status_ldv  = use_fw ? status_fw  : status_hle;
+    assign sstrobe_ldv = use_fw ? sstrobe_fw : sstrobe_hle;
+    assign cstrobe_ldv = use_fw ? cstrobe_fw : cstrobe_hle;
+    assign digits_ldv  = use_fw ? digits_fw  : digits_hle;
+
     ldp_ldv1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (
-        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldv1000),
+        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldv1000 & ~use_fw),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
-        .cmd_action(act_ldv), .cmd_op(op_ldv), .cmd_arg(arg_ldv),
+        .cmd_action(act_hle), .cmd_op(op_hle), .cmd_arg(arg_hle),
         .search_done(search_done), .autostop_done(autostop_done), .field_phase(field_phase),
         .curr_frame(curr_frame), .status_rd(status_rd),
-        .status(status_ldv), .status_strobe(sstrobe_ldv), .command_strobe(cstrobe_ldv),
-        .dbg_digits(digits_ldv)
+        .status(status_hle), .status_strobe(sstrobe_hle), .command_strobe(cstrobe_hle),
+        .dbg_digits(digits_hle)
+    );
+
+    // frozen through the seek hold, like the transport (its head would run ahead otherwise)
+    ldv1000_fw #(.CLK_HZ(CLK_HZ), .ROM_INDEX(LDV_ROM_INDEX), .ROM_BASE(25'h0), .FILM_PHASE(LDV_FILM_PHASE),
+                 .MOTOR_STOP_MS(LDV_MOTOR_STOP_MS), .VSYNC_GATE(LDV_VSYNC_GATE), .LIVE_CMD(LDV_LIVE_CMD),
+                 .SEEK_FAST(LDV_SEEK_FAST)) u_ldv1000_fw (
+        .clk(clk), .reset_n(reset_n), .pause(pause | disc_hold), .sel(sel_ldv1000 & fw_req),
+        .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
+        .cmd_action(act_fw), .cmd_op(op_fw), .cmd_arg(arg_fw),
+        .search_done(search_done), .autostop_done(autostop_done), .field_phase(field_phase),
+        .status_rd(status_rd), .curr_frame(curr_frame),
+        .status(status_fw), .status_strobe(sstrobe_fw), .command_strobe(cstrobe_fw),
+        .dbg_digits(digits_fw),
+        .t_mode(mode), .field_tick(frame_tick), .disc_last_frame(17'd0), .film(~disc_2997),
+        .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
+        .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr), .cmd_oe(cmd_oe),
+        .z80_i(z80_i), .z80_o(z80_o), .z80_rst_n(z80_rst_n), .fw_ready(fw_ready),
+        .video_squelch(), .audio_squelch(),
+        .dbg_track(), .dbg_ctl_rd(), .dbg_ctl_val(), .dbg_disp_we(), .dbg_disp_sel(), .dbg_disp_dat(),
+        .dbg_fieldnum(), .dbg_class(), .dbg_irq(), .dbg_ppi0_pa(), .dbg_ppi0_pc(), .dbg_ppi1_pb(),
+        .dbg_ppi1_pc(), .dbg_counter(), .dbg_fetch()
     );
 
     // ---- PR-7820 ----

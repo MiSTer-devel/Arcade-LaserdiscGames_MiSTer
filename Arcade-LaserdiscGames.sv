@@ -192,6 +192,7 @@ localparam CONF_STR = {
 	"P3O13,Seek Delay,0,1,2,3,4,5;",
 	"P3O8,Hold Frame Seek,Off,On;",
 	"P3O57,Segment Tail,MRA Default,0,1,2,3,4,5;",
+	"P3OR,LD-V1000 Player,Firmware,HLE;",
 	// DIAG-REVERT-2026-10-15: new page, delete on revert. DPS step = 800 MHz VCO / 8 = 156 ps, 5 steps per entry.
 	"P4,SDRAM Options;",
 	"P4O[38:36],SDRAM Read Latch,Auto,Normal,Early,Late,Later;",
@@ -405,7 +406,18 @@ sdramclk_ddr
 
 assign CLK_VIDEO = CLK_CORE;   // scaler reference clock (paired with ce_pix from CE_DIV_LOG2)
 
-wire reset = RESET | status[0] | buttons[1] | ioctl_download;
+// LD-V1000 model (status[27]: 0 = real firmware, 1 = HLE).  ldp_top samples it in reset, so a change on
+// the OSD resets the game (~0.8 ms) and the new model is the one running -- no manual reset needed.
+reg        ldv_hle_q = 1'b0;
+reg [15:0] ldv_model_rst_cnt = 16'd0;
+always @(posedge CLK_CORE) begin
+    ldv_hle_q <= status[27];
+    if (ldv_hle_q != status[27])        ldv_model_rst_cnt <= 16'hFFFF;
+    else if (ldv_model_rst_cnt != 16'd0) ldv_model_rst_cnt <= ldv_model_rst_cnt - 16'd1;
+end
+wire ldv_model_rst = (ldv_model_rst_cnt != 16'd0);
+
+wire reset = RESET | status[0] | buttons[1] | ioctl_download | ldv_model_rst;
 
 ///////////////////         Keyboard           //////////////////
 
@@ -422,7 +434,9 @@ reg btn_2p_start = 0;
 reg btn_pause    = 0;
 reg btn_service  = 0;
 
-wire pressed = ~ps2_key[9];
+// 2026-10-18: was inverted -- hps_io sets ps2_key[9] = 1 while held, so every key latched ON at release.
+// wire pressed = ~ps2_key[9];
+wire pressed = ps2_key[9];
 wire [7:0] code = ps2_key[7:0];
 always @(posedge CLK_CORE) begin
 	reg old_state;
@@ -516,6 +530,12 @@ always @(posedge CLK_CORE) begin
 		endcase
 	end
 end
+
+// Pad -> panel, as the MRA names them: A,B,X,Y = Choice 1-4 (same keys as keyboard 1-4),
+// Start 1P / 2P slots = Items (F2) / Drop Item (F3).  Thayer's reads no other pad bit.
+wire [39:0] tq_pad = {joystick_0[6], 3'b000, joystick_0[7], 26'd0,     // [39] 3/Enter, [35] 4/Space
+                      joystick_0[10], 3'b000, joystick_0[9],           // [8] Drop Item, [4] Items
+                      joystick_0[5], joystick_0[4], 2'b00};            // [3] 2, [2] 1/Clear
 
 //////////////////  Arcade Buttons/Interfaces   ///////////////////////////
 
@@ -927,10 +947,20 @@ wire        ldp_0_search, ldp_0_end, ldp_0_playing, ldp_0_twe, ldp_0_ton;
 wire [16:0] ldp_0_frame, ldp_0_seek_f;
 wire [19:0] ldp_0_end_f;
 wire  [3:0] ldp_0_flags;
+wire  [1:0] ldp_0_aud_en;        // disc audio channels on {1, 2}
 wire  [1:0] ldp_0_line;
 wire  [5:0] ldp_0_col;
 
-ldp_top #(.CLK_HZ(CORE_CLK_HZ)) ldp_0
+// LD-V1000 runs its real firmware (ROM = ioctl index 5, ldv1000.zip) unless the OSD selects the HLE, or the
+// MRA carried no ROM.  Settings = the simulation-validated set (verilator/ldv1000_fw/README.md, 2026-10-18):
+// film pulldown phase 2, VSYNC only with the spindle running, live host port, ~3 s full-disc search.
+chip_pool_pkg::z80_i_t z80_1_i;
+chip_pool_pkg::z80_o_t z80_1_o;
+wire                   z80_1_rst_n;
+wire                   ldp_0_ldv_fw;
+
+ldp_top #(.CLK_HZ(CORE_CLK_HZ), .LDV_ROM_INDEX(8'd5), .LDV_FILM_PHASE(4'd2), .LDV_VSYNC_GATE(1'b1),
+          .LDV_LIVE_CMD(1'b1), .LDV_SEEK_FAST(10'd340)) ldp_0
 (
     .clk(CLK_CORE), .reset_n(game_run),
     .player_sel(ldp_0_i.player_sel), .pr8210_555(ldp_0_i.pr8210_555),
@@ -938,13 +968,32 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ)) ldp_0
     .status(ldp_0_status), .status_strobe(ldp_0_sstb), .command_strobe(ldp_0_cstb), .ready_n(ldp_0_ready_n),
     .frame_valid(ldp_0_fvalid), .tx_valid(ldp_0_tx_valid), .tx_byte(ldp_0_tx_byte), .tx_pop(ldp_0_i.tx_pop),
     .search_cmd_o(ldp_0_search), .play_end_o(ldp_0_end), .curr_frame(ldp_0_frame),
-    .pause(ldp_0_i.pause), .disc_hold(ldp_0_i.disc_hold), .playing(ldp_0_playing),
+    .pause(ldp_0_i.pause), .disc_hold(ldp_0_i.disc_hold), .playing(ldp_0_playing), .audio_en(ldp_0_aud_en),
     .dbg_seek_frame(ldp_0_seek_f), .dbg_end_frame(ldp_0_end_f), .dbg_flags(ldp_0_flags),
     .post_seek_frames(ldp_0_i.post_seek_frames), .disc_2997(ldp_0_i.disc_2997),
     .park_frame(ldp_0_i.park_frame), .status_rd(ldp_0_i.status_rd),
     .txt_we(ldp_0_twe), .txt_line(ldp_0_line), .txt_col(ldp_0_col), .txt_glyph(ldp_0_glyph), .txt_on(ldp_0_ton),
-    .txt_x(ldp_0_tx), .txt_y(ldp_0_ty)
+    .txt_x(ldp_0_tx), .txt_y(ldp_0_ty),
+    .ldv_fw_en(~status[27]), .cmd_oe(ldp_0_i.cmd_oe), .ldv_fw(ldp_0_ldv_fw),
+    .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
+    .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr),
+    .z80_i(z80_1_i), .z80_o(z80_1_o), .z80_rst_n(z80_1_rst_n)
 );
+
+// z80_1: the LD-V1000's own Z80 (player firmware), driven by ldp_0 only.
+wire [15:0] z80_1_a;
+wire  [7:0] z80_1_do;
+wire        z80_1_m1_n, z80_1_mreq_n, z80_1_iorq_n, z80_1_rd_n, z80_1_wr_n, z80_1_rfsh_n;
+T80s #(.Mode(0), .T2Write(1), .IOWait(1)) z80_1
+(
+    .RESET_n(z80_1_rst_n & game_run), .CLK(CLK_CORE), .CEN(z80_1_i.ce), .WAIT_n(1'b1), .INT_n(z80_1_i.int_n),
+    .NMI_n(z80_1_i.nmi_n), .BUSRQ_n(1'b1),
+    .M1_n(z80_1_m1_n), .MREQ_n(z80_1_mreq_n), .IORQ_n(z80_1_iorq_n), .RD_n(z80_1_rd_n), .WR_n(z80_1_wr_n),
+    .RFSH_n(z80_1_rfsh_n), .HALT_n(), .BUSAK_n(), .A(z80_1_a), .DI(z80_1_i.di), .DO(z80_1_do)
+);
+assign z80_1_o.a = z80_1_a;             assign z80_1_o.dout = z80_1_do;
+assign z80_1_o.m1_n = z80_1_m1_n;       assign z80_1_o.mreq_n = z80_1_mreq_n;  assign z80_1_o.iorq_n = z80_1_iorq_n;
+assign z80_1_o.rd_n = z80_1_rd_n;       assign z80_1_o.wr_n = z80_1_wr_n;      assign z80_1_o.rfsh_n = z80_1_rfsh_n;
 
 assign ldp_0_o.status = ldp_0_status;          assign ldp_0_o.status_strobe = ldp_0_sstb;
 assign ldp_0_o.command_strobe = ldp_0_cstb;    assign ldp_0_o.ready_n = ldp_0_ready_n;
@@ -956,7 +1005,7 @@ assign ldp_0_o.dbg_end_frame = ldp_0_end_f;    assign ldp_0_o.dbg_flags = ldp_0_
 assign ldp_0_o.txt_we = ldp_0_twe;             assign ldp_0_o.txt_line = ldp_0_line;
 assign ldp_0_o.txt_col = ldp_0_col;            assign ldp_0_o.txt_glyph = ldp_0_glyph;
 assign ldp_0_o.txt_on = ldp_0_ton;             assign ldp_0_o.txt_x = ldp_0_tx;
-assign ldp_0_o.txt_y = ldp_0_ty;
+assign ldp_0_o.txt_y = ldp_0_ty;             assign ldp_0_o.ldv_fw = ldp_0_ldv_fw;
 
 /////////////////////////////  Shared RAM blocks  /////////////////////////////
 // Port A = CPU side (read/write), port B = video side (read-only). Sized to the largest user.
@@ -1013,7 +1062,7 @@ assign ram4_o.a_q = ram4_qa;  assign ram4_o.b_q = ram4_qb;
 DragonsLair #(.CLK_HZ(CORE_CLK_HZ)) dl_inst
 (
 	.rom_addr(dl_rom_a), .rom_data(prog_q),
-	.tq_keys(tq_keys),
+	.tq_keys(tq_keys | tq_pad),
 	.dbg_ld_status(dbg_ld_status_dl),
 	.dbg_d0_seen(dbg_d0_seen_dl),
 	.dbg_seek_digits(dbg_seek_digits_dl),
@@ -1384,6 +1433,7 @@ assign d2_ldp_0_i.blip = 1'b0;  assign d2_ldp_0_i.tx_pop = d2_rx_pop;
 assign d2_ldp_0_i.pause = pause_cpu;  assign d2_ldp_0_i.disc_hold = fb_seek_hold;
 assign d2_ldp_0_i.post_seek_frames = post_seek_eff;  assign d2_ldp_0_i.disc_2997 = disc_2997_w;
 assign d2_ldp_0_i.park_frame = 17'd0;  assign d2_ldp_0_i.status_rd = 1'b0;
+assign d2_ldp_0_i.cmd_oe = 1'b1;   // LD-V1000 firmware only
 assign d2_rx_valid = ldp_0_o.tx_valid;  assign d2_rx_byte = ldp_0_o.tx_byte;
 assign seek_pulse_d2 = ldp_0_o.search_cmd;  assign play_end_d2 = ldp_0_o.play_end;
 assign ld_frame_d2 = ldp_0_o.curr_frame;  assign ld_playing_d2 = ldp_0_o.playing;
@@ -1496,6 +1546,7 @@ assign m3_ldp_0_i.blip = m3_blip;  assign m3_ldp_0_i.tx_pop = 1'b0;
 assign m3_ldp_0_i.pause = pause_cpu;  assign m3_ldp_0_i.disc_hold = fb_seek_hold;
 assign m3_ldp_0_i.post_seek_frames = post_seek_eff;  assign m3_ldp_0_i.disc_2997 = disc_2997_w;
 assign m3_ldp_0_i.park_frame = ld_leader_w;  assign m3_ldp_0_i.status_rd = 1'b0;
+assign m3_ldp_0_i.cmd_oe = 1'b1;   // LD-V1000 firmware only
 assign seek_pulse_m3 = ldp_0_o.search_cmd;  assign play_end_m3 = ldp_0_o.play_end;
 assign ld_frame_m3 = ldp_0_o.curr_frame;  assign ld_playing_m3 = ldp_0_o.playing;
 
@@ -1566,39 +1617,14 @@ assign ld_playing_top    = brd[BRD_AST] ? ld_playing_as : brd[BRD_GPW] ? ld_play
 // falling through to Dragon's Lair's heartbeat.
 assign dbg_led           = brd[BRD_AST] ? dbg_led_as : brd[BRD_GPW] ? dbg_led_gp : brd[BRD_MACH3] ? 1'b0 : brd[BRD_DL2] ? 1'b0          : brd[BRD_CLIFF] ? dbg_led_cl    : brd[BRD_SDQ] ? dbg_led_sd    : dbg_led_dl;
 // The scoreboard band and the Space Ace skill select belong to the Dragon's Lair board only.
-//------------------------------------------------------------------------------
-// Thayer's Quest diagnostic field.
-// The game drives only digits 14 and 15 (remaining time) and blanks 0-13 at boot
-// ($00FD), so the low eight are free real estate on a board that is mid-bring-up.
-// led_band renders slots 0-7 from them as HEX when tq_mode is set, hard left, with
-// the time centred and never overlapping.
-//
-//   slot 0,1 : LD status LATCHED at the IN $F0 read -- what the ROM actually saw.
-//              Boot waits for $D0 = ST_SEARCH_FIN at $1DFD.
-//   slot 2   : {search_cmd, play_end, D0_ever_seen, seek_hold}
-//   slot 3-7 : the raw SEARCH digits as our LD-V1000 received them.  The ROM enters
-//              696 as five BCD digits, so this should read 00696.
-//------------------------------------------------------------------------------
+// Thayer's Quest: the boot-hang diagnostic field (LD status / search digits in slots 0-7, 2026-09-13)
+// was removed 2026-10-18; the band shows the game's own digits again.  These debug outputs of
+// DragonsLair stay connected but unused.
 wire  [7:0] dbg_ld_status_dl;
 wire        dbg_d0_seen_dl;
 wire [19:0] dbg_seek_digits_dl;
-reg        tq_seek_seen = 1'b0, tq_end_seen = 1'b0;
-always @(posedge CLK_CORE) begin
-	if (reset) begin tq_seek_seen <= 1'b0; tq_end_seen <= 1'b0; end
-	else begin
-		if (seek_pulse_dl) tq_seek_seen <= 1'b1;
-		if (play_end_dl)   tq_end_seen  <= 1'b1;
-	end
-end
-wire [31:0] tq_dbg_nib = { dbg_seek_digits_dl[3:0],   dbg_seek_digits_dl[7:4],
-                           dbg_seek_digits_dl[11:8],  dbg_seek_digits_dl[15:12],
-                           dbg_seek_digits_dl[19:16],
-                           {tq_seek_seen, tq_end_seen, dbg_d0_seen_dl, fb_seek_hold},
-                           dbg_ld_status_dl[3:0], dbg_ld_status_dl[7:4] };
 
-assign led_digits_flat   = brd[BRD_DL] ? (is_thayers ? {led_digits_dl[63:32], tq_dbg_nib}
-                                                     : led_digits_dl)
-                                       : 64'd0;
+assign led_digits_flat   = brd[BRD_DL] ? led_digits_dl : 64'd0;
 assign skill_level       = brd[BRD_DL] ? skill_dl      : 2'd0;
 
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
@@ -1629,6 +1655,8 @@ wire  [7:0] tp_r, tp_g, tp_b;
 // .dlv -> block streamer -> JPEG decoder -> fb_writer.
 
 // ---- .dlv block streamer (hps_io slot 0) — all CLK_CORE, single-clock, no CDC ----
+// Disc audio channels on {1, 2}.  DL2 and M.A.C.H.3 drive their own players, not ldp_0: both on.
+wire  [1:0] ld_aud_en_top = (brd[BRD_DL2] | brd[BRD_MACH3]) ? 2'b11 : ldp_0_aud_en;
 wire  [7:0] strm_byte;
 wire        strm_valid, strm_ready, strm_last;
 wire        dec_reset_w;                // per-frame decoder reset (decoder only)
@@ -1648,6 +1676,7 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),
     .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
     .ld_playing(ld_playing_top),
+    .ch_en(ld_aud_en_top),
     .disc_2997(disc_2997_w), .disc_leader(ld_leader_w),
     .hdr_valid(), .hdr_ver(), .hdr_game_id()
 );

@@ -218,6 +218,7 @@ typedef struct packed {
     logic        disc_2997;
     logic [16:0] park_frame;
     logic        status_rd;
+    logic        cmd_oe;                // host drives the LD data bus (DL: misc b5 low = U21 enabled)
 } ldp_i_t;
 
 typedef struct packed {
@@ -242,6 +243,7 @@ typedef struct packed {
     logic        txt_on;
     logic  [7:0] txt_x;
     logic  [7:0] txt_y;
+    logic        ldv_fw;                // LD-V1000 is running its real firmware (else HLE)
 } ldp_o_t;
 
 // Dual-port RAM block (dpram_dc, 8-bit, port A = CPU side read/write, port B = video side read-only)
