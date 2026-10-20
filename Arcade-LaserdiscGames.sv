@@ -1342,6 +1342,7 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 	// DIAG-REVERT-2026-10-15: original below
 	// .reset_n(game_run & brd[BRD_DL2]),
 	.reset_n(game_run & brd[BRD_DL2] & ~d2_cal_hold),   // DIAG: held while the SDRAM phase sweep runs
+	.pause(pause_cpu),   // PAUSE-2026-10-20: new, delete on revert. Same pause as its LDP-1450 (d2_ldp_0_i.pause)
 
 	// DL2 has no DIPs (EEPROM-configured); controls only.
 	.p1({m_skill3, m_skill2, m_skill1, m_action1, m_right1, m_left1, m_down1, m_up1}),

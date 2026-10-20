@@ -41,6 +41,7 @@ module DragonsLair2
 (
     input                core_clk,        // CLK_CORE, 80 MHz
     input                reset_n,
+    input                pause,           // freezes the board with its LDP-1450 (else its LD timeouts fire)
 
     // ---- controls ----
     // DL2 has NO DIP switches: its settings live in an EEPROM (port 0x202 b0),
@@ -221,8 +222,11 @@ module DragonsLair2
     // Fire once per cycle, only while the glue is asking and RAM is idle.
     reg ram_started;
     reg [1:0] rom_wait;   // wait states for the shared ROM's registered output
-    assign ram_rd = req & is_memrd & ~in_rom & ~ram_started & ~ram_busy;
-    assign ram_wr = req & is_memwr & ~in_rom & ~ram_started & ~ram_busy;
+    // PAUSE-2026-10-20: original below, uncomment to restore
+    // assign ram_rd = req & is_memrd & ~in_rom & ~ram_started & ~ram_busy;
+    // assign ram_wr = req & is_memwr & ~in_rom & ~ram_started & ~ram_busy;
+    assign ram_rd = req & is_memrd & ~in_rom & ~ram_started & ~ram_busy & ~pause;   // no new access while paused
+    assign ram_wr = req & is_memwr & ~in_rom & ~ram_started & ~ram_busy & ~pause;
 
     //--------------------------------------------------- IO ------------------
     wire [15:0] io_a = req_addr[15:0];
@@ -322,7 +326,9 @@ module DragonsLair2
     localparam [31:0] PIT_DIV = CLK_HZ / PIT_HZ;   // 67 at 80 MHz, 0.07% high
 
     reg  [15:0] pit_pre;
-    wire        pit_tick = (pit_pre == PIT_DIV[15:0] - 16'd1);
+    // PAUSE-2026-10-20: original below, uncomment to restore
+    // wire        pit_tick = (pit_pre == PIT_DIV[15:0] - 16'd1);
+    wire        pit_tick = (pit_pre == PIT_DIV[15:0] - 16'd1) & ~pause;   // refresh toggle + tone frozen on pause
 
     reg  [15:0] pit2_div, pit2_cnt;
     reg         pit2_hi;        // next 0x42 write is the MSB
@@ -344,7 +350,9 @@ module DragonsLair2
             pit2_hi <= 1'b0; pit2_out <= 1'b0; port61 <= 4'd0;
             rfsh_cnt <= 5'd0; rfsh <= 1'b0;
         end else begin
-            pit_pre <= pit_tick ? 16'd0 : pit_pre + 16'd1;
+            // PAUSE-2026-10-20: original below, uncomment to restore
+            // pit_pre <= pit_tick ? 16'd0 : pit_pre + 16'd1;
+            if (!pause) pit_pre <= pit_tick ? 16'd0 : pit_pre + 16'd1;
 
             if (pit_tick) begin
                 // Refresh toggles at PIT_HZ/18 on a real PC; BIOS timing loops
@@ -509,7 +517,13 @@ module DragonsLair2
             //     tick_cnt  <= 21'd0;
             //     irq0_pend <= 1'b1;
             // end else tick_cnt <= tick_cnt + 21'd1;
-            if (tick_cnt == TICK_182[22:0] - 23'd1) begin   // DIAG
+            // PAUSE-2026-10-20: original DIAG lines below, uncomment to restore
+            // if (tick_cnt == TICK_182[22:0] - 23'd1) begin   // DIAG
+            //     tick_cnt  <= 23'd0;
+            //     irq0_pend <= 1'b1;
+            // end else tick_cnt <= tick_cnt + 23'd1;
+            if (pause) ;                                     // 18.2 Hz timer frozen on pause
+            else if (tick_cnt == TICK_182[22:0] - 23'd1) begin   // DIAG
                 tick_cnt  <= 23'd0;
                 irq0_pend <= 1'b1;
             end else tick_cnt <= tick_cnt + 23'd1;
@@ -650,7 +664,10 @@ module DragonsLair2
         end else begin
             if (!req) begin ram_started <= 1'b0; rom_wait <= 2'd0; end
 
-            if (req && !req_ack) begin
+            // PAUSE-2026-10-20: original below, uncomment to restore
+            // if (req && !req_ack) begin
+            // Paused: answer no new bus cycle, so READY holds the 8088. A RAM access already started finishes.
+            if (req && !req_ack && !(pause && !ram_started)) begin
                 if (is_iord || is_iowr) begin
                     req_rdata <= io_rdata;
                     req_ack   <= 1'b1;                     // IO answers immediately
