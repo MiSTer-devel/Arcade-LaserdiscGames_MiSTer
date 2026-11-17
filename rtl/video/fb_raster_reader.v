@@ -53,6 +53,9 @@ module fb_raster_reader #(
     input      [15:0] v_band,         // active band height: V_BAND (band on) or 0 (full screen).  V_TOTAL
                                       //   reserves V_BAND either way, so the frame time never changes.
     input             crt,            // 0 = film 480p/23.98 Hz (scaler); 1 = CRT 240p/60 Hz (15 kHz)
+    input             ilace,
+    input             fswap,
+    output reg        field,
     input             flip,           // 180 deg rotation (inverted monitor): BOTH axes, not a mirror
 
     // ddram.sv read port 2
@@ -93,6 +96,8 @@ module fb_raster_reader #(
     reg  [15:0] v_band_q = V_BAND;
     assign v_band_act = v_band_q;
     reg         crt_q    = 1'b0;
+    reg         ilace_q  = 1'b0;
+    reg         ffld     = 1'b0;
     reg         flip_q   = 1'b0;
 
     wire [15:0] h_total = crt_q ? (H_ACT + H_FP_C + H_SYNC_C + H_BP_C)
@@ -102,9 +107,13 @@ module fb_raster_reader #(
 
     wire [15:0] v_act   = crt_q ? (V_ACT >> 1) : V_ACT;
     wire [15:0] v_disp  = v_act + v_band_q;
-    wire [15:0] v_total = crt_q ? V_TOTAL_C : V_TOTAL_F;
+    wire        il      = crt_q & ilace_q;
+    wire [15:0] v_total = crt_q ? (il ? (field ? 16'd263 : 16'd262) : V_TOTAL_C) : V_TOTAL_F;
     wire [15:0] vs_beg  = crt_q ? (v_disp + V_FP_C) : (v_disp + V_FP);
     wire [15:0] vs_end  = crt_q ? (v_disp + V_FP_C + V_SYNC_C) : (v_disp + V_FP + V_SYNC);
+    wire [15:0] vs_hoff = (il & field) ? (h_total >> 1) : 16'd0;
+    wire        vs_on   = ((vcnt > vs_beg) || (vcnt == vs_beg && hcnt >= vs_hoff)) &&
+                          ((vcnt < vs_end) || (vcnt == vs_end && hcnt <  vs_hoff));
 
     // pixel clock enable = clk / 2^CE_DIV_LOG2  (RES-512x480-; was hardwired clk/8).
     // The counter still free-runs over its full 3 bits; only the compare mask narrows, so
@@ -157,7 +166,7 @@ module fb_raster_reader #(
     // Display line `fline` -> framebuffer row.  CRT mode takes every other row (480 -> 240);
     // flip reverses the order.  STRIDE is a constant so the multiply is a shift.
     wire [15:0] row_lin = fline - vid_top;
-    wire [15:0] row_dec = crt_q ? (row_lin << 1) : row_lin;
+    wire [15:0] row_dec = crt_q ? ((row_lin << 1) | {15'd0, il & (~ffld ^ fswap)}) : row_lin;
     wire [15:0] fb_row  = flip_q ? (V_ACT - 16'd1 - row_dec) : row_dec;
 
     // Second axis of the rotation: read the line buffer backwards.  Named wire because Quartus 17
@@ -179,6 +188,7 @@ module fb_raster_reader #(
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
             fw_hold <= 48'd0; fw_cnt <= 2'd0; fw_idx <= 16'd0;
             v_band_q <= v_band; crt_q <= crt; flip_q <= flip;
+            ilace_q <= ilace; field <= 1'b0; ffld <= 1'b0;
         end else begin
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
@@ -192,7 +202,7 @@ module fb_raster_reader #(
                 hblank   <= ~h_active;
                 vblank   <= ~v_active;
                 hsync    <= (hcnt >= hs_beg) && (hcnt < hs_end);
-                vsync    <= (vcnt >= vs_beg) && (vcnt < vs_end);
+                vsync    <= vs_on;
                 // advance counters -- raster/hsync/vsync timing ALWAYS advances on schedule,
                 // independent of fetch progress (never stall the video timing itself, that's a
                 // framework/HDMI risk).
@@ -211,6 +221,8 @@ module fb_raster_reader #(
                         v_band_q       <= v_band; // adopt OSD toggles only at the frame boundary --
                         crt_q          <= crt;    //   the raster must never change under itself
                         flip_q         <= flip;
+                        ilace_q        <= ilace;
+                        field          <= crt & ilace & ~field;
                     end
                 end else begin
                     hcnt <= hcnt + 16'd1;
@@ -230,8 +242,10 @@ module fb_raster_reader #(
                         fline           <= 16'd1;
                         frame_base_hw_q <= frame_base_hw;
                         resync_pending  <= 1'b0;
+                        ffld            <= field;
                     end else begin
                         fline <= fline_next;
+                        if (fline_next == 16'd0) ffld <= il & ~field;
                     end
                 end
             F_REQ:

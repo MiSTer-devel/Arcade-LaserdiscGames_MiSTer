@@ -31,7 +31,6 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 // DIAG-REVERT-2026-10-15: original below -- SDRAM now carries DL2's RAM (dl2_sdram)
 // assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
 
-assign VGA_F1 = 0;
 assign VGA_SCALER = 0;
 assign VGA_DISABLE = 0;
 assign FB_FORCE_BLANK = 0;
@@ -158,7 +157,8 @@ wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_l
 // tile+sprite overlay genlocked onto the disc picture, so the band would only
 // duplicate it and steal rows from the game's own display.
 wire band_off = status[20] | cliff_board | is_dl2 | is_sdq | mach3_board | is_gpw | is_astron;
-wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
+wire ilace_mode = (status[22:21] == 2'd2);
+wire crt_mode = (status[22:21] == 2'd0) | ilace_mode;   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
 wire horz = 1'b1;   // DL/SA are horizontal-only
@@ -177,7 +177,8 @@ localparam CONF_STR = {
 	"H1O9,Disc Side,Side 1,Side 2;",
 	"-;",
 	"P1,Video;",
-	"P1OLM,Video Timing,CRT 240p60,Film 24Hz;",
+	"P1OLM,Video Timing,CRT 240p60,Film 24Hz,CRT 480i;",
+	"P1O[28],480i Field Order,Normal,Swap;",
 	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	"P1OK,LED Bar,On,Off;",
 	"P1OB,Flip Screen,Off,On;",
@@ -710,11 +711,13 @@ wire        rr_rd_req2, rr_rd_ack2;
 // fb_raster_reader tells fb_writer when its line fetch has landed, so the writer never contends
 // with an in-flight read2.  Declared here because fb_writer is instantiated ABOVE the reader.
 wire        rr_fill_idle;
+wire        rr_field;
+assign VGA_F1 = rr_field;
 
 
 // Driven by fb_raster_reader with the LED band composited over it.  The first parameter is
 // arcade_video's WIDTH and MUST be >= H_ACT or video_mixer's line buffers wrap mid-line.
-arcade_video #(512,24) arcade_video
+arcade_video_il #(512,24) arcade_video
 (
 	.*,
 
@@ -733,6 +736,7 @@ arcade_video #(512,24) arcade_video
 	.VSync(rr_vs),
 
 	.forced_scandoubler(forced_scandoubler & ~crt_mode),
+	.interlace(ilace_mode),
 	.fx(crt_mode ? 3'd0 : status[17:15])
 );
 
@@ -1954,6 +1958,9 @@ fb_raster_reader #(
     .frame_base_hw(fb_rd_base),             // was hardcoded 27'd0, see fb_buf_sel above
     .v_band(band_h_w),                      // 0 = LED bar off, video takes the band's rows
     .crt(crt_mode),
+    .ilace(ilace_mode),
+    .fswap(status[28]),
+    .field(rr_field),
     .flip(flip),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
