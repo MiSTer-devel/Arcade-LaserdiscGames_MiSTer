@@ -241,7 +241,7 @@ wire  [5:0] dlv_sd_blk_cnt[1];
 wire        dlv_sd_rd;
 wire        dlv_sd_wr;
 wire        dlv_sd_ack;
-wire  [8:0] dlv_sd_buff_addr;
+wire [13:0] dlv_sd_buff_addr;
 wire  [7:0] dlv_sd_buff_dout;
 wire  [7:0] dlv_sd_buff_din[1];
 wire        dlv_sd_buff_wr;

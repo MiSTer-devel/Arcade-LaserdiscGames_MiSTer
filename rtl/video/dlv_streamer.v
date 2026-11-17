@@ -36,7 +36,7 @@ module dlv_streamer #(
     output reg  [5:0] sd_blk_cnt,
     output reg        sd_rd,
     input             sd_ack,
-    input       [8:0] sd_buff_addr,
+    input      [13:0] sd_buff_addr,
     input       [7:0] sd_buff_dout,
     input             sd_buff_wr,
 
@@ -164,6 +164,9 @@ module dlv_streamer #(
     reg [3:0]  state, ret_state;
     reg [1:0]  cap_mode;                      // 0=header 1=index 2=frame 3=audio
     reg [31:0] cur_sec, sec_base_byte;
+    reg  [5:0] frm_blk;
+    wire [31:0] frm_last_sec = (frm_start + frm_size - 32'd1) >> 9;
+    wire [31:0] frm_rem_sec  = frm_last_sec - cur_sec + 32'd1;
     reg [31:0] bytes_got;
     reg [8:0]  idx_in_sec;
     reg [FBUF_AW-1:0] stream_pos;
@@ -517,8 +520,8 @@ module dlv_streamer #(
                 frm_start <= video_off + frm_off;
                 bytes_got <= 32'd0;
                 cur_sec   <= (video_off + frm_off) >> 9;
-                cap_mode  <= 2'd2; ret_state <= S_FRM_NEXT;
-                state <= S_RD_ISSUE;
+                cap_mode  <= 2'd2;
+                state <= S_FRM_NEXT;
             end
 
             // ---- read frame sectors into fbuf until fsize captured ----
@@ -528,7 +531,7 @@ module dlv_streamer #(
                     frame_fetch <= 1'b0;          // release decoder reset -> streaming begins
                     state <= S_STREAM;
                 end else begin
-                    cur_sec  <= cur_sec + 1'b1;
+                    frm_blk  <= (frm_rem_sec >= 32'd32) ? 6'd31 : (frm_rem_sec[5:0] - 6'd1);
                     cap_mode <= 2'd2; ret_state <= S_FRM_NEXT;
                     state <= S_RD_ISSUE;
                 end
@@ -563,7 +566,7 @@ module dlv_streamer #(
             // ================= generic single-sector read =================
             S_RD_ISSUE: begin
                 sd_lba        <= cur_sec;
-                sd_blk_cnt    <= 6'd0;
+                sd_blk_cnt    <= (cap_mode == 2'd2) ? frm_blk : 6'd0;
                 sec_base_byte <= {cur_sec, 9'd0};
                 sd_rd         <= 1'b1;
                 if (sd_ack) begin
@@ -639,7 +642,10 @@ module dlv_streamer #(
                     default: ;
                     endcase
                 end
-                if (!sd_ack) state <= ret_state;   // sector transfer complete
+                if (!sd_ack) begin
+                    state <= ret_state;   // sector transfer complete
+                    if (cap_mode == 2'd2) cur_sec <= cur_sec + {26'd0, frm_blk} + 32'd1;
+                end
             end
             default: state <= S_IDLE;
             endcase
