@@ -165,6 +165,8 @@ module dlv_streamer #(
     reg [1:0]  cap_mode;                      // 0=header 1=index 2=frame 3=audio
     reg [31:0] cur_sec, sec_base_byte;
     reg  [5:0] frm_blk;
+    reg  [5:0] aud_blk;
+    reg        aud_cap_ok;
     wire [31:0] frm_last_sec = (frm_start + frm_size - 32'd1) >> 9;
     wire [31:0] frm_rem_sec  = frm_last_sec - cur_sec + 32'd1;
     reg [31:0] bytes_got;
@@ -258,7 +260,7 @@ module dlv_streamer #(
     //------------------------------------------------------------------------
     // Audio ring WRITE port (SD fill): one word per 4 captured bytes
     //------------------------------------------------------------------------
-    wire        aud_word_we = (state == S_RD_XFER) && (cap_mode == 2'd3)
+    wire        aud_word_we = (state == S_RD_XFER) && (cap_mode == 2'd3) && aud_cap_ok
                               && sd_buff_wr && (sd_buff_addr[1:0] == 2'd3);
     wire [31:0] aud_word     = {sd_buff_dout, aud_word_asm};   // {b3,b2,b1,b0}
 
@@ -410,6 +412,7 @@ module dlv_streamer #(
 
     reg  seek_req;
     wire seek_consume = (state == S_READY) && header_valid && seek_req;
+    wire [12:0] aud_room_sec = (13'd4095 - {1'b0, aud_level}) >> 7;
         // Both ifs live in ONE always block, so if jump_w and seek_consume coincide the last
         // assignment wins and the jump is silently lost.  Keep them mutually exclusive.
     reg  seek_armed;
@@ -431,6 +434,9 @@ module dlv_streamer #(
         // same cycle would read the OLD sector -- use the re-pointed value explicitly.
     wire [31:0] aud_lba_tgt = (aud_target_lba >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_target_lba;
     wire [31:0] aud_lba_eff = seek_consume ? aud_lba_tgt : aud_lba;
+    wire [31:0] aud_to_end  = aud_lba_end - aud_lba_eff;
+    wire [12:0] aud_n0      = (aud_room_sec > 13'd32) ? 13'd32 : aud_room_sec;
+    wire [5:0]  aud_n       = (aud_to_end < {19'd0, aud_n0}) ? aud_to_end[5:0] : aud_n0[5:0];
 
     //------------------------------------------------------------------------
     // Main SD/stream FSM
@@ -439,6 +445,7 @@ module dlv_streamer #(
         if (reset) begin
             state <= S_IDLE;
             sd_rd <= 1'b0; sd_lba <= 32'd0; sd_blk_cnt <= 6'd0;
+            frm_blk <= 6'd0; aud_blk <= 6'd0; aud_cap_ok <= 1'b0;
             out_valid <= 1'b0; out_last <= 1'b0;
             header_valid <= 1'b0; frame_fetch <= 1'b0;
             // 0 => "absent", so a v1 image deterministically takes the
@@ -504,6 +511,8 @@ module dlv_streamer #(
                     // ---- top up the audio ring: read one audio sector ----
                     // PRE-re-point sector on the consume cycle and skipped the seek target.
                     cur_sec  <= aud_lba_eff;
+                    aud_blk  <= (aud_n == 6'd0) ? 6'd0 : aud_n - 6'd1;
+                    aud_cap_ok <= 1'b1;
                     cap_mode <= 2'd3; ret_state <= S_AUD_DONE;
                     state <= S_RD_ISSUE;
                 end
@@ -559,14 +568,14 @@ module dlv_streamer #(
 
             // ---- audio sector captured: advance the audio sector cursor (loop) ----
             S_AUD_DONE: begin
-                aud_lba <= (aud_lba + 1'b1 >= aud_lba_end) ? aud_lba_start : aud_lba + 1'b1;
+                aud_lba <= (aud_lba + {26'd0, aud_blk} + 32'd1 >= aud_lba_end) ? aud_lba_start : aud_lba + {26'd0, aud_blk} + 32'd1;
                 state   <= S_READY;
             end
 
             // ================= generic single-sector read =================
             S_RD_ISSUE: begin
                 sd_lba        <= cur_sec;
-                sd_blk_cnt    <= (cap_mode == 2'd2) ? frm_blk : 6'd0;
+                sd_blk_cnt    <= (cap_mode == 2'd2) ? frm_blk : (cap_mode == 2'd3) ? aud_blk : 6'd0;
                 sec_base_byte <= {cur_sec, 9'd0};
                 sd_rd         <= 1'b1;
                 if (sd_ack) begin
@@ -649,6 +658,8 @@ module dlv_streamer #(
             end
             default: state <= S_IDLE;
             endcase
+
+            if (seek_flush) aud_cap_ok <= 1'b0;
 
     // Watchdog abort, placed AFTER the case so its assignments win: drops the in-flight frame
     // and re-enters the arbiter cleanly.
