@@ -3,6 +3,7 @@ set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008
 
 # Game Logic
 set_global_assignment -name SYSTEMVERILOG_FILE Arcade-LaserdiscGames.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/hps_wide_bridge.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/DragonsLair_CPU.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/Thayers_COP.sv

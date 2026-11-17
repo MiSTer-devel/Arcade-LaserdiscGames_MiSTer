@@ -243,12 +243,45 @@ wire        dlv_sd_wr;
 wire        dlv_sd_ack;
 wire [13:0] dlv_sd_buff_addr;
 wire  [7:0] dlv_sd_buff_dout;
-wire  [7:0] dlv_sd_buff_din[1];
+wire [15:0] dlv_sd_buff_din[1];
 wire        dlv_sd_buff_wr;
 assign dlv_sd_wr          = 1'b0;   // read-only image
-assign dlv_sd_buff_din[0] = 8'd0;   // never write back
+assign dlv_sd_buff_din[0] = 16'd0;   // never write back
 
-hps_io #(.CONF_STR(CONF_STR)) hps_io
+wire        h_ioctl_wr;
+wire [26:0] h_ioctl_addr;
+wire [15:0] h_ioctl_dout;
+wire        h_ioctl_wait;
+wire        h_sd_ack;
+wire [12:0] h_sd_buff_addr;
+wire [15:0] h_sd_buff_dout;
+wire        h_sd_buff_wr;
+wire [26:0] b_ioctl_addr;
+
+hps_wide_bridge hps_wide_bridge
+(
+	.clk(CLK_CORE),
+	.reset(1'b0),
+	.w_ioctl_wr(h_ioctl_wr),
+	.w_ioctl_addr(h_ioctl_addr),
+	.w_ioctl_dout(h_ioctl_dout),
+	.w_ioctl_wait(h_ioctl_wait),
+	.b_ioctl_wr(ioctl_wr),
+	.b_ioctl_addr(b_ioctl_addr),
+	.b_ioctl_dout(ioctl_dout),
+	.b_ioctl_wait(gpw_ioctl_wait | (brd[BRD_DL2] & d2_sd_ioctl_wait)),
+	.w_sd_ack(h_sd_ack),
+	.w_sd_buff_addr(h_sd_buff_addr),
+	.w_sd_buff_dout(h_sd_buff_dout),
+	.w_sd_buff_wr(h_sd_buff_wr),
+	.b_sd_ack(dlv_sd_ack),
+	.b_sd_buff_addr(dlv_sd_buff_addr),
+	.b_sd_buff_dout(dlv_sd_buff_dout),
+	.b_sd_buff_wr(dlv_sd_buff_wr)
+);
+assign ioctl_addr = b_ioctl_addr[24:0];
+
+hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 (
 	.clk_sys(CLK_CORE),   // was CLK_10M (Kangaroo leftover); core is single-clock now
 	.HPS_BUS(HPS_BUS),
@@ -266,14 +299,12 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_download(ioctl_download),
 	.ioctl_upload(ioctl_upload),
 	.ioctl_upload_req(ioctl_upload_req),
-	.ioctl_wr(ioctl_wr),
-	.ioctl_addr(ioctl_addr),
-	.ioctl_dout(ioctl_dout),
-	.ioctl_din(ioctl_din),
+	.ioctl_wr(h_ioctl_wr),
+	.ioctl_addr(h_ioctl_addr),
+	.ioctl_dout(h_ioctl_dout),
+	.ioctl_din({8'd0, ioctl_din}),
 	.ioctl_index(ioctl_index),
-	// DIAG-REVERT-2026-10-15: original below
-	// .ioctl_wait(gpw_ioctl_wait),
-	.ioctl_wait(gpw_ioctl_wait | (brd[BRD_DL2] & d2_sd_ioctl_wait)),   // DIAG: DL2 ROM bytes also land in SDRAM
+	.ioctl_wait(h_ioctl_wait),
 
 
 	.joystick_0(joystick_0),
@@ -288,11 +319,11 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.sd_blk_cnt(dlv_sd_blk_cnt),
 	.sd_rd(dlv_sd_rd),
 	.sd_wr(dlv_sd_wr),
-	.sd_ack(dlv_sd_ack),
-	.sd_buff_addr(dlv_sd_buff_addr),
-	.sd_buff_dout(dlv_sd_buff_dout),
+	.sd_ack(h_sd_ack),
+	.sd_buff_addr(h_sd_buff_addr),
+	.sd_buff_dout(h_sd_buff_dout),
 	.sd_buff_din(dlv_sd_buff_din),
-	.sd_buff_wr(dlv_sd_buff_wr)
+	.sd_buff_wr(h_sd_buff_wr)
 );
 
 ////////////////////   CLOCKS   ///////////////////
