@@ -54,7 +54,6 @@ module fb_raster_reader #(
                                       //   reserves V_BAND either way, so the frame time never changes.
     input             crt,            // 0 = film 480p/23.98 Hz (scaler); 1 = CRT 240p/60 Hz (15 kHz)
     input             ilace,
-    input             fswap,
     output reg        field,
     input             flip,           // 180 deg rotation (inverted monitor): BOTH axes, not a mirror
 
@@ -166,7 +165,7 @@ module fb_raster_reader #(
     // Display line `fline` -> framebuffer row.  CRT mode takes every other row (480 -> 240);
     // flip reverses the order.  STRIDE is a constant so the multiply is a shift.
     wire [15:0] row_lin = fline - vid_top;
-    wire [15:0] row_dec = crt_q ? ((row_lin << 1) | {15'd0, il & (~ffld ^ fswap)}) : row_lin;
+    wire [15:0] row_dec = crt_q ? ((row_lin << 1) | {15'd0, il & ~ffld}) : row_lin;
     wire [15:0] fb_row  = flip_q ? (V_ACT - 16'd1 - row_dec) : row_dec;
 
     // Second axis of the rotation: read the line buffer backwards.  Named wire because Quartus 17

@@ -178,7 +178,6 @@ localparam CONF_STR = {
 	"-;",
 	"P1,Video;",
 	"P1OLM,Video Timing,CRT 240p60,Film 24Hz,CRT 480i;",
-	"P1O[28],480i Field Order,Normal,Swap;",
 	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	"P1OK,LED Bar,On,Off;",
 	"P1OB,Flip Screen,Off,On;",
@@ -1959,7 +1958,6 @@ fb_raster_reader #(
     .v_band(band_h_w),                      // 0 = LED bar off, video takes the band's rows
     .crt(crt_mode),
     .ilace(ilace_mode),
-    .fswap(status[28]),
     .field(rr_field),
     .flip(flip),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
