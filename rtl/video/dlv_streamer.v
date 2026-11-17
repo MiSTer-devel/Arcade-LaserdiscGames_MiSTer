@@ -434,7 +434,7 @@ module dlv_streamer #(
         // same cycle would read the OLD sector -- use the re-pointed value explicitly.
     wire [31:0] aud_lba_tgt = (aud_target_lba >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_target_lba;
     wire [31:0] aud_lba_eff = seek_consume ? aud_lba_tgt : aud_lba;
-    wire [31:0] aud_to_end  = aud_lba_end - aud_lba_eff;
+    wire [31:0] aud_to_end  = aud_lba_end - aud_lba;
     wire [12:0] aud_n0      = (aud_room_sec > 13'd32) ? 13'd32 : aud_room_sec;
     wire [5:0]  aud_n       = (aud_to_end < {19'd0, aud_n0}) ? aud_to_end[5:0] : aud_n0[5:0];
 
@@ -511,7 +511,7 @@ module dlv_streamer #(
                     // ---- top up the audio ring: read one audio sector ----
                     // PRE-re-point sector on the consume cycle and skipped the seek target.
                     cur_sec  <= aud_lba_eff;
-                    aud_blk  <= (aud_n == 6'd0) ? 6'd0 : aud_n - 6'd1;
+                    aud_blk  <= (seek_consume || aud_n == 6'd0) ? 6'd0 : aud_n - 6'd1;
                     aud_cap_ok <= 1'b1;
                     cap_mode <= 2'd3; ret_state <= S_AUD_DONE;
                     state <= S_RD_ISSUE;
