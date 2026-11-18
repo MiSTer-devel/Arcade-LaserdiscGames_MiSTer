@@ -616,6 +616,9 @@ wire [63:0] led_digits_flat;
 wire [63:0] led_digits_dl;
 wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
+wire        rr_wide;
+wire [29:0] rr_hpos_m512 = rr_hpos * 14'd13108;
+wire [15:0] rr_hpos512   = rr_wide ? rr_hpos_m512[29:14] : rr_hpos;
 wire [15:0] rr_band_act;      // band height in force this frame, from the reader
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
@@ -698,7 +701,7 @@ wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adop
 // the band height is subtracted here to make the space VIDEO-relative. Without
 // it, turning the band off slides every overlay down by BAND_H rows.
 wire [18:0] ovl_sx_mul = rr_hpos * 16'd5;
-wire [15:0] ovl_sx     = ovl_sx_mul[18:3];
+wire [15:0] ovl_sx     = rr_wide ? {1'b0, rr_hpos[15:1]} : ovl_sx_mul[18:3];
 // rr_band_act, not band_h_w: the reader adopts an OSD toggle only at a frame
 // boundary, so using the raw value would slide the overlay mid-raster.
 wire [15:0] ovl_vrel   = (rr_vpos >= rr_band_act) ? (rr_vpos - rr_band_act) : 16'd0;
@@ -747,7 +750,7 @@ assign VGA_F1 = rr_field;
 
 // Driven by fb_raster_reader with the LED band composited over it.  The first parameter is
 // arcade_video's WIDTH and MUST be >= H_ACT or video_mixer's line buffers wrap mid-line.
-arcade_video_il #(512,24) arcade_video
+arcade_video_il #(640,24) arcade_video
 (
 	.*,
 
@@ -1185,7 +1188,7 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 
 	// TMS9928A overlay -> composited into comp_r/g/b above
 	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
-	.ovl_hraw(rr_hpos), .ovl_vrel(ovl_vrel), .ovl_crt(crt_mode),   // DIAG-REVERT-2026-10-16: added
+	.ovl_hraw(rr_hpos512), .ovl_vrel(ovl_vrel), .ovl_crt(crt_mode),   // DIAG-REVERT-2026-10-16: added
 	.ovl_color(cliff_ovl_color), .ovl_opaque(cliff_ovl_opaque),
 
 	// shared chip pool
@@ -1233,7 +1236,7 @@ SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 	.ld_playing_o(ld_playing_sd),
 
 	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
-	.ovl_hraw(rr_hpos), .ovl_vnext(ovl_sy_nx), .ovl_flip(flip),
+	.ovl_hraw(rr_hpos512), .ovl_vnext(ovl_sy_nx), .ovl_flip(flip),
 	.ovl_rgb(sdq_ovl_rgb), .ovl_opaque(sdq_ovl_opaque),
 	.dbg_led(dbg_led_sd),
 
@@ -1284,7 +1287,7 @@ GPWorld #(.CLK_HZ(CORE_CLK_HZ)) gpw_inst
 	.ld_frame_o(ld_frame_gp),
 	.ld_playing_o(ld_playing_gp),
 
-	.ovl_hraw(rr_hpos), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+	.ovl_hraw(rr_hpos512), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
 	.ovl_rgb(gpw_ovl_rgb), .ovl_opaque(gpw_ovl_opaque),
 	.dbg_led(dbg_led_gp),
 
@@ -1333,7 +1336,7 @@ Astron #(.CLK_HZ(CORE_CLK_HZ)) astron_inst
 	.ld_frame_o(ld_frame_as),
 	.ld_playing_o(ld_playing_as),
 
-	.ovl_hraw(rr_hpos), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+	.ovl_hraw(rr_hpos512), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
 	.ovl_vnext(ovl_sy_nx),   // DIAG-REVERT-2026-10-16: added for the hblank cell-0 prefetch
 	.ovl_rgb(ast_ovl_rgb), .ovl_opaque(ast_ovl_opaque),
 	.dbg_led(dbg_led_as),
@@ -1737,9 +1740,9 @@ jpeg_frame_decoder dec (
 // ---- Framebuffer geometry, defined ONCE and passed everywhere ----
 // 512x480 matches the Daphne source m2v exactly, so encoding is a pure re-compress, and 512 is
 // fb_raster_reader's line-buffer ceiling.
-localparam [15:0] FB_COLS_HW   = 16'd512;
+localparam [15:0] FB_COLS_HW   = 16'd640;
 localparam [15:0] FB_ROWS_HW   = 16'd480;
-localparam [26:0] FB_BUF_HW    = 27'd245760;  // 512*480 halfwords per buffer (was 76800)
+localparam [26:0] FB_BUF_HW    = 27'd307200;
 localparam [26:0] FB_BUF0_HW   = 27'd0;
 localparam [26:0] FB_BUF1_HW   = FB_BUF_HW;
 localparam [26:0] FB_BUF2_HW   = FB_BUF_HW * 2;
@@ -1898,7 +1901,7 @@ fb_writer #(
     .FB_COLS   (FB_COLS_HW),
     .FB_ROWS   (FB_ROWS_HW),
     .CLEAR_ROWS(FB_ROWS_HW),
-    .COALESCE  (1'b0)   // write-coalesce accumulator is the suspect for the green-dot corruption; disabled pending fix
+    .COALESCE  (1'b1)
 ) fb_wr (
     .clk(CLK_CORE), .reset(reset),
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
@@ -1991,6 +1994,8 @@ fb_raster_reader #(
     .ilace(ilace_mode),
     .field(rr_field),
     .flip(flip),
+    .wide(dec_w > 16'd512),
+    .wide_act(rr_wide),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .fill_idle(rr_fill_idle),               // (delete on revert)
@@ -2032,7 +2037,7 @@ text_overlay #(.FONT_HEX("rtl/video/ldp1450_font.hex")) dl2_text (
 );
 
 led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
-    .hc(rr_hpos), .vc(rr_vpos), .crt_240p(crt_mode),
+    .hc(rr_hpos512), .vc(rr_vpos), .crt_240p(crt_mode),
     .led_digits(led_digits_flat),   // real score/lives, restored
     .skill_en(is_spaceace),         // MRA mod byte, SA only
     .skill(skill_level),

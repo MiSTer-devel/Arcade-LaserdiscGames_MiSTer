@@ -45,7 +45,10 @@ module fb_raster_reader #(
     parameter [15:0] V_TOTAL_C = 16'd262,
     // ce_pix = clk / 2^CE_DIV_LOG2.  Refresh must stay ABOVE the content frame rate, and the
     // reader must still fetch a whole line inside one line-time or the picture cuts off.
-    parameter [2:0]  CE_DIV_LOG2 = 3'd3
+    parameter [2:0]  CE_DIV_LOG2 = 3'd3,
+    parameter [15:0] H_ACT_N  = 16'd512,
+    parameter [15:0] H_FP_W   = 16'd8,  H_SYNC_W  = 16'd38, H_BP_W  = 16'd23,
+    parameter [15:0] H_FP_CW  = 16'd13, H_SYNC_CW = 16'd58, H_BP_CW = 16'd71
 )(
     input             clk,            // CLK_CORE (= DDRAM_CLK); 80 MHz as of
     input             reset,          // active-high
@@ -56,6 +59,8 @@ module fb_raster_reader #(
     input             ilace,
     output reg        field,
     input             flip,           // 180 deg rotation (inverted monitor): BOTH axes, not a mirror
+    input             wide,
+    output            wide_act,
 
     // ddram.sv read port 2
     output reg [26:0] rdaddr2,
@@ -98,11 +103,16 @@ module fb_raster_reader #(
     reg         ilace_q  = 1'b0;
     reg         ffld     = 1'b0;
     reg         flip_q   = 1'b0;
+    reg         wide_q   = 1'b0;
+    assign wide_act = wide_q;
+    wire [15:0] h_act = wide_q ? H_ACT : H_ACT_N;
 
-    wire [15:0] h_total = crt_q ? (H_ACT + H_FP_C + H_SYNC_C + H_BP_C)
-                                : (H_ACT + H_FP   + H_SYNC   + H_BP);
-    wire [15:0] hs_beg  = crt_q ? (H_ACT + H_FP_C) : (H_ACT + H_FP);
-    wire [15:0] hs_end  = crt_q ? (H_ACT + H_FP_C + H_SYNC_C) : (H_ACT + H_FP + H_SYNC);
+    wire [15:0] h_fp    = wide_q ? (crt_q ? H_FP_CW   : H_FP_W)   : (crt_q ? H_FP_C   : H_FP);
+    wire [15:0] h_sync  = wide_q ? (crt_q ? H_SYNC_CW : H_SYNC_W) : (crt_q ? H_SYNC_C : H_SYNC);
+    wire [15:0] h_bp    = wide_q ? (crt_q ? H_BP_CW   : H_BP_W)   : (crt_q ? H_BP_C   : H_BP);
+    wire [15:0] h_total = h_act + h_fp + h_sync + h_bp;
+    wire [15:0] hs_beg  = h_act + h_fp;
+    wire [15:0] hs_end  = h_act + h_fp + h_sync;
 
     wire [15:0] v_act   = crt_q ? (V_ACT >> 1) : V_ACT;
     wire [15:0] v_disp  = v_act + v_band_q;
@@ -121,18 +131,20 @@ module fb_raster_reader #(
     localparam [2:0] CE_MASK  = CE_MASK4[2:0];
     reg [2:0] cediv = 3'd0;
     always @(posedge clk) cediv <= cediv + 3'd1;
-    assign ce_pix = ((cediv & CE_MASK) == 3'd0);
+    reg [3:0] cediv13 = 4'd0;
+    always @(posedge clk) cediv13 <= (cediv13 == 4'd12) ? 4'd0 : cediv13 + 4'd1;
+    assign ce_pix = wide_q ? ((cediv13 == 4'd0) || (cediv13 == 4'd6)) : ((cediv & CE_MASK) == 3'd0);
 
     // raster counters
     reg [15:0] hcnt = 16'd0, vcnt = 16'd0;
     wire h_last = (hcnt == h_total - 16'd1);
     wire v_last = (vcnt == v_total - 16'd1);
-    wire h_active = (hcnt < H_ACT);
+    wire h_active = (hcnt < h_act);
     wire v_active = (vcnt < v_disp);   // active rows 0..v_disp-1 = band strip + full video
 
     // ping-pong line buffer: 2 lines, 512-halfword stride (matches the
     // {buf, hcnt[8:0]} / {buf, fidx[8:0]} index — H_ACT<=512).
-    reg  [15:0] linebuf [0:1023];
+    reg  [15:0] linebuf [0:2047];
     reg         disp_buf = 1'b0;
     wire        fill_buf = ~disp_buf;
 
@@ -170,7 +182,7 @@ module fb_raster_reader #(
 
     // Second axis of the rotation: read the line buffer backwards.  Named wire because Quartus 17
     // elaborates .v as Verilog-2001, where (expr)[8:0] is illegal.
-    wire [15:0] h_rd = flip_q ? (H_ACT - 16'd1 - hcnt) : hcnt;
+    wire [15:0] h_rd = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
     wire        vid_row = (vcnt >= vid_top) && (vcnt < vid_top + v_act);
 
     // Latch the buffer base once per raster frame: the top level toggles frame_base_hw live as
@@ -187,16 +199,16 @@ module fb_raster_reader #(
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
             fw_hold <= 48'd0; fw_cnt <= 2'd0; fw_idx <= 16'd0;
             v_band_q <= v_band; crt_q <= crt; flip_q <= flip;
-            ilace_q <= ilace; field <= 1'b0; ffld <= 1'b0;
+            ilace_q <= ilace; field <= 1'b0; ffld <= 1'b0; wide_q <= wide;
         end else begin
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
                 // read this pixel and register the aligned timing flags
-                pix_q    <= linebuf[{disp_buf, h_rd[8:0]}];
+                pix_q    <= linebuf[{disp_buf, h_rd[9:0]}];
                 active_q <= h_active & v_active & vid_row;   // band rows -> black (led_band composites there)
                 // Band-compositor coordinates, not raster position: rotated with the picture so the
                 // band lands at the far end, upside down, without led_band knowing about flip.
-                hpos     <= flip_q ? (H_ACT   - 16'd1 - hcnt) : hcnt;
+                hpos     <= flip_q ? (h_act   - 16'd1 - hcnt) : hcnt;
                 vpos     <= flip_q ? (v_disp  - 16'd1 - vcnt) : vcnt;
                 hblank   <= ~h_active;
                 vblank   <= ~v_active;
@@ -220,6 +232,7 @@ module fb_raster_reader #(
                         v_band_q       <= v_band; // adopt OSD toggles only at the frame boundary --
                         crt_q          <= crt;    //   the raster must never change under itself
                         flip_q         <= flip;
+                        wide_q         <= wide;
                         ilace_q        <= ilace;
                         field          <= crt & ilace & ~field;
                     end
@@ -261,7 +274,7 @@ module fb_raster_reader #(
             F_WAIT:
                 if (rd_ack2 == rd_req2) begin               // dout2/dout2_64 valid
                     // store halfword 0 now, hold 1..3 for F_STORE.
-                    linebuf[{fill_buf, fidx[8:0]}] <= dout2_64[15:0];
+                    linebuf[{fill_buf, fidx[9:0]}] <= dout2_64[15:0];
                     fw_hold <= dout2_64[63:16];
                     fw_cnt  <= 2'd0;
                     fw_idx  <= fidx + 16'd1;     // named reg: NO expression bit-select in a .v file
@@ -269,11 +282,11 @@ module fb_raster_reader #(
                 end
             F_STORE: begin
                 // write halfwords 1,2,3 of the fetched word on successive cycles
-                linebuf[{fill_buf, fw_idx[8:0]}] <= fw_hold[15:0];
+                linebuf[{fill_buf, fw_idx[9:0]}] <= fw_hold[15:0];
                 fw_hold <= {16'd0, fw_hold[47:16]};
                 fw_idx  <= fw_idx + 16'd1;
                 if (fw_cnt == 2'd2) begin
-                    if (fidx + 16'd4 >= H_ACT) begin        // whole line landed
+                    if (fidx + 16'd4 >= h_act) begin        // whole line landed
                         fst         <= F_IDLE;
                         fill_done_q <= 1'b1;
                     end else begin

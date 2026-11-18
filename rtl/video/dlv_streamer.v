@@ -109,8 +109,10 @@ module dlv_streamer #(
     //------------------------------------------------------------------------
     // Header fields
     //------------------------------------------------------------------------
-    reg [31:0] index_off, video_off, frame_count;
-    reg [31:0] aud_off, aud_size;
+    reg [31:0] index_off, frame_count;
+    reg [39:0] video_off;
+    reg [39:0] aud_off;
+    reg [31:0] aud_size;
     // Per-game values from pack_dlv.py at header@24/@28 -- do NOT hardcode the leader.
     reg [31:0] ld_leader_off;   // header@28: disc frame where the captured content begins (was: LD_LEADER const)
     // header@24 is RESERVED=0 and this reg is repurposed for the v2 field.
@@ -127,7 +129,8 @@ module dlv_streamer #(
     always @(posedge clk) if (img_mounted) img_present <= (img_size != 64'd0);
 
     // current frame index entry
-    reg [31:0] frm_off, frm_size, frm_start;
+    reg [31:0] frm_off, frm_size;
+    reg [39:0] frm_start;
     reg [16:0] cur_frame;                     // free-running film frame
 
     // Last mjpeg frame actually fetched/decoded/written; vid_target legitimately repeats.
@@ -170,11 +173,13 @@ module dlv_streamer #(
 
     reg [3:0]  state, ret_state;
     reg [1:0]  cap_mode;                      // 0=header 1=index 2=frame 3=audio
-    reg [31:0] cur_sec, sec_base_byte;
+    reg [31:0] cur_sec;
+    reg [39:0] sec_base_byte;
     reg  [5:0] frm_blk;
     reg  [5:0] aud_blk;
     reg        aud_cap_ok;
-    wire [31:0] frm_last_sec = (frm_start + frm_size - 32'd1) >> 9;
+    wire [39:0] frm_end_byte = frm_start + {8'd0, frm_size} - 40'd1;
+    wire [31:0] frm_last_sec = frm_end_byte[39:9];
     wire [31:0] frm_rem_sec  = frm_last_sec - cur_sec + 32'd1;
     reg [31:0] bytes_got;
     reg [8:0]  idx_in_sec;
@@ -202,6 +207,8 @@ module dlv_streamer #(
     assign dec_reset = reset | frame_fetch | wd_rst;
 
     wire [31:0] idx_byte = index_off + {cur_frame, 3'b000};   // cur_frame*8
+    wire [39:0] frm_start_w  = video_off + {8'd0, frm_off};
+    wire [39:0] aud_end_byte = aud_off + {8'd0, aud_size};
 
     //------------------------------------------------------------------------
     // 30 fps frame pacer + pending latch (single-driver on frame_pending)
@@ -493,9 +500,9 @@ module dlv_streamer #(
                 if (!header_valid) begin
                     // one-time init once the header sector has been latched
                     header_valid  <= 1'b1;
-                    aud_lba       <= aud_off  >> 9;
-                    aud_lba_start <= aud_off  >> 9;
-                    aud_lba_end   <= (aud_off + aud_size) >> 9;
+                    aud_lba       <= aud_off[39:9];
+                    aud_lba_start <= aud_off[39:9];
+                    aud_lba_end   <= aud_end_byte[39:9];
             // Init from vid_target, not a constant: this re-fires on every re-mount.
                     cur_frame     <= vid_target;
             // SEARCH jump -> re-point audio to the mapped sector.  The ring keeps playing, so the
@@ -533,9 +540,9 @@ module dlv_streamer #(
                 state <= S_RD_ISSUE;
             end
             S_IDX_DONE: begin
-                frm_start <= video_off + frm_off;
+                frm_start <= frm_start_w;
                 bytes_got <= 32'd0;
-                cur_sec   <= (video_off + frm_off) >> 9;
+                cur_sec   <= frm_start_w[39:9];
                 cap_mode  <= 2'd2;
                 fifo_wr   <= {(FIFO_AW+1){1'b0}};
                 fifo_clr  <= 1'b1;
@@ -571,7 +578,7 @@ module dlv_streamer #(
             S_RD_ISSUE: begin
                 sd_lba        <= cur_sec;
                 sd_blk_cnt    <= (cap_mode == 2'd2) ? frm_blk : (cap_mode == 2'd3) ? aud_blk : 6'd0;
-                sec_base_byte <= {cur_sec, 9'd0};
+                sec_base_byte <= {cur_sec[30:0], 9'd0};
                 sd_rd         <= 1'b1;
                 if (sd_ack) begin
                     sd_rd <= 1'b0;
@@ -608,10 +615,12 @@ module dlv_streamer #(
                         9'd65: video_off[15:8]    <= sd_buff_dout;
                         9'd66: video_off[23:16]   <= sd_buff_dout;
                         9'd67: video_off[31:24]   <= sd_buff_dout;
+                        9'd68: video_off[39:32]   <= sd_buff_dout;
                         9'd80: aud_off[7:0]       <= sd_buff_dout;
                         9'd81: aud_off[15:8]      <= sd_buff_dout;
                         9'd82: aud_off[23:16]     <= sd_buff_dout;
                         9'd83: aud_off[31:24]     <= sd_buff_dout;
+                        9'd84: aud_off[39:32]     <= sd_buff_dout;
                         9'd88: aud_size[7:0]      <= sd_buff_dout;
                         9'd89: aud_size[15:8]     <= sd_buff_dout;
                         9'd90: aud_size[23:16]    <= sd_buff_dout;
