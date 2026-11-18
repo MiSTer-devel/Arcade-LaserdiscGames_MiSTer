@@ -74,6 +74,7 @@ module dlv_streamer #(
     // 1-cycle pulse on the Z80's SEARCH: EMPTIES the audio ring so the old segment's buffered
     // tail is discarded and the ring refills with only the new segment.
     input             seek_flush,
+    input             dec_done,
 
     // .dlv encode rate -> ldp_transport film tick.  1 = 29.97 fps disc, 0 = 23.976.
     output            disc_2997,
@@ -228,8 +229,13 @@ module dlv_streamer #(
     reg        vid_chg;
     // frame_start clears frame_pending only when a fetch actually starts -- testing S_READY's
     // intent alone consumed the tick on cycles where an earlier branch fetched nothing.
+    localparam [21:0] DEC_TMO = CLK_HZ / 32'd50;
+    reg        dec_wait_on;
+    reg        dec_done_seen;
+    reg [21:0] dec_wait;
+    wire       dec_hold = dec_wait_on && !dec_done_seen && (dec_wait < DEC_TMO);
     wire       frame_start = (state == S_READY) && header_valid && frame_pending
-                             && (aud_level >= FILL_LOW)
+                             && (aud_level >= FILL_LOW) && !dec_hold
                              && !(img_mounted && (img_size != 64'd0));
 
     always @(posedge clk) begin
@@ -460,6 +466,7 @@ module dlv_streamer #(
             sd_rd <= 1'b0; sd_lba <= 32'd0; sd_blk_cnt <= 6'd0;
             frm_blk <= 6'd0; aud_blk <= 6'd0; aud_cap_ok <= 1'b0;
             fifo_wr <= {(FIFO_AW+1){1'b0}}; fifo_clr <= 1'b0;
+            dec_wait_on <= 1'b0; dec_done_seen <= 1'b0; dec_wait <= 22'd0;
             header_valid <= 1'b0; frame_fetch <= 1'b0;
             // 0 => "absent", so a v1 image deterministically takes the
             // samp_per_frame fallback instead of powering up on an undefined value.
@@ -477,6 +484,8 @@ module dlv_streamer #(
             else if (wd_cnt != WD_LIMIT) wd_cnt <= wd_cnt + 24'd1;
             if (wd_rst_cnt != 4'd0)      wd_rst_cnt <= wd_rst_cnt - 4'd1;
             fifo_clr <= 1'b0;
+            if (dec_done) dec_done_seen <= 1'b1;
+            if (dec_wait_on && !dec_done_seen && dec_wait != DEC_TMO) dec_wait <= dec_wait + 22'd1;
 
             case (state)
             // ---- wait for image, then read header sector 0 ----
@@ -512,9 +521,12 @@ module dlv_streamer #(
                     cap_mode <= 2'd0; cur_sec <= 32'd0; ret_state <= S_READY;
                     header_valid <= 1'b0;
                     state <= S_RD_ISSUE;
-                end else if (frame_pending && (aud_level >= FILL_LOW)) begin
+                end else if (frame_pending && (aud_level >= FILL_LOW) && !dec_hold) begin
             // Only fetch/decode/write if the mapped mjpeg frame has genuinely changed.
                     if (vid_target != last_fetched_frame) begin
+                        dec_wait_on        <= 1'b0;
+                        dec_done_seen      <= 1'b0;
+                        dec_wait           <= 22'd0;
                         // ---- start a video frame fetch (audio comfortable) ----
                         frame_fetch        <= 1'b1;      // decoder held in reset through the fetch
                         cur_frame          <= vid_target;   // HLE-DRIVE: fetch the mapped mjpeg frame
@@ -565,7 +577,10 @@ module dlv_streamer #(
 
             S_STREAM: state <= S_STRM_VLD;
             S_STRM_VLD: begin
-                if (bytes_out >= frm_size) state <= S_READY;
+                if (bytes_out >= frm_size) begin
+                    state       <= S_READY;
+                    dec_wait_on <= 1'b1;
+                end
             end
 
             // ---- audio sector captured: advance the audio sector cursor (loop) ----

@@ -1708,6 +1708,7 @@ wire signed [15:0] pcm_l, pcm_r;        // .dlv PCM -> audio mux (see AUDIO_L/R 
 
 // Continuous video+audio streamer: free-runs film frames from START_FRAME and keeps a 44.1 kHz
 // PCM ring topped up (audio has SD priority).
+wire        dec_frame_done;
 dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .clk(CLK_CORE), .reset(reset),
     .img_mounted(dlv_img_mounted), .img_size(dlv_img_size),
@@ -1718,7 +1719,7 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .dec_reset(dec_reset_w),
     .pcm_l(pcm_l), .pcm_r(pcm_r),
     .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),
-    .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
+    .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse), .dec_done(dec_frame_done),   // SEEK-HOLD/
     .ld_playing(ld_playing_top),
     .ch_en(ld_aud_en_top),
     .disc_2997(disc_2997_w), .disc_leader(ld_leader_w),
@@ -1729,7 +1730,7 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
 wire        dec_px_we, dec_px_ready;
 wire [15:0] dec_px_x, dec_px_y, dec_w, dec_h;
 wire  [7:0] dec_px_r, dec_px_g, dec_px_b;
-wire        dec_frame_done, dec_idle;
+wire        dec_idle;
 
 jpeg_frame_decoder dec (
     .clk(CLK_CORE), .rst(dec_reset_w),   // per-frame reset, NOT global; fb_writer stays on global reset
