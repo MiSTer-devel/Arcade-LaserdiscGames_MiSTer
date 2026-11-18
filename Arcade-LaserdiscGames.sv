@@ -1976,9 +1976,9 @@ ddram ddram_fb (
     .rom_we(ddr_rom_we), .rom_req(ddr_rom_req), .rom_ack(ddr_rom_ack),
     // second read port — raster reader (DDR framebuffer -> video)
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
-    .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
+    .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .bst_addr(rr_bst_addr), .bst_len(rr_bst_len), .bst_req(rr_bst_req),
-    .bst_ack(rr_bst_ack), .bst_valid(rr_bst_valid), .bst_data(rr_bst_data),
+    .bst_ack(rr_bst_ack), .bst_valid(rr_bst_valid), .bst_data(rr_bst_data)
 );
 
 // Read the framebuffer back in scan order, then composite the LED band over it.
