@@ -438,7 +438,7 @@ sdramclk_ddr
     .sset(1'b0)
 );
 
-assign CLK_VIDEO = CLK_CORE;   // scaler reference clock (paired with ce_pix from CE_DIV_LOG2)
+assign CLK_VIDEO = CLK_CORE;   // scaler reference clock (paired with the reader's ce_pix)
 
 // LD-V1000 model (status[27]: 0 = real firmware, 1 = HLE).  ldp_top samples it in reset, so a change on
 // the OSD resets the game (~0.8 ms) and the new model is the one running -- no manual reset needed.
@@ -1994,9 +1994,6 @@ fb_raster_reader #(
     .STRIDE     (FB_STRIDE_HW),
     .BPP32      (FB_BPP32),
     .V_BAND     (BAND_H),
-    // CE_DIV_LOG2 is the bandwidth dial: too fast and the reader cannot fetch a whole line in one
-    // line-time (bottom of the picture cuts off); too slow drops below the content frame rate.
-    .CE_DIV_LOG2(3'd3),
 
     // ---- video timing ----
     // ONE display refresh per film frame: any other ratio alternates one and two refreshes and the

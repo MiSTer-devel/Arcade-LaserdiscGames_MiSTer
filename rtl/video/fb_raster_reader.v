@@ -35,20 +35,17 @@ module fb_raster_reader #(
                                            //   Rows 0..v_band-1 are forced black (the band composites there);
                                            //   rows v_band..v_band+V_ACT-1 show the FULL video (row R ->
                                            //   framebuffer row R-v_band).  Video is NEVER cropped/scaled.
-    parameter [15:0] H_FP = 16'd8, H_SYNC = 16'd32, H_BP = 16'd24,
+    parameter [15:0] H_FP = 16'd3, H_SYNC = 16'd32, H_BP = 16'd19,
     parameter [15:0] V_FP = 16'd8, V_SYNC = 16'd4,  V_BP = 16'd16,
-    // CRT (15 kHz) mode.  512+15+47+62 = 636 px @10 MHz -> fH 15.72 kHz with a standard
-    // 4.7 us sync / 1.5 us front porch; 262 lines -> fV 60.01 Hz.  Active rows are V_ACT/2,
+    // CRT (15 kHz) mode.  512+10+46+57 = 625 px @9.826 MHz -> fH 15.72 kHz with a standard
+    // 4.7 us sync / 1.0 us front porch; 262 lines -> fV 60.01 Hz.  Active rows are V_ACT/2,
     // taken as every other framebuffer row.
-    parameter [15:0] H_FP_C = 16'd15, H_SYNC_C = 16'd47, H_BP_C = 16'd62,
+    parameter [15:0] H_FP_C = 16'd10, H_SYNC_C = 16'd46, H_BP_C = 16'd57,
     parameter [15:0] V_FP_C = 16'd3,  V_SYNC_C = 16'd3,
     parameter [15:0] V_TOTAL_C = 16'd262,
-    // ce_pix = clk / 2^CE_DIV_LOG2.  Refresh must stay ABOVE the content frame rate, and the
-    // reader must still fetch a whole line inside one line-time or the picture cuts off.
-    parameter [2:0]  CE_DIV_LOG2 = 3'd3,
     parameter [15:0] H_ACT_N  = 16'd512,
-    parameter [15:0] H_FP_W   = 16'd8,  H_SYNC_W  = 16'd38, H_BP_W  = 16'd23,
-    parameter [15:0] H_FP_CW  = 16'd13, H_SYNC_CW = 16'd58, H_BP_CW = 16'd71,
+    parameter [15:0] H_FP_W   = 16'd7,  H_SYNC_W  = 16'd38, H_BP_W  = 16'd22,
+    parameter [15:0] H_FP_CW  = 16'd12, H_SYNC_CW = 16'd58, H_BP_CW = 16'd70,
     parameter [15:0] H_ACT_W  = 16'd640,
     parameter [15:0] H_FP_X   = 16'd8,  H_SYNC_X  = 16'd32, H_BP_X  = 16'd18,
     parameter [15:0] H_FP_CX  = 16'd16, H_SYNC_CX = 16'd63, H_BP_CX = 16'd59,
@@ -139,20 +136,15 @@ module fb_raster_reader #(
     wire        vs_on   = ((vcnt > vs_beg) || (vcnt == vs_beg && hcnt >= vs_hoff)) &&
                           ((vcnt < vs_end) || (vcnt == vs_end && hcnt <  vs_hoff));
 
-    // pixel clock enable = clk / 2^CE_DIV_LOG2  (RES-512x480-; was hardwired clk/8).
-    // The counter still free-runs over its full 3 bits; only the compare mask narrows, so
-    // (3'd1 << 3) would wrap to 0 in 3 bits.
-    localparam [3:0] CE_MASK4 = (4'd1 << CE_DIV_LOG2) - 4'd1;
-    localparam [2:0] CE_MASK  = CE_MASK4[2:0];
-    reg [2:0] cediv = 3'd0;
-    always @(posedge clk) cediv <= cediv + 3'd1;
-    reg [3:0] cediv13 = 4'd0;
-    always @(posedge clk) cediv13 <= (cediv13 == 4'd12) ? 4'd0 : cediv13 + 4'd1;
-    reg [11:0] ceacc = 12'd0;
-    wire [11:0] ceacc_n = ceacc + 12'd389;
-    wire        ce720  = (ceacc_n >= 12'd2304);
-    always @(posedge clk) ceacc <= ce720 ? (ceacc_n - 12'd2304) : ceacc_n;
-    assign ce_pix = m720 ? ce720 : m640 ? ((cediv13 == 4'd0) || (cediv13 == 4'd6)) : ((cediv & CE_MASK) == 3'd0);
+    // pixel clock enable = clk * ce_inc / 4608, so a 4608-clock line holds exactly ce_inc pixels.
+    // Each width gets the clock that puts its active line at the 52.15 us of a 4:3 picture
+    // (704 px at 13.5 MHz): 512 -> 9.826 MHz, 640 -> 12.274 MHz, 720 -> 13.507 MHz (704 of its 720).
+    wire [12:0] ce_inc  = m720 ? 13'd778 : m640 ? 13'd707 : 13'd566;
+    reg  [12:0] ceacc   = 13'd0;
+    wire [12:0] ceacc_n = ceacc + ce_inc;
+    wire        ce_wrap = (ceacc_n >= 13'd4608);
+    always @(posedge clk) ceacc <= ce_wrap ? (ceacc_n - 13'd4608) : ceacc_n;
+    assign ce_pix = ce_wrap;
 
     // raster counters
     reg [15:0] hcnt = 16'd0, vcnt = 16'd0;
