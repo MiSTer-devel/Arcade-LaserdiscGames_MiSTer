@@ -81,7 +81,7 @@ module ldp_top
     output      [7:0] txt_y,
     // ---- LD-V1000 on its real firmware ----
     input             ldv_fw_en,       // sampled while reset_n is low
-    input             pr7820_fast,     // 1 = PR-7820 searches take the fixed 0.5 s, 0 = Pioneer's times
+    input      [1:0]  pr7820_srch,     // PR-7820 search time: 0 = PR-7820-2, 1 = PR-7820, 2 = the fixed 0.5 s
     input             cmd_oe,          // host is driving the LD bus (else it floats: pull-ups -> FF)
     output            ldv_fw,
     input             ioctl_download,
@@ -131,7 +131,7 @@ module ldp_top
         .search_busy(search_busy), .search_done(search_done), .autostop_done(autostop_done),
         .field_phase(field_phase), .frame_tick(frame_tick), .film_tick(film_tick),
         .pause(pause), .disc_hold(disc_hold), .post_seek_frames(post_seek_frames),
-        .disc_2997(disc_2997), .park_frame(park_frame), .search_slow(sel_pr7820 & ~pr7820_fast),
+        .disc_2997(disc_2997), .park_frame(park_frame), .search_prof(!sel_pr7820 ? 2'd0 : (pr7820_srch == 2'd0) ? 2'd2 : (pr7820_srch == 2'd1) ? 2'd1 : 2'd0),
         .search_cmd_o(search_cmd_o), .play_end_o(play_end_o), .playing(playing),
         .dbg_seek_frame(dbg_seek_frame),
         .audio_en(audio_en)

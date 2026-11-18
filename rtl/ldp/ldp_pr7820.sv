@@ -81,8 +81,11 @@ module ldp_pr7820
                 CMD_AUDIO2:   begin cmd_op = OP_AUDIO2;   cmd_arg = {15'd0, has_digit, number[0]}; end
                 // 0xF9 Reject is explicitly IGNORED on this player (pr7820.cpp), unlike the
                 // LD-V1000 where it parks the head.
-                // 0xA0-0xA3 and 0xE0/0xE1 (sent by the Rev A-C attract sound code) are not in the
-                // PR-7820's remote code table (DVA System Manual table 19), so they are inert too.
+                // 0xA0-0xA3 are not in the PR-7820's remote code table (DVA System Manual table 19),
+                // but the Rev A-C attract sound DIPs (O&M manual p.B.1) work only through them: A0 on
+                // the silent loops, A3 on the sound loops.  Taken as audio off/on, low two bits = the
+                // two channels.  0xE0/0xE1 (sent with them) stay inert: nothing says what they do.
+                8'ha0, 8'ha1, 8'ha2, 8'ha3: begin cmd_op = OP_AUDIO_SET; cmd_arg = {15'd0, cmd_byte[1:0]}; end
                 default: ;   // Reject and unsupported bytes: inert
             endcase
         end
