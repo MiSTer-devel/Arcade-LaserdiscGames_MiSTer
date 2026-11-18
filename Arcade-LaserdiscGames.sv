@@ -184,7 +184,6 @@ localparam CONF_STR = {
 	"P1OC,LED Bar Position,Above Video,Over Video;",
 	"P1O[42:40],LED Bar CRT Offset,0,2,4,6,8,10,12,14 lines;",
 	"P1OB,Flip Screen,Off,On;",
-	"P1O[43],Colour Dither,On,Off;",
 	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P2,Pause Options;",
 	"P2OP,Pause when OSD is open,On,Off;",
@@ -1751,7 +1750,9 @@ jpeg_frame_decoder dec (
 // fb_raster_reader's line-buffer ceiling.
 localparam [15:0] FB_COLS_HW   = 16'd720;
 localparam [15:0] FB_ROWS_HW   = 16'd480;
-localparam [26:0] FB_BUF_HW    = 27'd345600;
+localparam        FB_BPP32     = 1'b1;
+localparam [15:0] FB_STRIDE_HW = FB_BPP32 ? 16'd1440 : 16'd720;
+localparam [26:0] FB_BUF_HW    = {11'd0, FB_STRIDE_HW} * {11'd0, FB_ROWS_HW};
 localparam [26:0] FB_BUF0_HW   = 27'd0;
 localparam [26:0] FB_BUF1_HW   = FB_BUF_HW;
 localparam [26:0] FB_BUF2_HW   = FB_BUF_HW * 2;
@@ -1907,7 +1908,8 @@ wire [26:0] fb_rd_base = !TRIPLE_BUF          ? FB_BUF0_HW :
 
 // Geometry passed explicitly -- CLEAR_ROWS especially, or only part of each buffer is cleared.
 fb_writer #(
-    .STRIDE_HW (FB_COLS_HW),
+    .STRIDE_HW (FB_STRIDE_HW),
+    .BPP32     (FB_BPP32),
     .FB_COLS   (FB_COLS_HW),
     .FB_ROWS   (FB_ROWS_HW),
     .CLEAR_ROWS(FB_ROWS_HW),
@@ -1917,7 +1919,7 @@ fb_writer #(
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
     .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
     .px_ready(dec_px_ready),
-    .dither(~status[43]),
+    .dither(1'b1),
     .fill_idle(rr_fill_idle),       // yield DDR while the raster reader fetches (delete on revert)
     .base_hw(fb_wr_base),
     .wraddr(fb_wraddr), .din(fb_din),
@@ -1989,7 +1991,8 @@ ddram ddram_fb (
 fb_raster_reader #(
     .H_ACT      (FB_COLS_HW),
     .V_ACT      (FB_ROWS_HW),
-    .STRIDE     (FB_COLS_HW),
+    .STRIDE     (FB_STRIDE_HW),
+    .BPP32      (FB_BPP32),
     .V_BAND     (BAND_H),
     // CE_DIV_LOG2 is the bandwidth dial: too fast and the reader cannot fetch a whole line in one
     // line-time (bottom of the picture cuts off); too slow drops below the content frame rate.

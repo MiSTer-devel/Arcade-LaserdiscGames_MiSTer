@@ -51,7 +51,8 @@ module fb_raster_reader #(
     parameter [15:0] H_FP_CW  = 16'd13, H_SYNC_CW = 16'd58, H_BP_CW = 16'd71,
     parameter [15:0] H_ACT_W  = 16'd640,
     parameter [15:0] H_FP_X   = 16'd8,  H_SYNC_X  = 16'd32, H_BP_X  = 16'd18,
-    parameter [15:0] H_FP_CX  = 16'd16, H_SYNC_CX = 16'd63, H_BP_CX = 16'd59
+    parameter [15:0] H_FP_CX  = 16'd16, H_SYNC_CX = 16'd63, H_BP_CX = 16'd59,
+    parameter        BPP32    = 1'b0
 )(
     input             clk,            // CLK_CORE (= DDRAM_CLK); 80 MHz as of
     input             reset,          // active-high
@@ -162,14 +163,15 @@ module fb_raster_reader #(
 
     // ping-pong line buffer: 2 lines, 512-halfword stride (matches the
     // {buf, hcnt[8:0]} / {buf, fidx[8:0]} index — H_ACT<=512).
-    reg  [63:0] linebuf [0:511];
+    localparam [3:0] WSH = BPP32 ? 4'd1 : 4'd2;
+    reg  [63:0] linebuf [0:1023];
     reg  [63:0] pix64_q;
-    reg   [7:0] widx;
+    reg   [9:0] widx;
     reg         disp_buf = 1'b0;
     wire        fill_buf = ~disp_buf;
 
     // Display read and the DDR fill FSM share fill_done_q, so they must live in one always block.
-    reg [15:0] pix_q;
+    reg [31:0] pix_q;
     reg        active_q;
 
     // ---- DDR fill FSM: fetch fline into fill_buf, self-paced ----
@@ -179,9 +181,10 @@ module fb_raster_reader #(
     localparam [15:0] BURST_W = 16'd16;
     reg [1:0]  fst  = F_IDLE;
     reg [15:0] fidx;
-    wire [15:0] words_left = (h_act - fidx) >> 2;
+    wire [15:0] words_left = (h_act - fidx) >> WSH;
+    wire [15:0] blen_px    = {8'd0, bst_len} << WSH;
     wire [15:0] blen_w     = (words_left > BURST_W) ? BURST_W : words_left;
-    wire [26:0] fetch_hw   = frame_base_hw_q + fb_row*STRIDE + fidx;
+    wire [26:0] fetch_hw   = frame_base_hw_q + fb_row*STRIDE + (BPP32 ? {fidx, 1'b0} : fidx);
     reg [15:0] fline;
     reg        fill_done_q;    // 1 once fline's data is fully loaded into fill_buf, awaiting the swap below
     wire [15:0] fline_next = (fline == v_total - 16'd1) ? 16'd0 : fline + 16'd1;
@@ -204,6 +207,7 @@ module fb_raster_reader #(
     // Second axis of the rotation: read the line buffer backwards.  Named wire because Quartus 17
     // elaborates .v as Verilog-2001, where (expr)[8:0] is illegal.
     wire [15:0] h_rd = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
+    wire  [9:0] rd_word = h_rd[10:0] >> WSH;
     wire [15:0] h_xy = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
     wire [29:0] h_n512 = h_xy * (m720 ? 14'd11651 : 14'd13108);
     wire        vid_row = (vcnt >= vid_top) && (vcnt < vid_top + v_act);
@@ -218,7 +222,7 @@ module fb_raster_reader #(
             hsync <= 0; vsync <= 0; hblank <= 1; vblank <= 1; active_q <= 0;
             hpos <= 16'd0; hpos_n <= 16'd0; vpos <= 16'd0;
             fst <= F_IDLE; fidx <= 16'd0; rd_req2 <= 1'b0; rdaddr2 <= 27'd0;
-            bst_req <= bst_ack; bst_addr <= 25'd0; bst_len <= 8'd0; widx <= 8'd0;
+            bst_req <= bst_ack; bst_addr <= 25'd0; bst_len <= 8'd0; widx <= 10'd0;
             frame_base_hw_q <= 27'd0;
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
             v_band_q <= v_band; crt_q <= crt; flip_q <= flip;
@@ -227,7 +231,7 @@ module fb_raster_reader #(
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
                 // read this pixel and register the aligned timing flags
-                pix_q    <= pix64_q[{h_rd[1:0], 4'b0000} +: 16];
+                pix_q    <= BPP32 ? pix64_q[{h_rd[0], 5'b00000} +: 32] : {16'd0, pix64_q[{h_rd[1:0], 4'b0000} +: 16]};
                 active_q <= h_active & v_active & vid_row;   // band rows -> black (led_band composites there)
                 // Band-compositor coordinates, not raster position: rotated with the picture so the
                 // band lands at the far end, upside down, without led_band knowing about flip.
@@ -265,7 +269,7 @@ module fb_raster_reader #(
                 end
             end
 
-            pix64_q <= linebuf[{disp_buf, h_rd[9:2]}];
+            pix64_q <= linebuf[{disp_buf, rd_word[8:0]}];
 
             // ---- DDR fill FSM (runs every clk, not just ce_pix -- needs the full bandwidth) ----
             case (fst)
@@ -291,7 +295,7 @@ module fb_raster_reader #(
                     bst_addr <= fetch_hw[26:2];
                     bst_len  <= blen_w[7:0];
                     bst_req  <= ~bst_req;
-                    widx     <= fidx[9:2];
+                    widx     <= fidx[9:0] >> WSH;
                     fst      <= F_WAIT;
                 end else begin
                     fst         <= F_IDLE;
@@ -299,15 +303,15 @@ module fb_raster_reader #(
                 end
             F_WAIT: begin
                 if (bst_valid) begin
-                    linebuf[{fill_buf, widx}] <= bst_data;
-                    widx <= widx + 8'd1;
+                    linebuf[{fill_buf, widx[8:0]}] <= bst_data;
+                    widx <= widx + 10'd1;
                 end
                 if (bst_ack == bst_req) begin
-                    if (fidx + {6'd0, bst_len, 2'b00} >= h_act) begin
+                    if (fidx + blen_px >= h_act) begin
                         fst         <= F_IDLE;
                         fill_done_q <= 1'b1;
                     end else begin
-                        fidx <= fidx + {6'd0, bst_len, 2'b00};
+                        fidx <= fidx + blen_px;
                         fst  <= F_REQ;
                     end
                 end
@@ -322,7 +326,7 @@ module fb_raster_reader #(
     // read2 right now".  (Delete this assign + the port on revert.)
     assign fill_idle = fill_done_q;
 
-    assign vid_r = active_q ? {pix_q[15:11], pix_q[15:13]} : 8'd0;  // 5->8
-    assign vid_g = active_q ? {pix_q[10:5],  pix_q[10:9]}  : 8'd0;  // 6->8
-    assign vid_b = active_q ? {pix_q[4:0],   pix_q[4:2]}   : 8'd0;  // 5->8
+    assign vid_r = !active_q ? 8'd0 : BPP32 ? pix_q[23:16] : {pix_q[15:11], pix_q[15:13]};
+    assign vid_g = !active_q ? 8'd0 : BPP32 ? pix_q[15:8]  : {pix_q[10:5],  pix_q[10:9]};
+    assign vid_b = !active_q ? 8'd0 : BPP32 ? pix_q[7:0]   : {pix_q[4:0],   pix_q[4:2]};
 endmodule
