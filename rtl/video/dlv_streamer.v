@@ -128,6 +128,8 @@ module dlv_streamer #(
     // Set by a mount, cleared by an unmount; never by reset, so a reset re-reads the header.
     reg        img_present = 1'b0;
     always @(posedge clk) if (img_mounted) img_present <= (img_size != 64'd0);
+    reg        remount_pend;
+    wire       remount_go;
 
     // current frame index entry
     reg [31:0] frm_off, frm_size;
@@ -236,7 +238,7 @@ module dlv_streamer #(
     wire       dec_hold = dec_wait_on && !dec_done_seen && (dec_wait < DEC_TMO);
     wire       frame_start = (state == S_READY) && header_valid && frame_pending
                              && (aud_level >= FILL_LOW) && !dec_hold
-                             && !(img_mounted && (img_size != 64'd0));
+                             && !remount_pend && !(img_mounted && (img_size != 64'd0));
 
     always @(posedge clk) begin
         frame_tick <= 1'b0;
@@ -278,7 +280,8 @@ module dlv_streamer #(
 
     reg  seek_req;
     wire seek_consume = (state == S_READY) && header_valid && seek_req;
-    wire aud_flush    = seek_flush || seek_consume;
+    assign remount_go = (state == S_READY) && header_valid && remount_pend;
+    wire aud_flush    = seek_flush || seek_consume || remount_go;
 
     //------------------------------------------------------------------------
     // Audio ring WRITE port (SD fill): one word per 4 captured bytes
@@ -469,6 +472,7 @@ module dlv_streamer #(
             frm_blk <= 6'd0; aud_blk <= 6'd0; aud_cap_ok <= 1'b0;
             fifo_wr <= {(FIFO_AW+1){1'b0}}; fifo_clr <= 1'b0;
             dec_wait_on <= 1'b0; dec_done_seen <= 1'b0; dec_wait <= 22'd0;
+            remount_pend <= 1'b0;
             header_valid <= 1'b0; frame_fetch <= 1'b0;
             // 0 => "absent", so a v1 image deterministically takes the
             // samp_per_frame fallback instead of powering up on an undefined value.
@@ -486,6 +490,7 @@ module dlv_streamer #(
             else if (wd_cnt != WD_LIMIT) wd_cnt <= wd_cnt + 24'd1;
             if (wd_rst_cnt != 4'd0)      wd_rst_cnt <= wd_rst_cnt - 4'd1;
             fifo_clr <= 1'b0;
+            if (img_mounted && img_size != 64'd0) remount_pend <= 1'b1;
             if (dec_done) dec_done_seen <= 1'b1;
             if (dec_wait_on && !dec_done_seen && dec_wait != DEC_TMO) dec_wait <= dec_wait + 22'd1;
 
@@ -496,6 +501,7 @@ module dlv_streamer #(
                 if (img_present && !sd_ack) begin
                     cap_mode <= 2'd0; cur_sec <= 32'd0; ret_state <= S_READY;
                     header_valid <= 1'b0;
+                    remount_pend <= 1'b0;
                     state <= S_RD_ISSUE;
                 end
             end
@@ -518,10 +524,12 @@ module dlv_streamer #(
                     cur_frame     <= vid_target;
             // SEARCH jump -> re-point audio to the mapped sector.  The ring keeps playing, so the
             // new scene's audio lands after about one ring depth.
-                end else if (img_mounted && img_size != 0) begin
-                    // re-mount: re-read header
+                end else if (remount_pend) begin
                     cap_mode <= 2'd0; cur_sec <= 32'd0; ret_state <= S_READY;
                     header_valid <= 1'b0;
+                    remount_pend <= 1'b0;
+                    last_fetched_frame <= {17{1'b1}};
+                    dec_wait_on <= 1'b0;
                     state <= S_RD_ISSUE;
                 end else if (frame_pending && (aud_level >= FILL_LOW) && !dec_hold) begin
             // Only fetch/decode/write if the mapped mjpeg frame has genuinely changed.
@@ -566,7 +574,12 @@ module dlv_streamer #(
 
             // ---- read frame sectors into fbuf until fsize captured ----
             S_FRM_NEXT: begin
-                if (bytes_got >= frm_size) begin
+                if (remount_pend) begin
+                    fifo_wr    <= {(FIFO_AW+1){1'b0}};
+                    fifo_clr   <= 1'b1;
+                    wd_rst_cnt <= 4'd15;
+                    state      <= S_READY;
+                end else if (bytes_got >= frm_size) begin
                     state <= S_STRM_VLD;
                 end else if ((fifo_free_sec >= 16) || ({{(32-FIFO_AW+8){1'b0}}, fifo_free_sec} >= frm_rem_sec)) begin
                     frm_blk  <= (frm_rem_sec <= {{(32-FIFO_AW+8){1'b0}}, fifo_free_sec}) ?
