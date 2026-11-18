@@ -94,10 +94,17 @@ module dlv_streamer #(
     // error anywhere. 128 KB costs ~77 M10K of the 348 free (block memory 26% -> ~39%) and covers
     // any 320x240 quality plus a later resolution bump. pack_dlv.py now hard-fails at pack time if a
     // frame does not fit, and names the FBUF_AW required.
-    localparam FBUF_AW = 17;                 // 128 KB
-    reg [7:0] fbuf [0:(1<<FBUF_AW)-1];
-    reg [7:0] fbuf_q;
-    assign out_byte = fbuf_q;
+    localparam FIFO_AW = 15;
+    reg [7:0] fifo [0:(1<<FIFO_AW)-1];
+    reg [7:0] fifo_q;
+    assign out_byte = fifo_q;
+    reg [FIFO_AW:0] fifo_wr, fifo_rd;
+    wire [FIFO_AW:0] fifo_level = fifo_wr - fifo_rd;
+    wire [FIFO_AW:0] fifo_free  = {1'b1, {FIFO_AW{1'b0}}} - fifo_level;
+    wire [FIFO_AW-9:0] fifo_free_sec = fifo_free[FIFO_AW:9];
+    reg        fifo_clr;
+    reg        fifo_rd_pend;
+    reg [31:0] bytes_out;
 
     //------------------------------------------------------------------------
     // Header fields
@@ -171,7 +178,6 @@ module dlv_streamer #(
     wire [31:0] frm_rem_sec  = frm_last_sec - cur_sec + 32'd1;
     reg [31:0] bytes_got;
     reg [8:0]  idx_in_sec;
-    reg [FBUF_AW-1:0] stream_pos;
 
     reg  frame_fetch;                         // high while committing/fetching a frame
 
@@ -188,7 +194,7 @@ module dlv_streamer #(
     wire        wd_rst  = (wd_rst_cnt != 4'd0);
     // Armed ONLY in the two genuinely unbounded waits -- S_RD_ISSUE (no transfer in flight yet)
     // and S_STRM_VLD (touches no SD state).  Both are safe to abandon.
-    wire        wd_arm  = (state == S_RD_ISSUE) || (state == S_STRM_VLD);
+    wire        wd_arm  = (state == S_RD_ISSUE) || (state == S_STRM_VLD) || (state == S_FRM_NEXT);
     // any forward progress re-arms the timer: SD data landing, or a byte accepted
     wire        wd_prog = sd_buff_wr || (out_valid && out_ready);
     wire        wd_fire = (wd_cnt == WD_LIMIT);
@@ -446,7 +452,7 @@ module dlv_streamer #(
             state <= S_IDLE;
             sd_rd <= 1'b0; sd_lba <= 32'd0; sd_blk_cnt <= 6'd0;
             frm_blk <= 6'd0; aud_blk <= 6'd0; aud_cap_ok <= 1'b0;
-            out_valid <= 1'b0; out_last <= 1'b0;
+            fifo_wr <= {(FIFO_AW+1){1'b0}}; fifo_clr <= 1'b0;
             header_valid <= 1'b0; frame_fetch <= 1'b0;
             // 0 => "absent", so a v1 image deterministically takes the
             // samp_per_frame fallback instead of powering up on an undefined value.
@@ -463,6 +469,7 @@ module dlv_streamer #(
             if (!wd_arm || wd_prog)     wd_cnt <= 24'd0;
             else if (wd_cnt != WD_LIMIT) wd_cnt <= wd_cnt + 24'd1;
             if (wd_rst_cnt != 4'd0)      wd_rst_cnt <= wd_rst_cnt - 4'd1;
+            fifo_clr <= 1'b0;
 
             case (state)
             // ---- wait for image, then read header sector 0 ----
@@ -530,40 +537,28 @@ module dlv_streamer #(
                 bytes_got <= 32'd0;
                 cur_sec   <= (video_off + frm_off) >> 9;
                 cap_mode  <= 2'd2;
+                fifo_wr   <= {(FIFO_AW+1){1'b0}};
+                fifo_clr  <= 1'b1;
+                frame_fetch <= 1'b0;
                 state <= S_FRM_NEXT;
             end
 
             // ---- read frame sectors into fbuf until fsize captured ----
             S_FRM_NEXT: begin
                 if (bytes_got >= frm_size) begin
-                    stream_pos <= 0; out_last <= 1'b0; out_valid <= 1'b0;
-                    frame_fetch <= 1'b0;          // release decoder reset -> streaming begins
-                    state <= S_STREAM;
-                end else begin
-                    frm_blk  <= (frm_rem_sec >= 32'd32) ? 6'd31 : (frm_rem_sec[5:0] - 6'd1);
+                    state <= S_STRM_VLD;
+                end else if ((fifo_free_sec >= 16) || ({{(32-FIFO_AW+8){1'b0}}, fifo_free_sec} >= frm_rem_sec)) begin
+                    frm_blk  <= (frm_rem_sec <= {{(32-FIFO_AW+8){1'b0}}, fifo_free_sec}) ?
+                                    ((frm_rem_sec >= 32'd32) ? 6'd31 : (frm_rem_sec[5:0] - 6'd1)) :
+                                    ((fifo_free_sec >= 32) ? 6'd31 : (fifo_free_sec[5:0] - 6'd1));
                     cap_mode <= 2'd2; ret_state <= S_FRM_NEXT;
                     state <= S_RD_ISSUE;
                 end
             end
 
-            // ---- stream fbuf[0..fsize-1] -> decoder (registered read) ----
-            S_STREAM: begin
-                fbuf_q   <= fbuf[stream_pos];
-                out_last <= (stream_pos == frm_size[FBUF_AW-1:0] - 1'b1);
-                state    <= S_STRM_VLD;
-            end
+            S_STREAM: state <= S_STRM_VLD;
             S_STRM_VLD: begin
-                out_valid <= 1'b1;
-                if (out_valid && out_ready) begin
-                    out_valid <= 1'b0;
-                    if (out_last) begin
-                        out_last  <= 1'b0;
-                        state     <= S_READY;   // HLE-DRIVE: next frame = vid_target(ld_curr_frame), set at fetch
-                    end else begin
-                        stream_pos <= stream_pos + 1'b1;
-                        state      <= S_STREAM;
-                    end
-                end
+                if (bytes_out >= frm_size) state <= S_READY;
             end
 
             // ---- audio sector captured: advance the audio sector cursor (loop) ----
@@ -636,7 +631,8 @@ module dlv_streamer #(
                     end
                     2'd2: begin // frame bytes -> fbuf
                         if ((sec_base_byte + sd_buff_addr) >= frm_start && bytes_got < frm_size) begin
-                            fbuf[bytes_got[FBUF_AW-1:0]] <= sd_buff_dout;
+                            fifo[fifo_wr[FIFO_AW-1:0]] <= sd_buff_dout;
+                            fifo_wr   <= fifo_wr + 1'b1;
                             bytes_got <= bytes_got + 1'b1;
                         end
                     end
@@ -670,11 +666,35 @@ module dlv_streamer #(
                 wd_cnt    <= 24'd0;
                 wd_rst_cnt<= 4'd15;
                 sd_rd     <= 1'b0;
-                out_valid <= 1'b0;
-                out_last  <= 1'b0;
+                fifo_wr   <= {(FIFO_AW+1){1'b0}};
+                fifo_clr  <= 1'b1;
                 last_fetched_frame <= {17{1'b1}};
                 state     <= S_READY;
             end
+        end
+    end
+
+    always @(posedge clk) begin
+        if (reset || fifo_clr) begin
+            fifo_rd      <= {(FIFO_AW+1){1'b0}};
+            fifo_rd_pend <= 1'b0;
+            out_valid    <= 1'b0;
+            out_last     <= 1'b0;
+            bytes_out    <= 32'd0;
+        end else if (out_valid) begin
+            if (out_ready) begin
+                out_valid <= 1'b0;
+                out_last  <= 1'b0;
+                fifo_rd   <= fifo_rd + 1'b1;
+                bytes_out <= bytes_out + 32'd1;
+            end
+        end else if (fifo_rd_pend) begin
+            out_valid    <= 1'b1;
+            out_last     <= (bytes_out == frm_size - 32'd1);
+            fifo_rd_pend <= 1'b0;
+        end else if ((fifo_wr != fifo_rd) && (bytes_out < frm_size)) begin
+            fifo_q       <= fifo[fifo_rd[FIFO_AW-1:0]];
+            fifo_rd_pend <= 1'b1;
         end
     end
 
