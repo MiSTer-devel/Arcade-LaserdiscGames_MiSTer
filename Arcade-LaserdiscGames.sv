@@ -182,6 +182,7 @@ localparam CONF_STR = {
 	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	"P1OK,LED Bar,On,Off;",
 	"P1OC,LED Bar Position,Above Video,Over Video;",
+	"P1O[42:40],LED Bar CRT Offset,0,2,4,6,8,10,12,14 lines;",
 	"P1OB,Flip Screen,Off,On;",
 	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P2,Pause Options;",
@@ -683,7 +684,9 @@ wire        seek_pause = seek_is_seg | status[8];
 localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
 // The band's rows stay reserved in the reader's V_TOTAL either way, so switching it off gives them
 // to the video without changing the frame time.
-wire [15:0] band_h_w = band_strip_off ? 16'd0 : (crt_mode ? (BAND_H >> 1) : BAND_H);
+wire [15:0] band_crt_off = crt_mode ? {11'd0, status[42:40], 1'b0} : 16'd0;
+wire [15:0] band_h_w = band_strip_off ? 16'd0 : (crt_mode ? ((BAND_H >> 1) + band_crt_off) : BAND_H);
+wire [15:0] band_vc  = (rr_vpos >= band_crt_off) ? (rr_vpos - band_crt_off) : 16'hFFFF;
 wire        band_lit = led_lit & ~band_off;
 // Seek Behaviour (status[4]): 0 = hold the last frame, 1 = go black like a real player with no
 // sync.  Only during a SEARCH hold, never a still/pause, and only once fb_tail_adopt has burned
@@ -2041,7 +2044,7 @@ text_overlay #(.FONT_HEX("rtl/video/ldp1450_font.hex")) dl2_text (
 );
 
 led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
-    .hc(rr_hpos512), .vc(rr_vpos), .crt_240p(crt_mode),
+    .hc(rr_hpos512), .vc(band_vc), .crt_240p(crt_mode),
     .led_digits(led_digits_flat),   // real score/lives, restored
     .skill_en(is_spaceace),         // MRA mod byte, SA only
     .skill(skill_level),
