@@ -48,7 +48,10 @@ module fb_raster_reader #(
     parameter [2:0]  CE_DIV_LOG2 = 3'd3,
     parameter [15:0] H_ACT_N  = 16'd512,
     parameter [15:0] H_FP_W   = 16'd8,  H_SYNC_W  = 16'd38, H_BP_W  = 16'd23,
-    parameter [15:0] H_FP_CW  = 16'd13, H_SYNC_CW = 16'd58, H_BP_CW = 16'd71
+    parameter [15:0] H_FP_CW  = 16'd13, H_SYNC_CW = 16'd58, H_BP_CW = 16'd71,
+    parameter [15:0] H_ACT_W  = 16'd640,
+    parameter [15:0] H_FP_X   = 16'd8,  H_SYNC_X  = 16'd32, H_BP_X  = 16'd18,
+    parameter [15:0] H_FP_CX  = 16'd16, H_SYNC_CX = 16'd63, H_BP_CX = 16'd59
 )(
     input             clk,            // CLK_CORE (= DDRAM_CLK); 80 MHz as of
     input             reset,          // active-high
@@ -59,8 +62,8 @@ module fb_raster_reader #(
     input             ilace,
     output reg        field,
     input             flip,           // 180 deg rotation (inverted monitor): BOTH axes, not a mirror
-    input             wide,
-    output            wide_act,
+    input       [1:0] wmode,
+    output      [1:0] wmode_act,
 
     // ddram.sv read port 2
     output reg [26:0] rdaddr2,
@@ -111,13 +114,15 @@ module fb_raster_reader #(
     reg         ilace_q  = 1'b0;
     reg         ffld     = 1'b0;
     reg         flip_q   = 1'b0;
-    reg         wide_q   = 1'b0;
-    assign wide_act = wide_q;
-    wire [15:0] h_act = wide_q ? H_ACT : H_ACT_N;
+    reg   [1:0] wm_q     = 2'd0;
+    assign wmode_act = wm_q;
+    wire        m720  = (wm_q == 2'd2);
+    wire        m640  = (wm_q == 2'd1);
+    wire [15:0] h_act = m720 ? H_ACT : m640 ? H_ACT_W : H_ACT_N;
 
-    wire [15:0] h_fp    = wide_q ? (crt_q ? H_FP_CW   : H_FP_W)   : (crt_q ? H_FP_C   : H_FP);
-    wire [15:0] h_sync  = wide_q ? (crt_q ? H_SYNC_CW : H_SYNC_W) : (crt_q ? H_SYNC_C : H_SYNC);
-    wire [15:0] h_bp    = wide_q ? (crt_q ? H_BP_CW   : H_BP_W)   : (crt_q ? H_BP_C   : H_BP);
+    wire [15:0] h_fp    = m720 ? (crt_q ? H_FP_CX   : H_FP_X)   : m640 ? (crt_q ? H_FP_CW   : H_FP_W)   : (crt_q ? H_FP_C   : H_FP);
+    wire [15:0] h_sync  = m720 ? (crt_q ? H_SYNC_CX : H_SYNC_X) : m640 ? (crt_q ? H_SYNC_CW : H_SYNC_W) : (crt_q ? H_SYNC_C : H_SYNC);
+    wire [15:0] h_bp    = m720 ? (crt_q ? H_BP_CX   : H_BP_X)   : m640 ? (crt_q ? H_BP_CW   : H_BP_W)   : (crt_q ? H_BP_C   : H_BP);
     wire [15:0] h_total = h_act + h_fp + h_sync + h_bp;
     wire [15:0] hs_beg  = h_act + h_fp;
     wire [15:0] hs_end  = h_act + h_fp + h_sync;
@@ -142,7 +147,11 @@ module fb_raster_reader #(
     always @(posedge clk) cediv <= cediv + 3'd1;
     reg [3:0] cediv13 = 4'd0;
     always @(posedge clk) cediv13 <= (cediv13 == 4'd12) ? 4'd0 : cediv13 + 4'd1;
-    assign ce_pix = wide_q ? ((cediv13 == 4'd0) || (cediv13 == 4'd6)) : ((cediv & CE_MASK) == 3'd0);
+    reg [11:0] ceacc = 12'd0;
+    wire [11:0] ceacc_n = ceacc + 12'd389;
+    wire        ce720  = (ceacc_n >= 12'd2304);
+    always @(posedge clk) ceacc <= ce720 ? (ceacc_n - 12'd2304) : ceacc_n;
+    assign ce_pix = m720 ? ce720 : m640 ? ((cediv13 == 4'd0) || (cediv13 == 4'd6)) : ((cediv & CE_MASK) == 3'd0);
 
     // raster counters
     reg [15:0] hcnt = 16'd0, vcnt = 16'd0;
@@ -196,7 +205,7 @@ module fb_raster_reader #(
     // elaborates .v as Verilog-2001, where (expr)[8:0] is illegal.
     wire [15:0] h_rd = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
     wire [15:0] h_xy = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
-    wire [29:0] h_n512 = h_xy * 14'd13108;
+    wire [29:0] h_n512 = h_xy * (m720 ? 14'd11651 : 14'd13108);
     wire        vid_row = (vcnt >= vid_top) && (vcnt < vid_top + v_act);
 
     // Latch the buffer base once per raster frame: the top level toggles frame_base_hw live as
@@ -213,7 +222,7 @@ module fb_raster_reader #(
             frame_base_hw_q <= 27'd0;
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
             v_band_q <= v_band; crt_q <= crt; flip_q <= flip;
-            ilace_q <= ilace; field <= 1'b0; ffld <= 1'b0; wide_q <= wide;
+            ilace_q <= ilace; field <= 1'b0; ffld <= 1'b0; wm_q <= wmode;
         end else begin
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
@@ -223,7 +232,7 @@ module fb_raster_reader #(
                 // Band-compositor coordinates, not raster position: rotated with the picture so the
                 // band lands at the far end, upside down, without led_band knowing about flip.
                 hpos     <= flip_q ? (h_act   - 16'd1 - hcnt) : hcnt;
-                hpos_n   <= wide_q ? h_n512[29:14] : h_xy;
+                hpos_n   <= (wm_q != 2'd0) ? h_n512[29:14] : h_xy;
                 vpos     <= flip_q ? (v_disp  - 16'd1 - vcnt) : vcnt;
                 hblank   <= ~h_active;
                 vblank   <= ~v_active;
@@ -247,7 +256,7 @@ module fb_raster_reader #(
                         v_band_q       <= v_band; // adopt OSD toggles only at the frame boundary --
                         crt_q          <= crt;    //   the raster must never change under itself
                         flip_q         <= flip;
-                        wide_q         <= wide;
+                        wm_q           <= wmode;
                         ilace_q        <= ilace;
                         field          <= crt & ilace & ~field;
                     end

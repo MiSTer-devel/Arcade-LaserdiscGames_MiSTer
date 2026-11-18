@@ -619,9 +619,9 @@ wire [63:0] led_digits_flat;
 wire [63:0] led_digits_dl;
 wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
-wire        rr_wide;
+wire  [1:0] rr_wmode;
 wire [15:0] rr_hpos512;
-reg         dec_wide = 1'b0;
+reg   [1:0] dec_wmode = 2'd0;
 wire [15:0] rr_band_act;      // band height in force this frame, from the reader
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
@@ -706,7 +706,8 @@ wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adop
 // the band height is subtracted here to make the space VIDEO-relative. Without
 // it, turning the band off slides every overlay down by BAND_H rows.
 wire [18:0] ovl_sx_mul = rr_hpos * 16'd5;
-wire [15:0] ovl_sx     = rr_wide ? {1'b0, rr_hpos[15:1]} : ovl_sx_mul[18:3];
+wire [29:0] ovl_sx_m9  = rr_hpos * 14'd7282;
+wire [15:0] ovl_sx     = (rr_wmode == 2'd2) ? ovl_sx_m9[29:14] : (rr_wmode == 2'd1) ? {1'b0, rr_hpos[15:1]} : ovl_sx_mul[18:3];
 // rr_band_act, not band_h_w: the reader adopts an OSD toggle only at a frame
 // boundary, so using the raw value would slide the overlay mid-raster.
 wire [15:0] ovl_crop   = crt_mode ? {1'b0, rr_band_act[15:1]} : 16'd0;
@@ -756,7 +757,7 @@ assign VGA_F1 = rr_field;
 
 // Driven by fb_raster_reader with the LED band composited over it.  The first parameter is
 // arcade_video's WIDTH and MUST be >= H_ACT or video_mixer's line buffers wrap mid-line.
-arcade_video_il #(640,24) arcade_video
+arcade_video_il #(720,24) arcade_video
 (
 	.*,
 
@@ -1747,9 +1748,9 @@ jpeg_frame_decoder dec (
 // ---- Framebuffer geometry, defined ONCE and passed everywhere ----
 // 512x480 matches the Daphne source m2v exactly, so encoding is a pure re-compress, and 512 is
 // fb_raster_reader's line-buffer ceiling.
-localparam [15:0] FB_COLS_HW   = 16'd640;
+localparam [15:0] FB_COLS_HW   = 16'd720;
 localparam [15:0] FB_ROWS_HW   = 16'd480;
-localparam [26:0] FB_BUF_HW    = 27'd307200;
+localparam [26:0] FB_BUF_HW    = 27'd345600;
 localparam [26:0] FB_BUF0_HW   = 27'd0;
 localparam [26:0] FB_BUF1_HW   = FB_BUF_HW;
 localparam [26:0] FB_BUF2_HW   = FB_BUF_HW * 2;
@@ -1860,7 +1861,7 @@ always @(posedge CLK_CORE) begin
         end
         // Ordered AFTER the adopt block so fb_have_new wins on a simultaneous cycle.
         if (dec_frame_done) begin
-            dec_wide     <= (dec_w > 16'd512);
+            dec_wmode    <= (dec_w > 16'd640) ? 2'd2 : (dec_w > 16'd512) ? 2'd1 : 2'd0;
             fb_ready_idx <= fb_wr_idx;
             fb_wr_idx    <= fb_free_idx;   // != fb_next_disp by construction
             // Publish the in-flight frame too: its fetch only started because vid_target reached it.
@@ -2005,8 +2006,8 @@ fb_raster_reader #(
     .ilace(ilace_mode),
     .field(rr_field),
     .flip(flip),
-    .wide(dec_wide),
-    .wide_act(rr_wide),
+    .wmode(dec_wmode),
+    .wmode_act(rr_wmode),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .bst_addr(rr_bst_addr), .bst_len(rr_bst_len), .bst_req(rr_bst_req),
