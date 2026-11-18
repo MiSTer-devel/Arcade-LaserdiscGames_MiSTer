@@ -8,8 +8,9 @@
 //
 // Strobes idle HIGH and assert LOW: SYSTEM b6 = status_strobe, b7 = ~command_strobe.
 // One byte per ready window: accepting a command clears bit 7 and only 0xFF
-// re-arms it. 0xFF is the handshake ACK, not idle filler -- it must be fully
-// inert or a multi-digit SEARCH accumulates wrong. A real SEARCH is
+// re-arms it (STEP FWD/REV and an autostop landing report STOP with bit 7 set).
+// 0xFF is the handshake ACK, not idle filler -- it must be fully inert or a
+// multi-digit SEARCH accumulates wrong. A real SEARCH is
 // 0xBF, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, 0xF7.
 //============================================================================
 module ldp_ldv1000
