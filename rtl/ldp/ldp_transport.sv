@@ -39,6 +39,7 @@ module ldp_transport
     input      [3:0]  post_seek_frames, // MRA-tunable tail drain length
     input             disc_2997,        // .dlv encode rate: 1 = 29.97 fps, 0 = 23.976
     input      [16:0] park_frame,       // disc's first content frame; 0 = rest at frame 1
+    input             search_slow,      // 1 = PR-7820 search times (distance curve), 0 = the fixed 0.5 s
 
     // ---- video / audio contract ----
     output reg        search_cmd_o,     // 1-cyc when a SEARCH commits (after the tail drain)
@@ -62,8 +63,21 @@ module ldp_transport
 
     // Busy-report countdown in field ticks (59.94 Hz), holding Daphne's 0.5 s search fiction.
     // Times the STATUS report only -- the disc POSITION lands atomically.
-    localparam [5:0] SEARCH_TICKS = 6'd30;
-    reg  [5:0]  search_delay;
+    localparam [9:0] SEARCH_TICKS = 10'd30;
+    reg  [9:0]  search_delay;
+
+    // PR-7820 search time from Pioneer's average-search-time chart (PR-7820 DVA System Manual
+    // fig. 2): ~2.5 s for 60 frames, ~2.6 s at 256, ~2.75 s from 1792 to 4352, ~4.4 s at 40000.
+    // Piecewise linear in field ticks.  Worked out over three cycles after the SEARCH and then
+    // written over the 0.5 s arm, well inside the first field tick.
+    reg  [16:0] srch_from;
+    reg  [16:0] srch_dist;
+    reg  [9:0]  srch_ticks;
+    reg  [2:0]  srch_slow_pipe;
+    wire [16:0] sd_far   = (srch_dist > 17'd4352) ? (srch_dist - 17'd4352) : 17'd0;
+    wire [16:0] sd_mid   = (srch_dist > 17'd1792) ? 17'd1536 : (srch_dist > 17'd256) ? (srch_dist - 17'd256) : 17'd0;
+    wire [16:0] sd_near  = (srch_dist > 17'd256) ? 17'd256 : srch_dist;
+    wire [16:0] sd_ticks = 17'd150 + (sd_near >> 6) + (sd_mid >> 7) + (sd_far >> 9) + (sd_far >> 10);
 
     assign search_busy = (mode == M_SEARCH);
 
@@ -143,7 +157,8 @@ module ldp_transport
             // the disc is up to speed.
             curr_frame <= 17'd1; fcnt <= 22'd0; vcnt <= 22'd0;
             park_track <= 1'b1;
-            search_delay <= 6'd0;
+            search_delay <= 10'd0;
+            srch_slow_pipe <= 3'd0;
             disc_moving_q <= 1'b0;
             audio_en1 <= 1'b1; audio_en2 <= 1'b1;
             play_speed_q4 <= 5'd4; speed_acc <= 2'd0;
@@ -199,9 +214,9 @@ module ldp_transport
             if (frame_tick) begin
                 case (mode)
                     M_SEARCH: begin
-                        if (search_delay != 6'd0 || disc_hold) begin
-                            if (search_delay != 6'd0)
-                                search_delay <= search_delay - 6'd1;
+                        if (search_delay != 10'd0 || disc_hold) begin
+                            if (search_delay != 10'd0)
+                                search_delay <= search_delay - 10'd1;
                         end else begin
                             mode <= M_STOP;
                             search_done <= 1'b1;   // front-end turns this into its own status
@@ -231,6 +246,11 @@ module ldp_transport
                 skip_land  <= 1'b0;
             end
 
+            if (srch_slow_pipe[0]) srch_dist  <= (search_frame > srch_from) ? (search_frame - srch_from) : (srch_from - search_frame);
+            if (srch_slow_pipe[1]) srch_ticks <= (sd_ticks > 17'd1023) ? 10'd1023 : sd_ticks[9:0];
+            if (srch_slow_pipe[2] && mode == M_SEARCH) search_delay <= srch_ticks;
+            srch_slow_pipe <= {srch_slow_pipe[1:0], 1'b0};
+
             // ---- command bus ----
             if (cmd_action) begin
                 if (cmd_op == OP_SEARCH) park_track <= 1'b0;
@@ -243,6 +263,8 @@ module ldp_transport
                 case (cmd_op)
                     OP_SEARCH: begin
                         search_frame <= cmd_arg; mode <= M_SEARCH;
+                        srch_from <= curr_frame;
+                        if (search_slow && mode != M_SEARCH) srch_slow_pipe <= 3'b001;
                         stop_valid <= 1'b0;
                         // Only arm the tail when we were actually PLAYING -- hold-frame seeks
                         // arrive from M_STOP/M_SEARCH and must flush instantly (no audio to drain).
