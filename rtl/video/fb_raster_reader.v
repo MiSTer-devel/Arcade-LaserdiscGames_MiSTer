@@ -69,6 +69,13 @@ module fb_raster_reader #(
     output reg        rd_req2,
     input             rd_ack2,
 
+    output reg [27:3] bst_addr,
+    output reg  [7:0] bst_len,
+    output reg        bst_req,
+    input             bst_ack,
+    input             bst_valid,
+    input      [63:0] bst_data,
+
     // High while the fill FSM is PARKED: this line's fetch has landed, so there is no read2
     // traffic in flight and fb_writer may use the DDR bus.
     output            fill_idle,
@@ -146,7 +153,9 @@ module fb_raster_reader #(
 
     // ping-pong line buffer: 2 lines, 512-halfword stride (matches the
     // {buf, hcnt[8:0]} / {buf, fidx[8:0]} index — H_ACT<=512).
-    reg  [15:0] linebuf [0:2047];
+    reg  [63:0] linebuf [0:511];
+    reg  [63:0] pix64_q;
+    reg   [7:0] widx;
     reg         disp_buf = 1'b0;
     wire        fill_buf = ~disp_buf;
 
@@ -157,13 +166,13 @@ module fb_raster_reader #(
     // ---- DDR fill FSM: fetch fline into fill_buf, self-paced ----
     // NOT tied to a one-line deadline -- under DDR write contention a fetch can overrun a line,
     // and the old once-per-line gate assumed it never would.
-    localparam F_IDLE = 2'd0, F_REQ = 2'd1, F_WAIT = 2'd2, F_STORE = 2'd3;
+    localparam F_IDLE = 2'd0, F_REQ = 2'd1, F_WAIT = 2'd2;
+    localparam [15:0] BURST_W = 16'd16;
     reg [1:0]  fst  = F_IDLE;
-    reg [47:0] fw_hold;      // halfwords 1..3 awaiting store (hw0 is written directly on ack)
-    reg [1:0]  fw_cnt;       // which of the remaining 3 is being stored
-    reg [15:0] fw_idx;       // linebuf index for the current F_STORE write (named reg on purpose:
-                             // Quartus 17 elaborates .v as Verilog-2001, where (expr)[8:0] is illegal)
     reg [15:0] fidx;
+    wire [15:0] words_left = (h_act - fidx) >> 2;
+    wire [15:0] blen_w     = (words_left > BURST_W) ? BURST_W : words_left;
+    wire [26:0] fetch_hw   = frame_base_hw_q + fb_row*STRIDE + fidx;
     reg [15:0] fline;
     reg        fill_done_q;    // 1 once fline's data is fully loaded into fill_buf, awaiting the swap below
     wire [15:0] fline_next = (fline == v_total - 16'd1) ? 16'd0 : fline + 16'd1;
@@ -200,16 +209,16 @@ module fb_raster_reader #(
             hsync <= 0; vsync <= 0; hblank <= 1; vblank <= 1; active_q <= 0;
             hpos <= 16'd0; hpos_n <= 16'd0; vpos <= 16'd0;
             fst <= F_IDLE; fidx <= 16'd0; rd_req2 <= 1'b0; rdaddr2 <= 27'd0;
+            bst_req <= bst_ack; bst_addr <= 25'd0; bst_len <= 8'd0; widx <= 8'd0;
             frame_base_hw_q <= 27'd0;
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
-            fw_hold <= 48'd0; fw_cnt <= 2'd0; fw_idx <= 16'd0;
             v_band_q <= v_band; crt_q <= crt; flip_q <= flip;
             ilace_q <= ilace; field <= 1'b0; ffld <= 1'b0; wide_q <= wide;
         end else begin
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
                 // read this pixel and register the aligned timing flags
-                pix_q    <= linebuf[{disp_buf, h_rd[9:0]}];
+                pix_q    <= pix64_q[{h_rd[1:0], 4'b0000} +: 16];
                 active_q <= h_active & v_active & vid_row;   // band rows -> black (led_band composites there)
                 // Band-compositor coordinates, not raster position: rotated with the picture so the
                 // band lands at the far end, upside down, without led_band knowing about flip.
@@ -247,6 +256,8 @@ module fb_raster_reader #(
                 end
             end
 
+            pix64_q <= linebuf[{disp_buf, h_rd[9:2]}];
+
             // ---- DDR fill FSM (runs every clk, not just ce_pix -- needs the full bandwidth) ----
             case (fst)
             F_IDLE:
@@ -267,40 +278,29 @@ module fb_raster_reader #(
                     end
                 end
             F_REQ:
-                // Rows inside the active band (fline < v_band_q) and past the active window fetch
-                // nothing -- they're blanked to black anyway.
                 if (fline >= vid_top && row_vis < v_act) begin
-                    rdaddr2 <= frame_base_hw_q + fb_row*STRIDE + fidx;
-                    rd_req2 <= ~rd_req2;                    // issue read
-                    fst     <= F_WAIT;
+                    bst_addr <= fetch_hw[26:2];
+                    bst_len  <= blen_w[7:0];
+                    bst_req  <= ~bst_req;
+                    widx     <= fidx[9:2];
+                    fst      <= F_WAIT;
                 end else begin
-                    fst         <= F_IDLE;                  // band line or off-screen: nothing to fetch
+                    fst         <= F_IDLE;
                     fill_done_q <= 1'b1;
                 end
-            F_WAIT:
-                if (rd_ack2 == rd_req2) begin               // dout2/dout2_64 valid
-                    // store halfword 0 now, hold 1..3 for F_STORE.
-                    linebuf[{fill_buf, fidx[9:0]}] <= dout2_64[15:0];
-                    fw_hold <= dout2_64[63:16];
-                    fw_cnt  <= 2'd0;
-                    fw_idx  <= fidx + 16'd1;     // named reg: NO expression bit-select in a .v file
-                    fst     <= F_STORE;
+            F_WAIT: begin
+                if (bst_valid) begin
+                    linebuf[{fill_buf, widx}] <= bst_data;
+                    widx <= widx + 8'd1;
                 end
-            F_STORE: begin
-                // write halfwords 1,2,3 of the fetched word on successive cycles
-                linebuf[{fill_buf, fw_idx[9:0]}] <= fw_hold[15:0];
-                fw_hold <= {16'd0, fw_hold[47:16]};
-                fw_idx  <= fw_idx + 16'd1;
-                if (fw_cnt == 2'd2) begin
-                    if (fidx + 16'd4 >= h_act) begin        // whole line landed
+                if (bst_ack == bst_req) begin
+                    if (fidx + {6'd0, bst_len, 2'b00} >= h_act) begin
                         fst         <= F_IDLE;
                         fill_done_q <= 1'b1;
                     end else begin
-                        fidx <= fidx + 16'd4;
+                        fidx <= fidx + {6'd0, bst_len, 2'b00};
                         fst  <= F_REQ;
                     end
-                end else begin
-                    fw_cnt <= fw_cnt + 2'd1;
                 end
             end
             default: fst <= F_IDLE;

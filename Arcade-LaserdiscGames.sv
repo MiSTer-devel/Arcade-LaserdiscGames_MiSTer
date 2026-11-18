@@ -1954,6 +1954,7 @@ gpw_spr_mem gpw_spr_ddr
 	.mem_req(gp_mem_req), .mem_ack(ddr_rom_ack), .mem_dout(ddr_rom_dout)
 );
 
+wire [27:3] rr_bst_addr; wire [7:0] rr_bst_len; wire rr_bst_req, rr_bst_ack, rr_bst_valid; wire [63:0] rr_bst_data;
 ddram ddram_fb (
     .DDRAM_CLK(CLK_CORE),
     .DDRAM_BUSY(DDRAM_BUSY),
@@ -1976,6 +1977,8 @@ ddram ddram_fb (
     // second read port — raster reader (DDR framebuffer -> video)
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
+    .bst_addr(rr_bst_addr), .bst_len(rr_bst_len), .bst_req(rr_bst_req),
+    .bst_ack(rr_bst_ack), .bst_valid(rr_bst_valid), .bst_data(rr_bst_data),
 );
 
 // Read the framebuffer back in scan order, then composite the LED band over it.
@@ -2005,6 +2008,8 @@ fb_raster_reader #(
     .wide_act(rr_wide),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
+    .bst_addr(rr_bst_addr), .bst_len(rr_bst_len), .bst_req(rr_bst_req),
+    .bst_ack(rr_bst_ack), .bst_valid(rr_bst_valid), .bst_data(rr_bst_data),
     .fill_idle(rr_fill_idle),               // (delete on revert)
     .ce_pix(rr_ce_pix),
     .hsync(rr_hs), .vsync(rr_vs), .hblank(rr_hblank), .vblank(rr_vblank),
