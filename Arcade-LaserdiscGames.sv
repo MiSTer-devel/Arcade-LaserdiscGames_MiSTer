@@ -227,6 +227,10 @@ wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
 wire  [7:0] ioctl_din;
+wire [15:0] d2_nv_rdata;
+wire        d2_nv_changed;
+wire        d2_nv_req = d2_nv_changed;
+wire [15:0] nv_din = d2_nv_rdata;
 
 wire [15:0] joystick_0, joystick_1;
 wire [15:0] joy = joystick_0 | joystick_1;
@@ -305,7 +309,8 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 	.ioctl_wr(h_ioctl_wr),
 	.ioctl_addr(h_ioctl_addr),
 	.ioctl_dout(h_ioctl_dout),
-	.ioctl_din({8'd0, ioctl_din}),
+	.ioctl_din(nv_din),
+	.ioctl_upload_index(8'd4),
 	.ioctl_index(ioctl_index),
 	.ioctl_wait(h_ioctl_wait),
 
@@ -1396,6 +1401,8 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 	.ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
 	.ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
 
+	.nv_raddr(h_ioctl_addr[7:1]), .nv_rdata(d2_nv_rdata), .nv_changed(d2_nv_changed),
+
 	.ram_addr(d2_ram_addr), .ram_din(d2_ram_din),
 	.ram_rd(d2_ram_rd), .ram_wr(d2_ram_wr),
 	.ram_dout(d2_ram_dout), .ram_busy(d2_ram_busy),
@@ -1675,7 +1682,7 @@ assign skill_level       = brd[BRD_DL] ? skill_dl      : 2'd0;
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
 // module.  It was the sole driver of ioctl_din and ioctl_upload_req -- tied off to keep hps_io happy.
 assign ioctl_din        = 8'd0;
-assign ioctl_upload_req = 1'b0;
+assign ioctl_upload_req = d2_nv_req;
 
 // The MISTER_FB path is NOT used (FB_EN=0): it bypasses the arcade_video path where the LED band
 // and the MiSTer screenshot live.

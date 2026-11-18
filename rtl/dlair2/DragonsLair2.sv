@@ -61,6 +61,11 @@ module DragonsLair2
     input                ioctl_wr,
     input          [7:0] ioctl_index,
 
+    // ---- EEPROM as MiSTer NVRAM (ioctl index 4, 128 x 16 bits) ----
+    input          [6:0] nv_raddr,
+    output        [15:0] nv_rdata,
+    output               nv_changed,
+
     // ---- main RAM, external (DDR-backed) ----
     output        [23:0] ram_addr,
     output         [7:0] ram_din,
@@ -301,10 +306,17 @@ module DragonsLair2
     wire eep_wr_stb = req & req_ack & is_iowr & in_io & (io_a[1:0] == 2'd2);
     wire eep_do;
 
+    // NVRAM restore arrives as bytes (low byte first); a word is written on its high byte.
+    reg  [7:0] nv_lo;
+    wire       nv_dl = ioctl_wr & (ioctl_index == 8'd4) & (ioctl_addr < 25'd256);
+    always @(posedge core_clk) if (nv_dl & ~ioctl_addr[0]) nv_lo <= ioctl_data;
+
     dl2_eeprom u_eeprom (
         .clk(core_clk), .reset_n(reset_n),
         .wr_stb(eep_wr_stb), .wr_data(req_wdata),
-        .do_bit(eep_do)
+        .do_bit(eep_do),
+        .nv_we(nv_dl & ioctl_addr[0]), .nv_waddr(ioctl_addr[7:1]), .nv_wdata({ioctl_data, nv_lo}),
+        .nv_raddr(nv_raddr), .nv_rdata(nv_rdata), .nv_changed(nv_changed)
     );
     assign ld_tx_byte = req_wdata;
     assign ld_rx_pop  = req & is_iord & in_com2 & (io_a[2:0] == 3'd0) & req_ack & ~dlab;
