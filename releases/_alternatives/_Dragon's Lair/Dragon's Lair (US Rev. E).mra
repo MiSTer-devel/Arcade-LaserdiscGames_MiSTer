@@ -31,9 +31,11 @@
         <dip bits="15" name="Difficulty" ids="Ramps Up,Always Easy"/>
         <dip bits="2"  name="- Ramp Style" ids="Gradual,Instant (Hard)"/>
         <dip bits="12" name="- Ramp After" ids="5 In A row,9 In A Row"/>
+        <dip bits="1"  name="- Hard Becomes Very Hard" ids="On,Off"/>
         <dip bits="0"  name="Coinage" ids="2 Coins/1 Credit,3 Coins/1 Credit"/>
         <dip bits="6"  name="Pay As You Go" ids="Off,On"/>
-        <dip bits="13,14" name="- Pay As You Go Option" ids="PAYG1,PAYG2,PAYG3,PAYG4"/>
+        <dip bits="13" name="- Stops / When Won" ids="1 Stop / Game Ends,3 Stops / Restart"/>
+        <dip bits="14" name="- Extra Dirk On Continue" ids="On,Off"/>
         <dip bits="4"  name="Free Play" ids="Off,On"/>
         <dip bits="5"  name="Lives" ids="3,5"/>
         <dip bits="10" name="Unlimited Dirks" ids="Off,On"/>
