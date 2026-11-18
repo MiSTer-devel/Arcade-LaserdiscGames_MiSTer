@@ -38,7 +38,7 @@
         <dip bits="5"  name="Lives" ids="3,5"/>
         <dip bits="10" name="Unlimited Dirks" ids="Off,On"/>
         <dip bits="9"  name="Demo Sounds" ids="On,Off"/>
-        <dip bits="8"  name="- Demo Sound Reps" ids="Every 8,All"/>
+        <dip bits="8"  name="- Demo Sound Reps" ids="All,Every 8"/>
         <dip bits="3"  name="Engineering Mode" ids="Off,On"/>
         <dip bits="7"  name="Service Mode" ids="Off,On"/>
         <dip bits="11" name="LD Player" ids="LD-PR7820,LD-V1000"/>
