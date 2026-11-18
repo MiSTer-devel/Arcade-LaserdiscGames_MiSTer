@@ -80,6 +80,7 @@ module fb_raster_reader #(
     output reg        hblank,
     output reg        vblank,
     output reg [15:0] hpos,           // aligned (x,y) of the pixel now on vid_*
+    output reg [15:0] hpos_n,
     output reg [15:0] vpos,           //   (for the LED-band compositor)
     // The band height ACTUALLY in force this frame. v_band is adopted only at a
     // frame boundary, so any overlay positioning relative to the video must use
@@ -183,6 +184,8 @@ module fb_raster_reader #(
     // Second axis of the rotation: read the line buffer backwards.  Named wire because Quartus 17
     // elaborates .v as Verilog-2001, where (expr)[8:0] is illegal.
     wire [15:0] h_rd = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
+    wire [15:0] h_xy = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
+    wire [29:0] h_n512 = h_xy * 14'd13108;
     wire        vid_row = (vcnt >= vid_top) && (vcnt < vid_top + v_act);
 
     // Latch the buffer base once per raster frame: the top level toggles frame_base_hw live as
@@ -193,7 +196,7 @@ module fb_raster_reader #(
         if (reset) begin
             hcnt <= 0; vcnt <= 0; disp_buf <= 1'b0;
             hsync <= 0; vsync <= 0; hblank <= 1; vblank <= 1; active_q <= 0;
-            hpos <= 16'd0; vpos <= 16'd0;
+            hpos <= 16'd0; hpos_n <= 16'd0; vpos <= 16'd0;
             fst <= F_IDLE; fidx <= 16'd0; rd_req2 <= 1'b0; rdaddr2 <= 27'd0;
             frame_base_hw_q <= 27'd0;
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
@@ -209,6 +212,7 @@ module fb_raster_reader #(
                 // Band-compositor coordinates, not raster position: rotated with the picture so the
                 // band lands at the far end, upside down, without led_band knowing about flip.
                 hpos     <= flip_q ? (h_act   - 16'd1 - hcnt) : hcnt;
+                hpos_n   <= wide_q ? h_n512[29:14] : h_xy;
                 vpos     <= flip_q ? (v_disp  - 16'd1 - vcnt) : vcnt;
                 hblank   <= ~h_active;
                 vblank   <= ~v_active;

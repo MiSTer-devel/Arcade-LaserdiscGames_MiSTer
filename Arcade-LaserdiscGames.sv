@@ -617,8 +617,8 @@ wire [63:0] led_digits_dl;
 wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
 wire        rr_wide;
-wire [29:0] rr_hpos_m512 = rr_hpos * 14'd13108;
-wire [15:0] rr_hpos512   = rr_wide ? rr_hpos_m512[29:14] : rr_hpos;
+wire [15:0] rr_hpos512;
+reg         dec_wide = 1'b0;
 wire [15:0] rr_band_act;      // band height in force this frame, from the reader
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
@@ -1853,6 +1853,7 @@ always @(posedge CLK_CORE) begin
         end
         // Ordered AFTER the adopt block so fb_have_new wins on a simultaneous cycle.
         if (dec_frame_done) begin
+            dec_wide     <= (dec_w > 16'd512);
             fb_ready_idx <= fb_wr_idx;
             fb_wr_idx    <= fb_free_idx;   // != fb_next_disp by construction
             // Publish the in-flight frame too: its fetch only started because vid_target reached it.
@@ -1994,14 +1995,14 @@ fb_raster_reader #(
     .ilace(ilace_mode),
     .field(rr_field),
     .flip(flip),
-    .wide(dec_w > 16'd512),
+    .wide(dec_wide),
     .wide_act(rr_wide),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
     .fill_idle(rr_fill_idle),               // (delete on revert)
     .ce_pix(rr_ce_pix),
     .hsync(rr_hs), .vsync(rr_vs), .hblank(rr_hblank), .vblank(rr_vblank),
-    .hpos(rr_hpos), .vpos(rr_vpos), .v_band_act(rr_band_act),
+    .hpos(rr_hpos), .hpos_n(rr_hpos512), .vpos(rr_vpos), .v_band_act(rr_band_act),
     .vid_r(rr_r), .vid_g(rr_g), .vid_b(rr_b)
 );
 
