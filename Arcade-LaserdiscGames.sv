@@ -157,6 +157,7 @@ wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_l
 // tile+sprite overlay genlocked onto the disc picture, so the band would only
 // duplicate it and steal rows from the game's own display.
 wire band_off = status[20] | cliff_board | is_dl2 | is_sdq | mach3_board | is_gpw | is_astron;
+wire band_strip_off = band_off | status[12];
 wire ilace_mode = (status[22:21] == 2'd2);
 wire crt_mode = (status[22:21] == 2'd0) | ilace_mode;   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
@@ -167,7 +168,7 @@ wire horz = 1'b1;   // DL/SA are horizontal-only
 // band adds BAND_H rows above the 480 video rows.  ARX:ARY = 4 : 3*(480+BAND_H)/480, so with the
 // band off it collapses to a plain 4:3.
 assign VIDEO_ARX = horz ? ((!ar) ? 12'd640 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
-assign VIDEO_ARY = horz ? ((!ar) ? (band_off ? 12'd480 : 12'd500) : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
+assign VIDEO_ARY = horz ? ((!ar) ? (band_strip_off ? 12'd480 : 12'd500) : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -180,6 +181,7 @@ localparam CONF_STR = {
 	"P1OLM,Video Timing,CRT 240p60,Film 24Hz,CRT 480i;",
 	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	"P1OK,LED Bar,On,Off;",
+	"P1OC,LED Bar Position,Above Video,Over Video;",
 	"P1OB,Flip Screen,Off,On;",
 	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P2,Pause Options;",
@@ -681,7 +683,7 @@ wire        seek_pause = seek_is_seg | status[8];
 localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
 // The band's rows stay reserved in the reader's V_TOTAL either way, so switching it off gives them
 // to the video without changing the frame time.
-wire [15:0] band_h_w = band_off ? 16'd0 : (crt_mode ? (BAND_H >> 1) : BAND_H);
+wire [15:0] band_h_w = band_strip_off ? 16'd0 : (crt_mode ? (BAND_H >> 1) : BAND_H);
 wire        band_lit = led_lit & ~band_off;
 // Seek Behaviour (status[4]): 0 = hold the last frame, 1 = go black like a real player with no
 // sync.  Only during a SEARCH hold, never a still/pause, and only once fb_tail_adopt has burned
@@ -704,11 +706,12 @@ wire [18:0] ovl_sx_mul = rr_hpos * 16'd5;
 wire [15:0] ovl_sx     = rr_wide ? {1'b0, rr_hpos[15:1]} : ovl_sx_mul[18:3];
 // rr_band_act, not band_h_w: the reader adopts an OSD toggle only at a frame
 // boundary, so using the raw value would slide the overlay mid-raster.
-wire [15:0] ovl_vrel   = (rr_vpos >= rr_band_act) ? (rr_vpos - rr_band_act) : 16'd0;
+wire [15:0] ovl_crop   = crt_mode ? {1'b0, rr_band_act[15:1]} : 16'd0;
+wire [15:0] ovl_vrel   = ((rr_vpos >= rr_band_act) ? (rr_vpos - rr_band_act) : 16'd0) + ovl_crop;
 wire [15:0] ovl_sy     = crt_mode ? ovl_vrel : {1'b0, ovl_vrel[15:1]};
 // ovl_sy of the next raster line, for SuperDon's hblank prefetch (vpos runs backwards when flipped).
 wire [15:0] rr_vpos_nx  = flip ? (rr_vpos - 16'd1) : (rr_vpos + 16'd1);
-wire [15:0] ovl_vrel_nx = (rr_vpos_nx >= rr_band_act) ? (rr_vpos_nx - rr_band_act) : 16'd0;
+wire [15:0] ovl_vrel_nx = ((rr_vpos_nx >= rr_band_act) ? (rr_vpos_nx - rr_band_act) : 16'd0) + ovl_crop;
 wire [15:0] ovl_sy_nx   = crt_mode ? ovl_vrel_nx : {1'b0, ovl_vrel_nx[15:1]};
 
 // Priority: LED band (DL/SA only) > DL2 text overlay > Cliff's TMS overlay >

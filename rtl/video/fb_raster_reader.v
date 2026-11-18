@@ -115,7 +115,8 @@ module fb_raster_reader #(
     wire [15:0] hs_beg  = h_act + h_fp;
     wire [15:0] hs_end  = h_act + h_fp + h_sync;
 
-    wire [15:0] v_act   = crt_q ? (V_ACT >> 1) : V_ACT;
+    wire [15:0] v_act   = crt_q ? ((V_ACT >> 1) - v_band_q) : V_ACT;
+    wire [15:0] crop_top = crt_q ? {1'b0, v_band_q[15:1]} : 16'd0;
     wire [15:0] v_disp  = v_act + v_band_q;
     wire        il      = crt_q & ilace_q;
     wire [15:0] v_total = crt_q ? (il ? (field ? 16'd263 : 16'd262) : V_TOTAL_C) : V_TOTAL_F;
@@ -177,7 +178,8 @@ module fb_raster_reader #(
 
     // Display line `fline` -> framebuffer row.  CRT mode takes every other row (480 -> 240);
     // flip reverses the order.  STRIDE is a constant so the multiply is a shift.
-    wire [15:0] row_lin = fline - vid_top;
+    wire [15:0] row_vis = fline - vid_top;
+    wire [15:0] row_lin = row_vis + crop_top;
     wire [15:0] row_dec = crt_q ? ((row_lin << 1) | {15'd0, il & ~ffld}) : row_lin;
     wire [15:0] fb_row  = flip_q ? (V_ACT - 16'd1 - row_dec) : row_dec;
 
@@ -267,7 +269,7 @@ module fb_raster_reader #(
             F_REQ:
                 // Rows inside the active band (fline < v_band_q) and past the active window fetch
                 // nothing -- they're blanked to black anyway.
-                if (fline >= vid_top && row_lin < v_act) begin
+                if (fline >= vid_top && row_vis < v_act) begin
                     rdaddr2 <= frame_base_hw_q + fb_row*STRIDE + fidx;
                     rd_req2 <= ~rd_req2;                    // issue read
                     fst     <= F_WAIT;
