@@ -276,6 +276,10 @@ module dlv_streamer #(
         end
     end
 
+    reg  seek_req;
+    wire seek_consume = (state == S_READY) && header_valid && seek_req;
+    wire aud_flush    = seek_flush || seek_consume;
+
     //------------------------------------------------------------------------
     // Audio ring WRITE port (SD fill): one word per 4 captured bytes
     //------------------------------------------------------------------------
@@ -288,7 +292,7 @@ module dlv_streamer #(
             aud_wr <= {AUD_AW{1'b0}};
         // empty the ring's write side on a seek. Priority over the fill so
         // the pointer starts clean; the refill then begins from the re-pointed aud_lba.
-        end else if (seek_flush) begin
+        end else if (aud_flush) begin
             aud_wr <= {AUD_AW{1'b0}};
         end else if (aud_word_we) begin
             aud_ring[aud_wr] <= aud_word;
@@ -352,7 +356,7 @@ module dlv_streamer #(
             aud_credit     <= 14'd0;
         // Empty the ring's read side on a seek (matches the aud_wr flush) so the stale tail is
         // discarded and drain resumes at the new segment's first sample.
-        end else if (seek_flush) begin
+        end else if (aud_flush) begin
             aud_rd <= {AUD_AW{1'b0}};
             pcm_l  <= 16'sd0;
             pcm_r  <= 16'sd0;
@@ -429,8 +433,6 @@ module dlv_streamer #(
     wire [16:0] fdiff  = (ld_curr_frame > prev_ld) ? (ld_curr_frame - prev_ld) : (prev_ld - ld_curr_frame);
     wire        jump_w = (fdiff > 17'd16);
 
-    reg  seek_req;
-    wire seek_consume = (state == S_READY) && header_valid && seek_req;
     wire [12:0] aud_room_sec = (13'd4095 - {1'b0, aud_level}) >> 7;
         // Both ifs live in ONE always block, so if jump_w and seek_consume coincide the last
         // assignment wins and the jump is silently lost.  Keep them mutually exclusive.

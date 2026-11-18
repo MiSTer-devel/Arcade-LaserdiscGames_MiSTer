@@ -48,6 +48,7 @@ module fb_writer #(
     input       [7:0] px_r,
     input       [7:0] px_g,
     input       [7:0] px_b,
+    input             dither,
     output            px_ready,     // -> decoder px_ready (backpressure)
 
     // --- ddram.sv write port ---
@@ -75,7 +76,17 @@ module fb_writer #(
     // named wires -- Quartus 17 elaborates .v as Verilog-2001, where a
     // bit-select of an EXPRESSION, e.g. (base_hw+clear_idx)[1:0], is illegal (error 10170).
     wire [26:0] clear_addr = base_hw + clear_idx;
-    wire [15:0] px565      = {px_r[7:3], px_g[7:2], px_b[7:3]};
+    localparam [63:0] BAYER = 64'h5D7F91B36E4CA280;
+    wire  [3:0] bayer = BAYER[{px_y[1:0], px_x[1:0], 2'b00} +: 4];
+    wire  [2:0] th_rb = dither ? bayer[3:1] : 3'd0;
+    wire  [1:0] th_g  = dither ? bayer[3:2] : 2'd0;
+    wire  [8:0] dr    = {1'b0, px_r} + {6'd0, th_rb};
+    wire  [8:0] dg    = {1'b0, px_g} + {7'd0, th_g};
+    wire  [8:0] db    = {1'b0, px_b} + {6'd0, th_rb};
+    wire  [7:0] sr    = dr[8] ? 8'hFF : dr[7:0];
+    wire  [7:0] sg    = dg[8] ? 8'hFF : dg[7:0];
+    wire  [7:0] sb    = db[8] ? 8'hFF : db[7:0];
+    wire [15:0] px565      = {sr[7:3], sg[7:2], sb[7:3]};
     // byte enables for one halfword: 2 lanes, selected by the halfword's position in the 64-bit
     // word. Identical to ddram's old `8'd3<<{wraddr[2:1],1'b0}` because wraddr[2:1] == addr[1:0].
     wire  [7:0] be_pix     = 8'd3 << {hw_index[1:0],   1'b0};

@@ -184,6 +184,7 @@ localparam CONF_STR = {
 	"P1OC,LED Bar Position,Above Video,Over Video;",
 	"P1O[42:40],LED Bar CRT Offset,0,2,4,6,8,10,12,14 lines;",
 	"P1OB,Flip Screen,Off,On;",
+	"P1O[43],Colour Dither,On,Off;",
 	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P2,Pause Options;",
 	"P2OP,Pause when OSD is open,On,Off;",
@@ -1916,6 +1917,7 @@ fb_writer #(
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
     .px_r(dec_px_r), .px_g(dec_px_g), .px_b(dec_px_b),
     .px_ready(dec_px_ready),
+    .dither(~status[43]),
     .fill_idle(rr_fill_idle),       // yield DDR while the raster reader fetches (delete on revert)
     .base_hw(fb_wr_base),
     .wraddr(fb_wraddr), .din(fb_din),
