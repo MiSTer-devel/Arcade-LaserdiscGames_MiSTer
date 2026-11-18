@@ -236,7 +236,8 @@ module dlv_streamer #(
     reg        dec_done_seen;
     reg [21:0] dec_wait;
     wire       dec_hold = dec_wait_on && !dec_done_seen && (dec_wait < DEC_TMO);
-    wire       frame_start = (state == S_READY) && header_valid && frame_pending
+    wire       seek_wait;
+    wire       frame_start = (state == S_READY) && header_valid && frame_pending && !seek_wait
                              && (aud_level >= FILL_LOW) && !dec_hold
                              && !remount_pend && !(img_mounted && (img_size != 64'd0));
 
@@ -279,7 +280,9 @@ module dlv_streamer #(
     end
 
     reg  seek_req;
-    wire seek_consume = (state == S_READY) && header_valid && seek_req;
+    wire tgt_fresh;
+    wire seek_consume = (state == S_READY) && header_valid && seek_req && tgt_fresh;
+    assign seek_wait  = seek_req && !tgt_fresh;
     assign remount_go = (state == S_READY) && header_valid && remount_pend;
     wire aud_flush    = seek_flush || seek_consume || remount_go;
 
@@ -314,7 +317,27 @@ module dlv_streamer #(
 
     // Computed from ACTUAL DATA COUNTS, not from mpeg_fpks -- that header field is unreliable
     // (Space Ace's is an impossible 41218).
-    wire [31:0] spf_q = (frame_count != 32'd0) ? ((aud_size >> 2) / frame_count) : 32'd1842;
+    // v1 fallback rate, divided serially after each header load (32 clocks) instead of in one cycle.
+    reg  [31:0] spf_q;
+    reg  [31:0] dv_q, dv_r;
+    reg   [5:0] dv_n;
+    reg         hv_q;
+    wire [32:0] dv_t = {dv_r, dv_q[31]} - {1'b0, frame_count};
+    always @(posedge clk) begin
+        hv_q <= header_valid;
+        if (reset || !header_valid) begin
+            spf_q <= 32'd1842; dv_n <= 6'd0;
+        end else if (header_valid && !hv_q) begin
+            dv_q <= aud_size >> 2; dv_r <= 32'd0;
+            dv_n <= (frame_count != 32'd0) ? 6'd32 : 6'd0;
+        end else if (dv_n != 6'd0) begin
+            if (dv_t[32]) dv_r <= {dv_r[30:0], dv_q[31]};
+            else          dv_r <= dv_t[31:0];
+            dv_q <= {dv_q[30:0], ~dv_t[32]};
+            dv_n <= dv_n - 6'd1;
+            if (dv_n == 6'd1) spf_q <= {dv_q[30:0], ~dv_t[32]};
+        end
+    end
     wire [13:0] samp_per_frame = (header_valid && spf_q >= 32'd256 && spf_q <= 32'd8191)
                                  ? spf_q[13:0] : 14'd1842;   // fallback = DL's 1842
 
@@ -409,8 +432,26 @@ module dlv_streamer #(
 
     // audio target sector = aud_lba_start + (disc_rel * samples_per_frame) / 128 samples-per-sector
     // >>16 undoes the Q16 scaling and >>7 converts samples to sectors, hence >>23.
-    wire [46:0] aud_prod_q16   = disc_rel * spf_q16;
-    wire [31:0] aud_target_lba = aud_lba_start + {8'd0, aud_prod_q16[46:23]};
+    // Audio seek target, registered over 4 clocks. tg_rel* carry the disc_rel each stage used, so
+    // tgt_fresh says the target matches the current frame; a seek waits for it (seek_wait).
+    reg  [16:0] tg_rel0, tg_rel1, tg_rel2, tg_rel3;
+    reg  [29:0] tg_spf0;
+    reg  [46:0] aud_prod_q16;
+    reg  [31:0] aud_tgt_raw;
+    reg  [31:0] aud_lba_tgt;
+    always @(posedge clk) begin
+        tg_rel0 <= disc_rel;  tg_spf0 <= spf_q16;
+        tg_rel1 <= tg_rel0;   aud_prod_q16 <= tg_rel0 * tg_spf0;
+        tg_rel2 <= tg_rel1;   aud_tgt_raw  <= aud_lba_start + {8'd0, aud_prod_q16[46:23]};
+        tg_rel3 <= tg_rel2;   aud_lba_tgt  <= (aud_tgt_raw >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_tgt_raw;
+    end
+    // aud_lba_start/end and the divider need the header loaded a few clocks before a target is valid.
+    reg   [5:0] hv_settle;
+    always @(posedge clk)
+        if (reset || !header_valid) hv_settle <= 6'd0;
+        else if (hv_settle != 6'd40) hv_settle <= hv_settle + 6'd1;
+    assign tgt_fresh = (hv_settle == 6'd40) && (tg_rel3 == disc_rel) && (tg_rel2 == disc_rel)
+                       && (tg_rel1 == disc_rel) && (tg_rel0 == disc_rel);
 
     localparam [31:0] DISC_FPKS = 32'd29970;
 
@@ -456,7 +497,6 @@ module dlv_streamer #(
 
         // The consume cycle re-points aud_lba with a NONBLOCKING assign, so the fill branch in the
         // same cycle would read the OLD sector -- use the re-pointed value explicitly.
-    wire [31:0] aud_lba_tgt = (aud_target_lba >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_target_lba;
     wire [31:0] aud_lba_eff = seek_consume ? aud_lba_tgt : aud_lba;
     wire [31:0] aud_to_end  = aud_lba_end - aud_lba;
     wire [12:0] aud_n0      = (aud_room_sec > 13'd32) ? 13'd32 : aud_room_sec;
@@ -511,7 +551,7 @@ module dlv_streamer #(
                 frame_fetch <= 1'b0;
             // The audio re-point neither changes `state` nor uses the SD port, so it must not sit
             // in the else-if chain where it would block the video fetch for that cycle.
-                if (header_valid && seek_req)
+                if (seek_consume)
                     aud_lba <= aud_lba_tgt;
 
                 if (!header_valid) begin
@@ -531,6 +571,7 @@ module dlv_streamer #(
                     last_fetched_frame <= {17{1'b1}};
                     dec_wait_on <= 1'b0;
                     state <= S_RD_ISSUE;
+                end else if (seek_wait) begin
                 end else if (frame_pending && (aud_level >= FILL_LOW) && !dec_hold) begin
             // Only fetch/decode/write if the mapped mjpeg frame has genuinely changed.
                     if (vid_target != last_fetched_frame) begin

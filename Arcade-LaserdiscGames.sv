@@ -2056,7 +2056,7 @@ text_overlay #(.FONT_HEX("rtl/video/ldp1450_font.hex")) dl2_text (
 );
 
 led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
-    .hc(rr_hpos512), .vc(band_vc), .crt_240p(crt_mode),
+    .clk(CLK_CORE), .hc(rr_hpos512), .vc(band_vc), .crt_240p(crt_mode),
     .led_digits(led_digits_flat),   // real score/lives, restored
     .skill_en(is_spaceace),         // MRA mod byte, SA only
     .skill(skill_level),
