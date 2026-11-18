@@ -243,6 +243,7 @@ wire [7:0] p1_bus = ~p1;
 wire pr7820_mode = is_thayers         ? 1'b0   :
                    (ld_player == 2'd1) ? 1'b0   :
                    (ld_player == 2'd2) ? 1'b1   :
+                   (ld_player == 2'd3) ? ~dsw[11] :     // ROM with the DL layout (Space Ace Enhanced)
                    is_spaceace        ? dsw[8] : ~dsw[11];
 
 // SYSTEM (0xC010) b7: the LD-V1000 reports its command strobe here; the PR-7820 has no strobes

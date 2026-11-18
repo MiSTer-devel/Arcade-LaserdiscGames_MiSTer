@@ -35,10 +35,10 @@
         <dip bits="1" name="Lives" ids="5,3"/>
         <dip bits="13" name="Unlimited Dexters" ids="On,Off"/>
         <dip bits="4" name="Demo Sounds" ids="No,Yes"/>
-        <dip bits="5" name="- Demo Sound Reps" ids="Every 8, All"/>
+        <dip bits="5" name="- Demo Sound Reps" ids="Every 8,All"/>
         <dip bits="14" name="Frame Display" ids="On,Off"/>
         <dip bits="15" name="Diagnostics Mode" ids="On,Off"/>
-        <dip bits="8"  name="LD Player" ids="LDV-1000,LDV-7820"/>
+        <dip bits="8"  name="LD Player" ids="LD-V1000,PR-7820"/>
     </switches>
 
     <!-- GAME-ID byte 0: 01 = Space Ace (For LED Band Changes). Dragon's Lair has 00. -->
