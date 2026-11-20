@@ -84,6 +84,7 @@ module ldp_top
     input      [1:0]  pr7820_srch,     // PR-7820 search time: 0 = PR-7820-2, 1 = PR-7820, 2 = the fixed 0.5 s
     input             cmd_oe,          // host is driving the LD bus (else it floats: pull-ups -> FF)
     output            ldv_fw,
+    output            video_squelch,   // LD-V1000 firmware's /VIDEO SQ (PPI1 PC3): the real player shows no picture
     input             ioctl_download,
     input      [7:0]  ioctl_index,
     input      [24:0] ioctl_addr,
@@ -143,6 +144,8 @@ module ldp_top
     always @(posedge clk) if (!reset_n) fw_req <= ldv_fw_en;
     wire        use_fw = sel_ldv1000 & fw_req & fw_ready;
     assign      ldv_fw = use_fw;
+    wire        vsq_fw;
+    assign      video_squelch = use_fw & vsq_fw;
 
     wire [7:0]  status_ldv, status_hle, status_fw;
     wire        sstrobe_ldv, cstrobe_ldv, sstrobe_hle, cstrobe_hle, sstrobe_fw, cstrobe_fw;
@@ -183,7 +186,7 @@ module ldp_top
         .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
         .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr), .cmd_oe(cmd_oe),
         .z80_i(z80_i), .z80_o(z80_o), .z80_rst_n(z80_rst_n), .fw_ready(fw_ready),
-        .video_squelch(), .audio_squelch(),
+        .video_squelch(vsq_fw), .audio_squelch(),
         .dbg_track(), .dbg_ctl_rd(), .dbg_ctl_val(), .dbg_disp_we(), .dbg_disp_sel(), .dbg_disp_dat(),
         .dbg_fieldnum(), .dbg_class(), .dbg_irq(), .dbg_ppi0_pa(), .dbg_ppi0_pc(), .dbg_ppi1_pb(),
         .dbg_ppi1_pc(), .dbg_counter(), .dbg_fetch()

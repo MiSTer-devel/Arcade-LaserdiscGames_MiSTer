@@ -682,6 +682,7 @@ reg   [1:0] fb_tail_adopt;     // vblanks in which PRE-seek frames may still be 
 reg         seek_was_play;     // real playback has ended since the last seek
 reg         seek_is_seg;       // captured at the seek: this hold follows a SEGMENT, not a hold frame
 reg         seek_black;        // blank-the-picture flag, updated ONLY at vblank (see below)
+wire        ldp_0_vsq;         // LD-V1000 firmware squelching its video (firmware mode only)
 // Hold Frame Seek (status[8]): does a hold-frame seek get the seek pause at all?  Off = segment
 // ends only.  When it does pause, Seek Behaviour decides what that pause looks like.
 wire        seek_pause = seek_is_seg | status[8];
@@ -697,9 +698,11 @@ wire        band_lit = led_lit & ~band_off;
 // Seek Behaviour (status[4]): 0 = hold the last frame, 1 = go black like a real player with no
 // sync.  Only during a SEARCH hold, never a still/pause, and only once fb_tail_adopt has burned
 // down -- those frames are real content of the segment that just ended.
+// On the LD-V1000 firmware the search is the player's own: black for as long as it squelches its
+// video (the whole head move), not only for the core's hold after it.
 // fb_seek_hold changes at arbitrary points in the frame, so this is LATCHED at vblank in the
 // framebuffer block below: switching the mask mid-raster tears the picture across the screen.
-wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0);
+wire        seek_black_w = status[4] & ((fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0)) | ldp_0_vsq);
 //------------------------------------------------------------------------------
 // SHARED OVERLAY COORDINATE SPACE.
 // Every Daphne game in this core declares a 320x240 overlay surface (DL2, Cliff/
@@ -1024,7 +1027,7 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ), .LDV_ROM_INDEX(8'd5), .LDV_FILM_PHASE(4'd2), .LD
     .park_frame(ldp_0_i.park_frame), .status_rd(ldp_0_i.status_rd),
     .txt_we(ldp_0_twe), .txt_line(ldp_0_line), .txt_col(ldp_0_col), .txt_glyph(ldp_0_glyph), .txt_on(ldp_0_ton),
     .txt_x(ldp_0_tx), .txt_y(ldp_0_ty),
-    .ldv_fw_en(~status[27]), .pr7820_srch(status[44:43]), .cmd_oe(ldp_0_i.cmd_oe), .ldv_fw(ldp_0_ldv_fw),
+    .ldv_fw_en(~status[27]), .pr7820_srch(status[44:43]), .cmd_oe(ldp_0_i.cmd_oe), .ldv_fw(ldp_0_ldv_fw), .video_squelch(ldp_0_vsq),
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
     .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr),
     .z80_i(z80_1_i), .z80_o(z80_1_o), .z80_rst_n(z80_1_rst_n)
