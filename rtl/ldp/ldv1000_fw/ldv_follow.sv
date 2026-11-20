@@ -45,6 +45,13 @@
 // head does: waiting for a 3-sample PLAY class would start it a picture late and the STEP that catches up
 // drops the scene's first picture (and its audio).  The next 3 fields are not classified (the window
 // still holds pre-PLAY samples, which read as STILL -> a spurious STOP).
+// $50 is also the firmware's acknowledge for any byte taken in the SEARCH FINISH state ($50 -> $D0 per
+// byte), so only a $50 period in which the video was squelched counts as a search; an acknowledge
+// neither finishes a search nor releases a held still.  No follow op at all while the status is $50:
+// a search from a still advances the head one picture just before the squelch.
+// settle: from the end of a squelch until the transport shows the head's picture, so the picture can
+// stay blanked through the gap (a PLAY during a search aborts it: the firmware unsquelches at once and
+// the follow-SEARCH comes a field later).  A one-picture step back is OP_STEP_REV, not a seek.
 //============================================================================
 module ldv_follow
 #(
@@ -77,7 +84,8 @@ module ldv_follow
     output reg  [3:0] cmd_op,
     output reg [16:0] cmd_arg,
 
-    output reg  [1:0] dbg_class       // 0 none, 1 play, 2 still, 3 move
+    output reg  [1:0] dbg_class,      // 0 none, 1 play, 2 still, 3 move
+    output reg        settle          // squelch over, transport not yet on the head's picture
 );
 /* verilator lint_off UNUSED */
 `include "ldp_bus.svh"
@@ -103,6 +111,8 @@ module ldv_follow
     reg        fin_pend;          // $50 -> $D0 seen, not yet acted on (may arrive during S_LAND)
     reg        play_pend;         // left a held still on the firmware's PLAY status: PLAY now
     reg  [1:0] grace;             // fields to skip classifying after that PLAY
+    reg        sq_seen;           // video squelched during the current $50 period
+    reg  [5:0] settle_cnt;        // fields left before settle gives up
 
     // ---- classification of the settled window ----
     wire [17:0] d    = {1'b0, ht[0]} - {1'b0, ht[2]};
@@ -129,6 +139,7 @@ module ldv_follow
     wire        behind = (h[0] > t_frame) && (lag <= {13'd0, CATCHUP});
     // a forward jump past the step range while the transport plays = a multi-track skip
     wire        seek_ok  = !(SEARCH_WAIT && fw_status == 8'h50);   // firmware not mid-search
+    wire        on_head  = (st == S_IDLE) && (absdiff(t_frame, frame) <= TOL);
     wire        skip_fwd = (t_mode == M_PLAY) && (h[0] > t_frame) && (lag > {13'd0, CATCHUP}) && (lag <= SKIP_MAX);
 
     always @(posedge clk) begin
@@ -144,11 +155,20 @@ module ldv_follow
             aud1_sent <= 1'b1; aud2_sent <= 1'b1;   // transport resets with both enabled
             dbg_class <= C_NONE;
             fws_q <= 8'h00; held <= 1'b0; fin_pend <= 1'b0; play_pend <= 1'b0; grace <= 2'd0;
+            sq_seen <= 1'b0; settle <= 1'b0; settle_cnt <= 6'd0;
         end else if (enable) begin
             vid_q <= video_on;
             fws_q <= fw_status;
-            if (SEARCH_WAIT && fws_q == 8'h50 && fw_status == 8'hD0) fin_pend <= 1'b1;
-            if (held && !fin_pend && fw_status != 8'hD0) begin
+            if (fw_status != 8'h50)  sq_seen <= 1'b0;
+            else if (!video_on)      sq_seen <= 1'b1;
+            if (SEARCH_WAIT && fws_q == 8'h50 && fw_status == 8'hD0 && sq_seen) fin_pend <= 1'b1;
+            if (!vid_q && video_on && !on_head) begin
+                settle <= 1'b1; settle_cnt <= LAND_TIMEOUT;
+            end else if (settle && (on_head || settle_cnt == 6'd0 || !video_on))
+                settle <= 1'b0;
+            else if (settle && fetch_done)
+                settle_cnt <= settle_cnt - 6'd1;
+            if (held && !fin_pend && fw_status != 8'hD0 && fw_status != 8'h50) begin
                 held <= 1'b0;
                 play_pend <= (fw_status[6:0] == 7'h64);
             end
@@ -184,13 +204,13 @@ module ldv_follow
                     end else if (eval) begin
                         dbg_class <= cls;
                         case (cls)
-                            C_PLAY: begin
+                            C_PLAY: if (seek_ok) begin
                                 if (behind && (t_mode != M_PLAY || lag > TOL)) begin
                                     st <= S_STEP; step_n <= lag[3:0];
                                 end else if (skip_fwd) begin
                                     cmd_action <= 1'b1; cmd_op <= OP_SKIP; cmd_arg <= lag;
                                     st <= S_LAND; land_tgt <= h[0]; land_cnt <= LAND_TIMEOUT;
-                                end else if (seek_ok && absdiff(t_frame, h[0]) > TOL) begin
+                                end else if (absdiff(t_frame, h[0]) > TOL) begin
                                     cmd_action <= 1'b1; cmd_op <= OP_SEARCH; cmd_arg <= h[0];
                                     st <= S_LAND; land_tgt <= h[0];
                                     land_cnt <= LAND_TIMEOUT;
@@ -199,7 +219,9 @@ module ldv_follow
                                 end
                             end
                             C_STILL: begin
-                                if (seek_ok && t_frame != hmin) begin
+                                if (seek_ok && t_mode != M_PLAY && t_frame != 17'd0 && hmin == t_frame - 17'd1) begin
+                                    cmd_action <= 1'b1; cmd_op <= OP_STEP_REV;
+                                end else if (seek_ok && t_frame != hmin) begin
                                     cmd_action <= 1'b1; cmd_op <= OP_SEARCH; cmd_arg <= hmin;
                                     st <= S_LAND; land_tgt <= hmin;
                                     land_cnt <= LAND_TIMEOUT;

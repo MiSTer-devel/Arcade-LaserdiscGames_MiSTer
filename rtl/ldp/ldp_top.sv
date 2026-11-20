@@ -171,11 +171,31 @@ module ldp_top
         .dbg_digits(digits_hle)
     );
 
-    // frozen through the seek hold, like the transport (its head would run ahead otherwise)
+    // frozen through the seek hold, like the transport (its head would run ahead otherwise).  The
+    // transport's field clock keeps running through the hold, so the firmware resumes only when
+    // field_phase is back where it froze: its mechanism stays in step with the fields, and a still
+    // it was holding survives the hold.  At most one field after the hold: a scan's shorter period
+    // may never reach the latched phase.
+    localparam [21:0] FW_FIELD = (64'd1001 * CLK_HZ) / 64'd60000;
+    reg         fw_hold, fw_dh_q;
+    reg  [21:0] fw_ph, fw_wait;
+    always @(posedge clk) begin
+        if (!reset_n) begin
+            fw_hold <= 1'b0; fw_dh_q <= 1'b0; fw_ph <= 22'd0; fw_wait <= 22'd0;
+        end else if (!pause) begin
+            fw_dh_q <= disc_hold;
+            if (disc_hold && !fw_dh_q && !fw_hold) begin
+                fw_hold <= 1'b1; fw_ph <= field_phase; fw_wait <= 22'd0;
+            end else if (fw_hold && !disc_hold) begin
+                if (field_phase == fw_ph || fw_wait >= FW_FIELD) fw_hold <= 1'b0;
+                else fw_wait <= fw_wait + 22'd1;
+            end
+        end
+    end
     ldv1000_fw #(.CLK_HZ(CLK_HZ), .ROM_INDEX(LDV_ROM_INDEX), .ROM_BASE(25'h0), .FILM_PHASE(LDV_FILM_PHASE),
                  .MOTOR_STOP_MS(LDV_MOTOR_STOP_MS), .VSYNC_GATE(LDV_VSYNC_GATE), .LIVE_CMD(LDV_LIVE_CMD),
                  .SEEK_FAST(LDV_SEEK_FAST)) u_ldv1000_fw (
-        .clk(clk), .reset_n(reset_n), .pause(pause | disc_hold), .sel(sel_ldv1000 & fw_req),
+        .clk(clk), .reset_n(reset_n), .pause(pause | disc_hold | fw_hold), .sel(sel_ldv1000 & fw_req),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_fw), .cmd_op(op_fw), .cmd_arg(arg_fw),
         .search_done(search_done), .autostop_done(autostop_done), .field_phase(field_phase),

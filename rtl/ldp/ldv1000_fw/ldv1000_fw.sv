@@ -324,7 +324,8 @@ module ldv1000_fw
     // (MAME's ldv1000.cpp returns the raw bits; its HLE is the inverse.)
     assign status_strobe  = sel ? ~ppi1_pc[5] : 1'b1;
     assign command_strobe = sel ? ~ppi1_pc[4] : 1'b1;
-    assign video_squelch  = ~ppi1_pc[3];
+    wire       fol_settle;
+    assign video_squelch  = ~ppi1_pc[3] | fol_settle;   // + until the picture has followed the head
     assign audio_squelch  = {~ppi1_pc[2] | ~ppi1_pc[1], ~ppi1_pc[2] | ~ppi1_pc[0]};
 
     ldv_follow u_follow (
@@ -334,7 +335,7 @@ module ldv1000_fw
         .aud_en1(ppi1_pc[2] & ppi1_pc[0]), .aud_en2(ppi1_pc[2] & ppi1_pc[1]),
         .t_mode(t_mode), .t_frame(curr_frame), .fw_status(status_r), .pic_code(pic_code),
         .cmd_action(cmd_action), .cmd_op(cmd_op), .cmd_arg(cmd_arg),
-        .dbg_class(dbg_class)
+        .dbg_class(dbg_class), .settle(fol_settle)
     );
 
     // ------------------------------------------------------------ debug

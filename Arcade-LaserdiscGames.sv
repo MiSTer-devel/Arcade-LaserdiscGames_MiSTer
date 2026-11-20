@@ -683,6 +683,7 @@ reg         seek_was_play;     // real playback has ended since the last seek
 reg         seek_is_seg;       // captured at the seek: this hold follows a SEGMENT, not a hold frame
 reg         seek_black;        // blank-the-picture flag, updated ONLY at vblank (see below)
 wire        ldp_0_vsq;         // LD-V1000 firmware squelching its video (firmware mode only)
+wire        ldp_0_ldv_fw;      // the LD-V1000 is running its real firmware
 // Hold Frame Seek (status[8]): does a hold-frame seek get the seek pause at all?  Off = segment
 // ends only.  When it does pause, Seek Behaviour decides what that pause looks like.
 wire        seek_pause = seek_is_seg | status[8];
@@ -699,10 +700,12 @@ wire        band_lit = led_lit & ~band_off;
 // sync.  Only during a SEARCH hold, never a still/pause, and only once fb_tail_adopt has burned
 // down -- those frames are real content of the segment that just ended.
 // On the LD-V1000 firmware the search is the player's own: black for as long as it squelches its
-// video (the whole head move), not only for the core's hold after it.
+// video (the whole head move), not only for the core's hold after it, and still black through the
+// hold that lands the picture after it (seek_black already set: no pre-seek frame between the two).
 // fb_seek_hold changes at arbitrary points in the frame, so this is LATCHED at vblank in the
 // framebuffer block below: switching the mask mid-raster tears the picture across the screen.
-wire        seek_black_w = status[4] & ((fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0)) | ldp_0_vsq);
+wire        seek_black_w = status[4] & ((fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0)) | ldp_0_vsq |
+                                          (ldp_0_ldv_fw & fb_seek_hold & seek_black));
 //------------------------------------------------------------------------------
 // SHARED OVERLAY COORDINATE SPACE.
 // Every Daphne game in this core declares a 320x240 overlay surface (DL2, Cliff/
@@ -1010,7 +1013,6 @@ wire  [5:0] ldp_0_col;
 chip_pool_pkg::z80_i_t z80_1_i;
 chip_pool_pkg::z80_o_t z80_1_o;
 wire                   z80_1_rst_n;
-wire                   ldp_0_ldv_fw;
 
 ldp_top #(.CLK_HZ(CORE_CLK_HZ), .LDV_ROM_INDEX(8'd5), .LDV_FILM_PHASE(4'd2), .LDV_VSYNC_GATE(1'b1),
           .LDV_LIVE_CMD(1'b1), .LDV_SEEK_FAST(10'd340)) ldp_0
