@@ -27,7 +27,10 @@ module ldp_top
     parameter [15:0] LDV_MOTOR_STOP_MS = 16'd0,  // ldv1000_fw MOTOR_STOP_MS (0 = MAME)
     parameter  [0:0] LDV_VSYNC_GATE = 1'b0,      // ldv1000_fw VSYNC_GATE (0 = MAME)
     parameter  [0:0] LDV_LIVE_CMD = 1'b0,        // ldv1000_fw LIVE_CMD (0 = MAME)
-    parameter  [9:0] LDV_SEEK_FAST = 10'd133     // ldv1000_fw SEEK_FAST (133 = MAME)
+    parameter  [9:0] LDV_SEEK_FAST = 10'd133,    // ldv1000_fw SEEK_FAST (133 = MAME)
+    // Spindle lock delay that, with the firmware's own start sequence (~1.23 s on the bench), gives the
+    // interface guide's 13 s initial start time from PLAY to picture.
+    parameter [15:0] LDV_SPINUP_MS = 16'd11770
 )
 (
     input             clk,
@@ -82,6 +85,7 @@ module ldp_top
     // ---- LD-V1000 on its real firmware ----
     input             ldv_fw_en,       // sampled while reset_n is low
     input      [1:0]  pr7820_srch,     // PR-7820 search time: 0 = PR-7820-2, 1 = PR-7820, 2 = the fixed 0.5 s
+    input             ldv_slow_start,  // LD-V1000: a parked disc takes the real 13 s to start
     input             cmd_oe,          // host is driving the LD bus (else it floats: pull-ups -> FF)
     output            ldv_fw,
     output            video_squelch,   // LD-V1000 firmware's /VIDEO SQ (PPI1 PC3): the real player shows no picture
@@ -162,7 +166,7 @@ module ldp_top
     assign digits_ldv  = use_fw ? digits_fw  : digits_hle;
 
     ldp_ldv1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (
-        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldv1000 & ~use_fw),
+        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldv1000 & ~use_fw), .slow_start(ldv_slow_start),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_hle), .cmd_op(op_hle), .cmd_arg(arg_hle),
         .search_done(search_done), .autostop_done(autostop_done), .field_phase(field_phase),
@@ -194,7 +198,7 @@ module ldp_top
     end
     ldv1000_fw #(.CLK_HZ(CLK_HZ), .ROM_INDEX(LDV_ROM_INDEX), .ROM_BASE(25'h0), .FILM_PHASE(LDV_FILM_PHASE),
                  .MOTOR_STOP_MS(LDV_MOTOR_STOP_MS), .VSYNC_GATE(LDV_VSYNC_GATE), .LIVE_CMD(LDV_LIVE_CMD),
-                 .SEEK_FAST(LDV_SEEK_FAST)) u_ldv1000_fw (
+                 .SEEK_FAST(LDV_SEEK_FAST), .SPINUP_MS(LDV_SPINUP_MS)) u_ldv1000_fw (
         .clk(clk), .reset_n(reset_n), .pause(pause | disc_hold | fw_hold), .sel(sel_ldv1000 & fw_req),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_fw), .cmd_op(op_fw), .cmd_arg(arg_fw),
@@ -204,7 +208,7 @@ module ldp_top
         .dbg_digits(digits_fw),
         .t_mode(mode), .field_tick(frame_tick), .disc_last_frame(17'd0), .film(~disc_2997),
         .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
-        .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr), .cmd_oe(cmd_oe),
+        .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr), .cmd_oe(cmd_oe), .spinup_slow(ldv_slow_start),
         .z80_i(z80_i), .z80_o(z80_o), .z80_rst_n(z80_rst_n), .fw_ready(fw_ready),
         .video_squelch(vsq_fw), .audio_squelch(),
         .dbg_track(), .dbg_ctl_rd(), .dbg_ctl_val(), .dbg_disp_we(), .dbg_disp_sel(), .dbg_disp_dat(),

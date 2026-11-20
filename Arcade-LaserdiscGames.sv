@@ -196,6 +196,7 @@ localparam CONF_STR = {
 	"P3O8,Hold Frame Seek,Off,On;",
 	"P3O57,Segment Tail,MRA Default,0,1,2,3,4,5;",
 	"P3OR,LD-V1000 Player,Firmware,HLE;",
+	"P3O[46],LD-V1000 Start Time,Authentic,Fast;",
 	"P3O[44:43],PR-7820 Search Time,PR-7820-2,PR-7820,Fast;",
 	// DIAG-REVERT-2026-10-15: new page, delete on revert. DPS step = 800 MHz VCO / 8 = 156 ps, 5 steps per entry.
 	"P4,SDRAM Options;",
@@ -1029,7 +1030,7 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ), .LDV_ROM_INDEX(8'd5), .LDV_FILM_PHASE(4'd2), .LD
     .park_frame(ldp_0_i.park_frame), .status_rd(ldp_0_i.status_rd),
     .txt_we(ldp_0_twe), .txt_line(ldp_0_line), .txt_col(ldp_0_col), .txt_glyph(ldp_0_glyph), .txt_on(ldp_0_ton),
     .txt_x(ldp_0_tx), .txt_y(ldp_0_ty),
-    .ldv_fw_en(~status[27]), .pr7820_srch(status[44:43]), .cmd_oe(ldp_0_i.cmd_oe), .ldv_fw(ldp_0_ldv_fw), .video_squelch(ldp_0_vsq),
+    .ldv_fw_en(~status[27]), .pr7820_srch(status[44:43]), .ldv_slow_start(~status[46]), .cmd_oe(ldp_0_i.cmd_oe), .ldv_fw(ldp_0_ldv_fw), .video_squelch(ldp_0_vsq),
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
     .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr),
     .z80_i(z80_1_i), .z80_o(z80_1_o), .z80_rst_n(z80_1_rst_n)
