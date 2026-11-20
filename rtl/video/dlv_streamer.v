@@ -17,6 +17,7 @@
 //   [16] u32 frame_count  [48] u64 index_off  [64] u64 video_off
 //   [80] u64 audio_off    [88] u64 audio_size
 // frame index @ index_off: frame_count * { u32 off_in_video_blob, u32 size }.
+// v4 (video blob over 4 GB): frame_count * { 40-bit off_in_video_blob, 24-bit size }, same 8 B.
 // reworked from the one-shot fetcher into continuous
 // video+audio (user directive — build the real streaming path, drop the hack).
 //============================================================================
@@ -119,6 +120,7 @@ module dlv_streamer #(
     // header@24 is RESERVED=0 and this reg is repurposed for the v2 field.
     reg [31:0] spf_q16_hdr;     // header@96: samples per DISC frame, 16.16 fixed point (.dlv v2)
     reg  [7:0] ver_hdr;         // header@4
+    wire       idx40 = (ver_hdr >= 8'd4);   // v4 index entries: 40-bit offset + 24-bit size
     reg [15:0] disc_num_hdr;    // header@20 (v3): disc rate numerator, 30000 or 24000 (/1001)
     reg  [7:0] game_id_hdr;     // header@104 (v3)
     reg        header_valid;
@@ -132,7 +134,8 @@ module dlv_streamer #(
     wire       remount_go;
 
     // current frame index entry
-    reg [31:0] frm_off, frm_size;
+    reg [39:0] frm_off;
+    reg [31:0] frm_size;
     reg [39:0] frm_start;
     reg [16:0] cur_frame;                     // free-running film frame
 
@@ -210,7 +213,7 @@ module dlv_streamer #(
     assign dec_reset = reset | frame_fetch | wd_rst;
 
     wire [31:0] idx_byte = index_off + {cur_frame, 3'b000};   // cur_frame*8
-    wire [39:0] frm_start_w  = video_off + {8'd0, frm_off};
+    wire [39:0] frm_start_w  = video_off + frm_off;
     wire [39:0] aud_end_byte = aud_off + {8'd0, aud_size};
 
     //------------------------------------------------------------------------
@@ -704,10 +707,23 @@ module dlv_streamer #(
                         if (sd_buff_addr == idx_in_sec + 9'd1) frm_off[15:8]   <= sd_buff_dout;
                         if (sd_buff_addr == idx_in_sec + 9'd2) frm_off[23:16]  <= sd_buff_dout;
                         if (sd_buff_addr == idx_in_sec + 9'd3) frm_off[31:24]  <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd4) frm_size[7:0]   <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd5) frm_size[15:8]  <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd6) frm_size[23:16] <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd7) frm_size[31:24] <= sd_buff_dout;
+                        // v4: byte 4 is offset[39:32] and the size is 24 bits; v3: a u32 size.
+                        if (sd_buff_addr == idx_in_sec + 9'd4) begin
+                            if (idx40) frm_off[39:32] <= sd_buff_dout;
+                            else begin frm_off[39:32] <= 8'd0; frm_size[7:0] <= sd_buff_dout; end
+                        end
+                        if (sd_buff_addr == idx_in_sec + 9'd5) begin
+                            if (idx40) frm_size[7:0]   <= sd_buff_dout;
+                            else       frm_size[15:8]  <= sd_buff_dout;
+                        end
+                        if (sd_buff_addr == idx_in_sec + 9'd6) begin
+                            if (idx40) frm_size[15:8]  <= sd_buff_dout;
+                            else       frm_size[23:16] <= sd_buff_dout;
+                        end
+                        if (sd_buff_addr == idx_in_sec + 9'd7) begin
+                            if (idx40) begin frm_size[23:16] <= sd_buff_dout; frm_size[31:24] <= 8'd0; end
+                            else       frm_size[31:24] <= sd_buff_dout;
+                        end
                     end
                     2'd2: begin // frame bytes -> fbuf
                         if ((sec_base_byte + sd_buff_addr) >= frm_start && bytes_got < frm_size) begin
