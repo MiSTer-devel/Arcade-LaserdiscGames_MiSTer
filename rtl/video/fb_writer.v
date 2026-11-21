@@ -2,7 +2,7 @@
 // fb_writer.v — framebuffer writer (decoder RGB pixels -> DDR3 via ddram.sv)
 //----------------------------------------------------------------------------
 // Takes the jpeg_frame_decoder pixel stream (block-order, with x/y) and writes
-// RGB565 to the MISTER_FB framebuffer in HPS DDR3 through the write port of
+// 24-bit RGB to the MISTER_FB framebuffer in HPS DDR3 through the write port of
 // rtl/ram_rom/ddram.sv (Sorgelig, 16-bit: RAM based at 0x30000000, halfword
 // address wraddr[27:1], toggle we_req/we_ack handshake).
 // Address: the FB is 16bpp tight, so byte = FB_BASE + y*STRIDE + x*2, and the
@@ -29,8 +29,7 @@ module fb_writer #(
     // isolation switch. 1 = merge the 4 halfwords sharing a 64-bit DDR
     // word (19,200 writes/frame). 0 = one write per pixel, EXACTLY the prior behaviour (76,800),
     // with no code removed -- so a bad HW result is attributable by flipping this, not by reverting.
-    parameter        COALESCE       = 1'b1,
-    parameter        BPP32          = 1'b0
+    parameter        COALESCE       = 1'b1
 )(
     input             clk,          // DDRAM_CLK domain
     input             reset,        // active-high
@@ -49,7 +48,6 @@ module fb_writer #(
     input       [7:0] px_r,
     input       [7:0] px_g,
     input       [7:0] px_b,
-    input             dither,
     output            px_ready,     // -> decoder px_ready (backpressure)
 
     // --- ddram.sv write port ---
@@ -72,25 +70,14 @@ module fb_writer #(
     // the fill, and gate on fill_idle so the writer never contends with an in-flight read2.
 
     // halfword index = base_hw + y*STRIDE_HW + x
-    wire [26:0] hw_index = base_hw + (px_y * STRIDE_HW) + (BPP32 ? {10'd0, px_x, 1'b0} : {11'd0, px_x});
+    wire [26:0] hw_index = base_hw + (px_y * STRIDE_HW) + {10'd0, px_x, 1'b0};
 
     // named wires -- Quartus 17 elaborates .v as Verilog-2001, where a
     // bit-select of an EXPRESSION, e.g. (base_hw+clear_idx)[1:0], is illegal (error 10170).
     wire [26:0] clear_addr = base_hw + clear_idx;
-    localparam [63:0] BAYER = 64'h5D7F91B36E4CA280;
-    wire  [3:0] bayer = BAYER[{px_y[1:0], px_x[1:0], 2'b00} +: 4];
-    wire  [2:0] th_rb = dither ? bayer[3:1] : 3'd0;
-    wire  [1:0] th_g  = dither ? bayer[3:2] : 2'd0;
-    wire  [8:0] dr    = {1'b0, px_r} + {6'd0, th_rb};
-    wire  [8:0] dg    = {1'b0, px_g} + {7'd0, th_g};
-    wire  [8:0] db    = {1'b0, px_b} + {6'd0, th_rb};
-    wire  [7:0] sr    = dr[8] ? 8'hFF : dr[7:0];
-    wire  [7:0] sg    = dg[8] ? 8'hFF : dg[7:0];
-    wire  [7:0] sb    = db[8] ? 8'hFF : db[7:0];
-    wire [15:0] px565      = {sr[7:3], sg[7:2], sb[7:3]};
     // byte enables for one halfword: 2 lanes, selected by the halfword's position in the 64-bit
     // word. Identical to ddram's old `8'd3<<{wraddr[2:1],1'b0}` because wraddr[2:1] == addr[1:0].
-    wire  [7:0] be_pix     = BPP32 ? (8'h0F << {hw_index[1], 2'b00}) : (8'd3 << {hw_index[1:0], 1'b0});
+    wire  [7:0] be_pix     = 8'h0F << {hw_index[1], 2'b00};
     wire  [7:0] be_clr     = 8'd3 << {clear_addr[1:0], 1'b0};
 
     // The decoder emits MORE pixels than the frame contains, so writes must be range-checked or
@@ -101,7 +88,7 @@ module fb_writer #(
     // 76,800 single-halfword DDR round trips per frame dominate decode latency, so accumulate a
     // full 64-bit word and issue one masked write per group of 4 pixels.
     wire [24:0] px_grp  = hw_index[26:2];          // 64-bit word address
-    wire [63:0] px_dat  = BPP32 ? {2{8'h00, px_r, px_g, px_b}} : {4{px565}};
+    wire [63:0] px_dat  = {2{8'h00, px_r, px_g, px_b}};
     wire [63:0] lane_m  = {{8{be_pix[7]}}, {8{be_pix[6]}}, {8{be_pix[5]}}, {8{be_pix[4]}},
                            {8{be_pix[3]}}, {8{be_pix[2]}}, {8{be_pix[1]}}, {8{be_pix[0]}}};
     reg  [63:0] acc_data;

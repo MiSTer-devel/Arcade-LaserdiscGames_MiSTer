@@ -1,7 +1,7 @@
 //============================================================================
 // fb_raster_reader.v — DDR framebuffer -> raster video (for arcade_video)
 //----------------------------------------------------------------------------
-// Reads a 320x240 RGB565 framebuffer out of HPS DDR3 (written by fb_writer via
+// Reads a 24-bit RGB framebuffer out of HPS DDR3 (written by fb_writer via
 // ddram.sv) in RASTER scan order and produces a standard video raster
 // (ce_pix + hs/vs/hblank/vblank + RGB888) to feed the core's normal
 // arcade_video path.  This is the screenshot-friendly route: everything goes
@@ -48,8 +48,7 @@ module fb_raster_reader #(
     parameter [15:0] H_FP_CW  = 16'd12, H_SYNC_CW = 16'd58, H_BP_CW = 16'd70,
     parameter [15:0] H_ACT_W  = 16'd640,
     parameter [15:0] H_FP_X   = 16'd8,  H_SYNC_X  = 16'd32, H_BP_X  = 16'd18,
-    parameter [15:0] H_FP_CX  = 16'd16, H_SYNC_CX = 16'd63, H_BP_CX = 16'd59,
-    parameter        BPP32    = 1'b0
+    parameter [15:0] H_FP_CX  = 16'd16, H_SYNC_CX = 16'd63, H_BP_CX = 16'd59
 )(
     input             clk,            // CLK_CORE (= DDRAM_CLK); 80 MHz as of
     input             reset,          // active-high
@@ -155,7 +154,7 @@ module fb_raster_reader #(
 
     // ping-pong line buffer: 2 lines, 512-halfword stride (matches the
     // {buf, hcnt[8:0]} / {buf, fidx[8:0]} index — H_ACT<=512).
-    localparam [3:0] WSH = BPP32 ? 4'd1 : 4'd2;
+    localparam [3:0] WSH = 4'd1;
     reg  [63:0] linebuf [0:1023];
     reg  [63:0] pix64_q;
     reg   [9:0] widx;
@@ -176,7 +175,7 @@ module fb_raster_reader #(
     wire [15:0] words_left = (h_act - fidx) >> WSH;
     wire [15:0] blen_px    = {8'd0, bst_len} << WSH;
     wire [15:0] blen_w     = (words_left > BURST_W) ? BURST_W : words_left;
-    wire [26:0] fetch_hw   = frame_base_hw_q + fb_row*STRIDE + (BPP32 ? {fidx, 1'b0} : fidx);
+    wire [26:0] fetch_hw   = frame_base_hw_q + fb_row*STRIDE + {fidx, 1'b0};
     reg [15:0] fline;
     reg        fill_done_q;    // 1 once fline's data is fully loaded into fill_buf, awaiting the swap below
     wire [15:0] fline_next = (fline == v_total - 16'd1) ? 16'd0 : fline + 16'd1;
@@ -223,7 +222,7 @@ module fb_raster_reader #(
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
                 // read this pixel and register the aligned timing flags
-                pix_q    <= BPP32 ? pix64_q[{h_rd[0], 5'b00000} +: 32] : {16'd0, pix64_q[{h_rd[1:0], 4'b0000} +: 16]};
+                pix_q    <= pix64_q[{h_rd[0], 5'b00000} +: 32];
                 active_q <= h_active & v_active & vid_row;   // band rows -> black (led_band composites there)
                 // Band-compositor coordinates, not raster position: rotated with the picture so the
                 // band lands at the far end, upside down, without led_band knowing about flip.
@@ -318,7 +317,7 @@ module fb_raster_reader #(
     // read2 right now".  (Delete this assign + the port on revert.)
     assign fill_idle = fill_done_q;
 
-    assign vid_r = !active_q ? 8'd0 : BPP32 ? pix_q[23:16] : {pix_q[15:11], pix_q[15:13]};
-    assign vid_g = !active_q ? 8'd0 : BPP32 ? pix_q[15:8]  : {pix_q[10:5],  pix_q[10:9]};
-    assign vid_b = !active_q ? 8'd0 : BPP32 ? pix_q[7:0]   : {pix_q[4:0],   pix_q[4:2]};
+    assign vid_r = !active_q ? 8'd0 : pix_q[23:16];
+    assign vid_g = !active_q ? 8'd0 : pix_q[15:8];
+    assign vid_b = !active_q ? 8'd0 : pix_q[7:0];
 endmodule
