@@ -1,7 +1,7 @@
 //============================================================================
 //  Dragon's Lair / Space Ace (US set) Main CPU Board
 //  Based on MAME dlair.cpp (dlus_map / dlair_ldv1000) by Aaron Giles
-//  Single Z80 @ (real 4 MHz) + AY-3-8910 (real 2 MHz) + Pioneer LD-V1000
+//  Single Z80 @ (real 4 MHz) + AY-3-8910 (real 2 MHz) + Pioneer LD-V1000 or PR-7820
 //  laserdisc.  The LD is a real command/status HLE (rtl/ldp/,
 //  see "LaserDisc" section below) — replaced the
 //  earlier constant-ready stub. This module has NO video output of its own;
@@ -243,6 +243,7 @@ wire [7:0] p1_bus = ~p1;
 wire pr7820_mode = is_thayers         ? 1'b0   :
                    (ld_player == 2'd1) ? 1'b0   :
                    (ld_player == 2'd2) ? 1'b1   :
+                   (ld_player == 2'd3) ? ~dsw[11] :     // ROM with the DL layout (Space Ace Enhanced)
                    is_spaceace        ? dsw[8] : ~dsw[11];
 
 // SYSTEM (0xC010) b7: the LD-V1000 reports its command strobe here; the PR-7820 has no strobes
@@ -464,8 +465,9 @@ assign ld_playing_o  = ld_playing_w;
 // misc_w (0xE008): b4 coin counter, b5 1->0 = strobe latched byte to LD,
 //                  b6 = LD ENTER (0 = assert), b7 = INT/EXT.
 // laserdisc_w (0xE020): latch the byte to send to the LD.
-// The stub does not act on the command; ld_cmd_captured records the last byte
-// strobed out for future real-LD command processing.
+// The b5 1->0 edge hands the latched byte to the player (ld_cmd_stb, ldp_top). b6 (ENTER)
+// and b7 (INT/EXT) are stored in misc_reg but not used: the command is taken on b5, before
+// ENTER and the player's strobe handshake. The game always sends them in order.
 reg [7:0] misc_reg       = 8'd0;
 reg [7:0] ld_data_latch  = 8'd0;
 reg [7:0] ld_cmd_captured= 8'd0;   // last byte strobed to the LD (misc b5 1->0)

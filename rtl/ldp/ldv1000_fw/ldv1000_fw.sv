@@ -33,7 +33,8 @@ module ldv1000_fw
     parameter  [0:0] VSYNC_GATE    = 1'b0,        // ldv_mech: no VSYNC unless the spindle runs (no disc video)
     parameter  [0:0] LIVE_CMD      = 1'b0,        // IO 40 reads the host's port live (CONT Z8 74LS540), not
                                                   // MAME's write-latch + read-to-clear
-    parameter  [9:0] SEEK_FAST     = 10'd133      // ldv_mech: fast-scan tracks/field (133 = MAME)
+    parameter  [9:0] SEEK_FAST     = 10'd133,     // ldv_mech: fast-scan tracks/field (133 = MAME)
+    parameter [15:0] SPINUP_MS     = 16'd0        // /SPDL LOCK this long after /SPDL RUN when spinup_slow
 )
 (
     input             clk,
@@ -72,6 +73,7 @@ module ldv1000_fw
     input      [7:0]  ioctl_dout,
     input             ioctl_wr,
     input             cmd_oe,           // LIVE_CMD: the host drives the bus; else it reads FF (R26 pull-ups)
+    input             spinup_slow,      // spindle takes SPINUP_MS to lock (interface guide: 13 s initial start)
 
     // ---- pooled Z80 ----
     output chip_pool_pkg::z80_i_t z80_i,
@@ -199,6 +201,8 @@ module ldv1000_fw
 
     // ------------------------------------------------------------ mechanics
     wire [7:0] ppi0_pa, ppi0_pb, ppi0_pc, ppi1_pa, ppi1_pb, ppi1_pc;
+    wire [7:0] mech_pb;               // ppi1_pb with /SPDL RUN replaced by /SPDL LOCK
+    wire       spdl_lock_n;
     wire [7:0] counter;
     wire       vsync, vbiready, at_min, at_max, trg_min, trg_max, fetch_done, frame_valid;
     wire [16:0] frame, track;
@@ -211,7 +215,7 @@ module ldv1000_fw
                .FILM_PHASE(FILM_PHASE), .VSYNC_GATE(VSYNC_GATE), .SEEK_FAST(SEEK_FAST)) u_mech (
         .clk(clk), .reset_n(z80_rst_n), .run(run), .film(film), .field_tick(field_tick),
         .last_frame((disc_last_frame != 17'd0) ? disc_last_frame : LAST_FRAME),
-        .ppi0_pa(ppi0_pa), .ppi0_pc(ppi0_pc), .ppi1_pb(ppi1_pb),
+        .ppi0_pa(ppi0_pa), .ppi0_pc(ppi0_pc), .ppi1_pb(mech_pb),
         .counter(counter), .vsync(vsync), .vbiready(vbiready),
         .vbi_consume(dec_re && (portsel == 8'd4)), .vbi_byte(vbi_byte),
         .at_min(at_min), .at_max(at_max), .trg_min(trg_min), .trg_max(trg_max),
@@ -246,7 +250,26 @@ module ldv1000_fw
                 ms_div <= ms_div + 32'd1;
         end
     end
-    wire [7:0] ppi1_pa_in = {2'b00, 1'b1, motor_stop, at_max, at_min, ppi1_pb[1], ppi1_pb[0]};
+    // /SPDL LOCK: SPINUP_MS after /SPDL RUN goes low (spinup_slow), at once otherwise (MAME).  The mechanism
+    // sees the lock, not the run line, so there is no disc video until the spindle is up to speed.
+    reg  [31:0] on_div;
+    reg  [15:0] spdl_on_ms;
+    always @(posedge clk) begin
+        if (!z80_rst_n) begin
+            on_div <= 32'd0; spdl_on_ms <= 16'd0;
+        end else if (run) begin
+            if (ppi1_pb[1]) begin
+                on_div <= 32'd0; spdl_on_ms <= 16'd0;
+            end else if (on_div == MS_CLKS - 32'd1) begin
+                on_div <= 32'd0;
+                if (spdl_on_ms != 16'hFFFF) spdl_on_ms <= spdl_on_ms + 16'd1;
+            end else
+                on_div <= on_div + 32'd1;
+        end
+    end
+    assign spdl_lock_n = ppi1_pb[1] | (spinup_slow && (spdl_on_ms < SPINUP_MS));
+    assign mech_pb     = {ppi1_pb[7:2], spdl_lock_n, ppi1_pb[0]};
+    wire [7:0] ppi1_pa_in = {2'b00, 1'b1, motor_stop, at_max, at_min, spdl_lock_n, ppi1_pb[0]};
     ldv_i8255 u_ppi0 (
         .clk(clk), .reset_n(z80_rst_n),
         .wr_stb(ppi0_we), .waddr(ba_q[1:0]), .wdata(bd_q), .raddr(A[1:0]), .dout(ppi0_do),
@@ -324,7 +347,8 @@ module ldv1000_fw
     // (MAME's ldv1000.cpp returns the raw bits; its HLE is the inverse.)
     assign status_strobe  = sel ? ~ppi1_pc[5] : 1'b1;
     assign command_strobe = sel ? ~ppi1_pc[4] : 1'b1;
-    assign video_squelch  = ~ppi1_pc[3];
+    wire       fol_settle;
+    assign video_squelch  = ~ppi1_pc[3] | fol_settle;   // + until the picture has followed the head
     assign audio_squelch  = {~ppi1_pc[2] | ~ppi1_pc[1], ~ppi1_pc[2] | ~ppi1_pc[0]};
 
     ldv_follow u_follow (
@@ -334,7 +358,7 @@ module ldv1000_fw
         .aud_en1(ppi1_pc[2] & ppi1_pc[0]), .aud_en2(ppi1_pc[2] & ppi1_pc[1]),
         .t_mode(t_mode), .t_frame(curr_frame), .fw_status(status_r), .pic_code(pic_code),
         .cmd_action(cmd_action), .cmd_op(cmd_op), .cmd_arg(cmd_arg),
-        .dbg_class(dbg_class)
+        .dbg_class(dbg_class), .settle(fol_settle)
     );
 
     // ------------------------------------------------------------ debug

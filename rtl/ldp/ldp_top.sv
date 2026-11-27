@@ -27,7 +27,10 @@ module ldp_top
     parameter [15:0] LDV_MOTOR_STOP_MS = 16'd0,  // ldv1000_fw MOTOR_STOP_MS (0 = MAME)
     parameter  [0:0] LDV_VSYNC_GATE = 1'b0,      // ldv1000_fw VSYNC_GATE (0 = MAME)
     parameter  [0:0] LDV_LIVE_CMD = 1'b0,        // ldv1000_fw LIVE_CMD (0 = MAME)
-    parameter  [9:0] LDV_SEEK_FAST = 10'd133     // ldv1000_fw SEEK_FAST (133 = MAME)
+    parameter  [9:0] LDV_SEEK_FAST = 10'd133,    // ldv1000_fw SEEK_FAST (133 = MAME)
+    // Spindle lock delay that, with the firmware's own start sequence (~1.23 s on the bench), gives the
+    // interface guide's 13 s initial start time from PLAY to picture.
+    parameter [15:0] LDV_SPINUP_MS = 16'd11770
 )
 (
     input             clk,
@@ -81,8 +84,11 @@ module ldp_top
     output      [7:0] txt_y,
     // ---- LD-V1000 on its real firmware ----
     input             ldv_fw_en,       // sampled while reset_n is low
+    input      [1:0]  pr7820_srch,     // PR-7820 search time: 0 = PR-7820-2, 1 = PR-7820, 2 = the fixed 0.5 s
+    input             ldv_slow_start,  // LD-V1000: a parked disc takes the real 13 s to start
     input             cmd_oe,          // host is driving the LD bus (else it floats: pull-ups -> FF)
     output            ldv_fw,
+    output            video_squelch,   // LD-V1000 firmware's /VIDEO SQ (PPI1 PC3): the real player shows no picture
     input             ioctl_download,
     input      [7:0]  ioctl_index,
     input      [24:0] ioctl_addr,
@@ -130,7 +136,7 @@ module ldp_top
         .search_busy(search_busy), .search_done(search_done), .autostop_done(autostop_done),
         .field_phase(field_phase), .frame_tick(frame_tick), .film_tick(film_tick),
         .pause(pause), .disc_hold(disc_hold), .post_seek_frames(post_seek_frames),
-        .disc_2997(disc_2997), .park_frame(park_frame),
+        .disc_2997(disc_2997), .park_frame(park_frame), .search_prof(!sel_pr7820 ? 2'd0 : (pr7820_srch == 2'd0) ? 2'd2 : (pr7820_srch == 2'd1) ? 2'd1 : 2'd0),
         .search_cmd_o(search_cmd_o), .play_end_o(play_end_o), .playing(playing),
         .dbg_seek_frame(dbg_seek_frame),
         .audio_en(audio_en)
@@ -142,6 +148,8 @@ module ldp_top
     always @(posedge clk) if (!reset_n) fw_req <= ldv_fw_en;
     wire        use_fw = sel_ldv1000 & fw_req & fw_ready;
     assign      ldv_fw = use_fw;
+    wire        vsq_fw;
+    assign      video_squelch = use_fw & vsq_fw;
 
     wire [7:0]  status_ldv, status_hle, status_fw;
     wire        sstrobe_ldv, cstrobe_ldv, sstrobe_hle, cstrobe_hle, sstrobe_fw, cstrobe_fw;
@@ -158,7 +166,7 @@ module ldp_top
     assign digits_ldv  = use_fw ? digits_fw  : digits_hle;
 
     ldp_ldv1000 #(.CLK_HZ(CLK_HZ)) u_ldv1000 (
-        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldv1000 & ~use_fw),
+        .clk(clk), .reset_n(reset_n), .pause(pause), .sel(sel_ldv1000 & ~use_fw), .slow_start(ldv_slow_start),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_hle), .cmd_op(op_hle), .cmd_arg(arg_hle),
         .search_done(search_done), .autostop_done(autostop_done), .field_phase(field_phase),
@@ -167,11 +175,31 @@ module ldp_top
         .dbg_digits(digits_hle)
     );
 
-    // frozen through the seek hold, like the transport (its head would run ahead otherwise)
+    // frozen through the seek hold, like the transport (its head would run ahead otherwise).  The
+    // transport's field clock keeps running through the hold, so the firmware resumes only when
+    // field_phase is back where it froze: its mechanism stays in step with the fields, and a still
+    // it was holding survives the hold.  At most one field after the hold: a scan's shorter period
+    // may never reach the latched phase.
+    localparam [21:0] FW_FIELD = (64'd1001 * CLK_HZ) / 64'd60000;
+    reg         fw_hold, fw_dh_q;
+    reg  [21:0] fw_ph, fw_wait;
+    always @(posedge clk) begin
+        if (!reset_n) begin
+            fw_hold <= 1'b0; fw_dh_q <= 1'b0; fw_ph <= 22'd0; fw_wait <= 22'd0;
+        end else if (!pause) begin
+            fw_dh_q <= disc_hold;
+            if (disc_hold && !fw_dh_q && !fw_hold) begin
+                fw_hold <= 1'b1; fw_ph <= field_phase; fw_wait <= 22'd0;
+            end else if (fw_hold && !disc_hold) begin
+                if (field_phase == fw_ph || fw_wait >= FW_FIELD) fw_hold <= 1'b0;
+                else fw_wait <= fw_wait + 22'd1;
+            end
+        end
+    end
     ldv1000_fw #(.CLK_HZ(CLK_HZ), .ROM_INDEX(LDV_ROM_INDEX), .ROM_BASE(25'h0), .FILM_PHASE(LDV_FILM_PHASE),
                  .MOTOR_STOP_MS(LDV_MOTOR_STOP_MS), .VSYNC_GATE(LDV_VSYNC_GATE), .LIVE_CMD(LDV_LIVE_CMD),
-                 .SEEK_FAST(LDV_SEEK_FAST)) u_ldv1000_fw (
-        .clk(clk), .reset_n(reset_n), .pause(pause | disc_hold), .sel(sel_ldv1000 & fw_req),
+                 .SEEK_FAST(LDV_SEEK_FAST), .SPINUP_MS(LDV_SPINUP_MS)) u_ldv1000_fw (
+        .clk(clk), .reset_n(reset_n), .pause(pause | disc_hold | fw_hold), .sel(sel_ldv1000 & fw_req),
         .cmd_stb(cmd_stb), .cmd_byte(cmd_byte),
         .cmd_action(act_fw), .cmd_op(op_fw), .cmd_arg(arg_fw),
         .search_done(search_done), .autostop_done(autostop_done), .field_phase(field_phase),
@@ -180,9 +208,9 @@ module ldp_top
         .dbg_digits(digits_fw),
         .t_mode(mode), .field_tick(frame_tick), .disc_last_frame(17'd0), .film(~disc_2997),
         .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
-        .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr), .cmd_oe(cmd_oe),
+        .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr), .cmd_oe(cmd_oe), .spinup_slow(ldv_slow_start),
         .z80_i(z80_i), .z80_o(z80_o), .z80_rst_n(z80_rst_n), .fw_ready(fw_ready),
-        .video_squelch(), .audio_squelch(),
+        .video_squelch(vsq_fw), .audio_squelch(),
         .dbg_track(), .dbg_ctl_rd(), .dbg_ctl_val(), .dbg_disp_we(), .dbg_disp_sel(), .dbg_disp_dat(),
         .dbg_fieldnum(), .dbg_class(), .dbg_irq(), .dbg_ppi0_pa(), .dbg_ppi0_pc(), .dbg_ppi1_pb(),
         .dbg_ppi1_pc(), .dbg_counter(), .dbg_fetch()

@@ -41,7 +41,7 @@ module ldp_pr7820
 
     localparam [7:0] CMD_SEARCH=8'hf7, CMD_PLAY=8'hfd, CMD_STOP=8'hfb,
                      CMD_AUTOSTOP=8'hf3, CMD_AUDIO1=8'hf4, CMD_AUDIO2=8'hfc,
-                     CMD_PLAY_X1=8'ha3, CMD_REJECT=8'hf9, CMD_NO_ENTRY=8'hff;
+                     CMD_REJECT=8'hf9, CMD_NO_ENTRY=8'hff;
 
     function [3:0] digit_of(input [7:0] op);
         case (op)
@@ -79,11 +79,13 @@ module ldp_pr7820
                 CMD_AUTOSTOP: begin cmd_op = OP_AUTOSTOP; cmd_arg = number; end
                 CMD_AUDIO1:   begin cmd_op = OP_AUDIO1;   cmd_arg = {15'd0, has_digit, number[0]}; end
                 CMD_AUDIO2:   begin cmd_op = OP_AUDIO2;   cmd_arg = {15'd0, has_digit, number[0]}; end
-                // Daphne pre_change_speed(1,1). Kept as a speed op so behaviour matches what
-                // this byte did while PR-7820 was routed through the LD-V1000 decoder.
-                CMD_PLAY_X1:  begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd4; end
                 // 0xF9 Reject is explicitly IGNORED on this player (pr7820.cpp), unlike the
                 // LD-V1000 where it parks the head.
+                // 0xA0-0xA3 are not in the PR-7820's remote code table (DVA System Manual table 19),
+                // but the Rev A-C attract sound DIPs (O&M manual p.B.1) work only through them: A0 on
+                // the silent loops, A3 on the sound loops.  Taken as audio off/on, low two bits = the
+                // two channels.  0xE0/0xE1 (sent with them) stay inert: nothing says what they do.
+                8'ha0, 8'ha1, 8'ha2, 8'ha3: begin cmd_op = OP_AUDIO_SET; cmd_arg = {15'd0, cmd_byte[1:0]}; end
                 default: ;   // Reject and unsupported bytes: inert
             endcase
         end
@@ -106,7 +108,7 @@ module ldp_pr7820
                             dig_latched <= dig_sr; dig_sr <= 20'd0;
                             number <= 17'd0;
                         end
-                        CMD_PLAY, CMD_STOP, CMD_AUTOSTOP, CMD_AUDIO1, CMD_AUDIO2, CMD_PLAY_X1:
+                        CMD_PLAY, CMD_STOP, CMD_AUTOSTOP, CMD_AUDIO1, CMD_AUDIO2:
                             number <= 17'd0;
                         // Unrecognized bytes are inert: clearing `number` would silently
                         // destroy a SEARCH target mid-entry.

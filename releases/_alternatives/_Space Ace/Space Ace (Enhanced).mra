@@ -47,10 +47,11 @@
     </switches>
 
     <!-- GAME-ID byte 0: 01 = Space Ace, enabling the LED band's skill field (SAE uses it). -->
+    <!-- LD-PLAYER byte 2: 03 = player from DIP B3 (dsw[11]): SAE remaps its DIPs to the Dragon's Lair layout. -->
     <!-- POST-SEEK-FRAMES byte 1: 01, matching the Dragon's Lair (Enhanced) set.
          Overridable at runtime now via Behaviour Options > Segment Tail. -->
     <rom index="1">
-        <part>01 01</part>
+        <part>01 01 03</part>
     </rom>
 
     <!-- Index 0: Main Z80 program ROMs. 5x 8KB @ 0x0000-0x9FFF, filling the full region.

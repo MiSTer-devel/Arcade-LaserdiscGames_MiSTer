@@ -24,7 +24,8 @@ localparam [3:0] OP_NOP      = 4'd0,   // inert / CLEAR: consumes the accumulato
                  OP_SCAN_REV = 4'd10,
                  OP_AUDIO1   = 4'd11,  // arg[1] = explicit, arg[0] = value; else toggle
                  OP_AUDIO2   = 4'd12,
-                 OP_SKIP     = 4'd13;  // arg = frames forward, relative
+                 OP_SKIP     = 4'd13,  // arg = frames forward, relative
+                 OP_AUDIO_SET = 4'd14; // arg[0] = channel 1, arg[1] = channel 2, both set at once
 
 // Transport modes, exported so front-ends can report their own status codes.
 localparam [2:0] M_PARK=3'd0, M_SEARCH=3'd1, M_PLAY=3'd2, M_STOP=3'd3,

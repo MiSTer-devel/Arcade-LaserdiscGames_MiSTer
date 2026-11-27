@@ -8,19 +8,26 @@
 //
 // Strobes idle HIGH and assert LOW: SYSTEM b6 = status_strobe, b7 = ~command_strobe.
 // One byte per ready window: accepting a command clears bit 7 and only 0xFF
-// re-arms it. 0xFF is the handshake ACK, not idle filler -- it must be fully
-// inert or a multi-digit SEARCH accumulates wrong. A real SEARCH is
+// re-arms it (STEP FWD/REV and an autostop landing report STOP with bit 7 set).
+// 0xFF is the handshake ACK, not idle filler -- it must be fully inert or a
+// multi-digit SEARCH accumulates wrong. A real SEARCH is
 // 0xBF, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, d, 0xFF, 0xF7.
+// slow_start: a parked disc takes START_MS to spin up (interface guide TP107 p.22: initial start time
+// 13 s, standard disc).  The first motion command after power-up or REJECT is held that long before the
+// transport sees it; the status answers as usual meanwhile.  A later motion command replaces it, except
+// that a held SEARCH is kept: its busy status ignores bytes until it lands, as for any SEARCH.
 //============================================================================
 module ldp_ldv1000
 #(
-    parameter [31:0] CLK_HZ = 32'd80_000_000
+    parameter [31:0] CLK_HZ = 32'd80_000_000,
+    parameter [15:0] START_MS = 16'd13000
 )
 (
     input             clk,
     input             reset_n,
     input             pause,
     input             sel,              // this front-end drives the transport
+    input             slow_start,       // model the spin-up of a parked disc
 
     input             cmd_stb,          // 1-cyc: a byte was strobed out by the CPU
     input      [7:0]  cmd_byte,
@@ -98,43 +105,82 @@ module ldp_ldv1000
     wire is_digit  = accepted && (dig != 4'hf);
     wire is_action = accepted && (dig == 4'hf);
 
+    // ---- spin-up of a parked disc ----
+    localparam [31:0] START_CLKS = (CLK_HZ / 32'd1000) * START_MS;
+    reg        spun;                    // disc up to speed: motion goes straight to the transport
+    reg        spin_pend;               // motion command held until the spin-up ends
+    reg  [3:0] spin_op;
+    reg [16:0] spin_arg;
+    reg [31:0] spin_cnt;
+    reg  [3:0] dec_op;                  // decoded op of the byte below
+    reg [16:0] dec_arg;
+    wire       motion   = (dec_op != OP_NOP) && (dec_op != OP_PARK) && (dec_op != OP_AUDIO1) &&
+                          (dec_op != OP_AUDIO2) && (dec_op != OP_AUDIO_SET);
+    wire       hold_cmd = is_action && motion && slow_start && !spun;
+    wire       spin_go  = spin_pend && (spin_cnt == 32'd0) && !accepted && !pause;
+
+    always @(posedge clk) begin
+        if (!reset_n) begin
+            spun <= 1'b0; spin_pend <= 1'b0; spin_op <= OP_NOP; spin_arg <= 17'd0; spin_cnt <= 32'd0;
+        end else if (!pause) begin
+            if (is_action && dec_op == OP_PARK) begin
+                spun <= 1'b0; spin_pend <= 1'b0;
+            end else if (hold_cmd) begin
+                if (!spin_pend) spin_cnt <= START_CLKS;
+                spin_pend <= 1'b1;
+                if (!(spin_pend && spin_op == OP_SEARCH && dec_op != OP_SEARCH)) begin
+                    spin_op <= dec_op; spin_arg <= dec_arg;
+                end
+            end else if (spin_go) begin
+                spin_pend <= 1'b0; spun <= 1'b1;
+            end else if (spin_pend && spin_cnt != 32'd0)
+                spin_cnt <= spin_cnt - 32'd1;
+        end
+    end
+
     // Combinational so the transport acts in the same cycle the byte is decoded.
     always_comb begin
-        cmd_action = is_action;
-        cmd_op     = OP_NOP;
-        cmd_arg    = 17'd0;
+        cmd_action = is_action | spin_go;
+        cmd_op     = hold_cmd ? OP_NOP : dec_op;
+        cmd_arg    = hold_cmd ? 17'd0  : dec_arg;
+        if (spin_go) begin cmd_op = spin_op; cmd_arg = spin_arg; end
+    end
+
+    always_comb begin
+        dec_op  = OP_NOP;
+        dec_arg = 17'd0;
         if (is_action) begin
             case (cmd_byte)
-                CMD_SEARCH:   begin cmd_op = OP_SEARCH;   cmd_arg = number; end
-                CMD_PLAY:     cmd_op = OP_PLAY;
-                CMD_STOP:     cmd_op = OP_STOP;
-                CMD_AUTOSTOP: begin cmd_op = OP_AUTOSTOP; cmd_arg = number; end
-                CMD_AUDIO1:   begin cmd_op = OP_AUDIO1;   cmd_arg = {15'd0, has_digit, number[0]}; end
-                CMD_AUDIO2:   begin cmd_op = OP_AUDIO2;   cmd_arg = {15'd0, has_digit, number[0]}; end
-                CMD_SCAN_FWD: cmd_op = OP_SCAN_FWD;
-                CMD_SCAN_REV: cmd_op = OP_SCAN_REV;
-                CMD_STEP_FWD: cmd_op = OP_STEP_FWD;
-                CMD_STEP_REV: cmd_op = OP_STEP_REV;
-                CMD_REJECT:   cmd_op = OP_PARK;
-                CMD_FWD_X0:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd0;  end
-                CMD_FWD_X1_4: begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd1;  end
-                CMD_FWD_X1_2: begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd2;  end
-                CMD_FWD_X1:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd4;  end
-                CMD_FWD_X2:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd8;  end
-                CMD_FWD_X3:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd12; end
-                CMD_FWD_X4:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd16; end
-                CMD_FWD_X5:   begin cmd_op = OP_PLAY_SPD; cmd_arg = 17'd20; end
+                CMD_SEARCH:   begin dec_op = OP_SEARCH;   dec_arg = number; end
+                CMD_PLAY:     dec_op = OP_PLAY;
+                CMD_STOP:     dec_op = OP_STOP;
+                CMD_AUTOSTOP: begin dec_op = OP_AUTOSTOP; dec_arg = number; end
+                CMD_AUDIO1:   begin dec_op = OP_AUDIO1;   dec_arg = {15'd0, has_digit, number[0]}; end
+                CMD_AUDIO2:   begin dec_op = OP_AUDIO2;   dec_arg = {15'd0, has_digit, number[0]}; end
+                CMD_SCAN_FWD: dec_op = OP_SCAN_FWD;
+                CMD_SCAN_REV: dec_op = OP_SCAN_REV;
+                CMD_STEP_FWD: dec_op = OP_STEP_FWD;
+                CMD_STEP_REV: dec_op = OP_STEP_REV;
+                CMD_REJECT:   dec_op = OP_PARK;
+                CMD_FWD_X0:   begin dec_op = OP_PLAY_SPD; dec_arg = 17'd0;  end
+                CMD_FWD_X1_4: begin dec_op = OP_PLAY_SPD; dec_arg = 17'd1;  end
+                CMD_FWD_X1_2: begin dec_op = OP_PLAY_SPD; dec_arg = 17'd2;  end
+                CMD_FWD_X1:   begin dec_op = OP_PLAY_SPD; dec_arg = 17'd4;  end
+                CMD_FWD_X2:   begin dec_op = OP_PLAY_SPD; dec_arg = 17'd8;  end
+                CMD_FWD_X3:   begin dec_op = OP_PLAY_SPD; dec_arg = 17'd12; end
+                CMD_FWD_X4:   begin dec_op = OP_PLAY_SPD; dec_arg = 17'd16; end
+                CMD_FWD_X5:   begin dec_op = OP_PLAY_SPD; dec_arg = 17'd20; end
                 // The LD-V1000 skips 10n+1 frames (Daphne ldv1000.cpp:372).
-                CMD_SKIP_FWD_10:  begin cmd_op = OP_SKIP; cmd_arg = 17'd11;  end
-                CMD_SKIP_FWD_20:  begin cmd_op = OP_SKIP; cmd_arg = 17'd21;  end
-                CMD_SKIP_FWD_30:  begin cmd_op = OP_SKIP; cmd_arg = 17'd31;  end
-                CMD_SKIP_FWD_40:  begin cmd_op = OP_SKIP; cmd_arg = 17'd41;  end
-                CMD_SKIP_FWD_50:  begin cmd_op = OP_SKIP; cmd_arg = 17'd51;  end
-                CMD_SKIP_FWD_60:  begin cmd_op = OP_SKIP; cmd_arg = 17'd61;  end
-                CMD_SKIP_FWD_70:  begin cmd_op = OP_SKIP; cmd_arg = 17'd71;  end
-                CMD_SKIP_FWD_80:  begin cmd_op = OP_SKIP; cmd_arg = 17'd81;  end
-                CMD_SKIP_FWD_90:  begin cmd_op = OP_SKIP; cmd_arg = 17'd91;  end
-                CMD_SKIP_FWD_100: begin cmd_op = OP_SKIP; cmd_arg = 17'd101; end
+                CMD_SKIP_FWD_10:  begin dec_op = OP_SKIP; dec_arg = 17'd11;  end
+                CMD_SKIP_FWD_20:  begin dec_op = OP_SKIP; dec_arg = 17'd21;  end
+                CMD_SKIP_FWD_30:  begin dec_op = OP_SKIP; dec_arg = 17'd31;  end
+                CMD_SKIP_FWD_40:  begin dec_op = OP_SKIP; dec_arg = 17'd41;  end
+                CMD_SKIP_FWD_50:  begin dec_op = OP_SKIP; dec_arg = 17'd51;  end
+                CMD_SKIP_FWD_60:  begin dec_op = OP_SKIP; dec_arg = 17'd61;  end
+                CMD_SKIP_FWD_70:  begin dec_op = OP_SKIP; dec_arg = 17'd71;  end
+                CMD_SKIP_FWD_80:  begin dec_op = OP_SKIP; dec_arg = 17'd81;  end
+                CMD_SKIP_FWD_90:  begin dec_op = OP_SKIP; dec_arg = 17'd91;  end
+                CMD_SKIP_FWD_100: begin dec_op = OP_SKIP; dec_arg = 17'd101; end
                 default: ;   // CLEAR, the inert group and unrecognized bytes: OP_NOP
             endcase
         end

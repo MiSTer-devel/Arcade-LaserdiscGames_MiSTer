@@ -31,7 +31,6 @@ assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 // DIAG-REVERT-2026-10-15: original below -- SDRAM now carries DL2's RAM (dl2_sdram)
 // assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
 
-assign VGA_F1 = 0;
 assign VGA_SCALER = 0;
 assign VGA_DISABLE = 0;
 assign FB_FORCE_BLANK = 0;
@@ -158,7 +157,9 @@ wire        prog_we    = ioctl_wr & (ioctl_index == 8'd0) & (ioctl_addr < prog_l
 // tile+sprite overlay genlocked onto the disc picture, so the band would only
 // duplicate it and steal rows from the game's own display.
 wire band_off = status[20] | cliff_board | is_dl2 | is_sdq | mach3_board | is_gpw | is_astron;
-wire crt_mode = (status[22:21] == 2'd0);   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
+wire band_strip_off = band_off | status[12];
+wire ilace_mode = (status[22:21] == 2'd2);
+wire crt_mode = (status[22:21] == 2'd0) | ilace_mode;   // default; 15 kHz 240p60 raster instead of the 480p24 film raster
 wire flip     = status[11];   // 180 deg rotation for an inverted monitor, not a mirror
 
 wire horz = 1'b1;   // DL/SA are horizontal-only
@@ -167,7 +168,7 @@ wire horz = 1'b1;   // DL/SA are horizontal-only
 // band adds BAND_H rows above the 480 video rows.  ARX:ARY = 4 : 3*(480+BAND_H)/480, so with the
 // band off it collapses to a plain 4:3.
 assign VIDEO_ARX = horz ? ((!ar) ? 12'd640 : (ar - 1'd1)) : ((!ar) ? 12'd3 : (ar - 1'd1));
-assign VIDEO_ARY = horz ? ((!ar) ? (band_off ? 12'd480 : 12'd500) : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
+assign VIDEO_ARY = horz ? ((!ar) ? (band_strip_off ? 12'd480 : 12'd500) : 12'd0) : ((!ar) ? 12'd4 : 12'd0);
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -177,9 +178,11 @@ localparam CONF_STR = {
 	"H1O9,Disc Side,Side 1,Side 2;",
 	"-;",
 	"P1,Video;",
-	"P1OLM,Video Timing,CRT 240p60,Film 24Hz;",
+	"P1OLM,Video Timing,CRT 240p60,Film 24Hz,CRT 480i;",
 	"P1ODE,Aspect Ratio,Original,Full screen,[ARC1],[ARC2];",
 	"P1OK,LED Bar,On,Off;",
+	"P1OC,LED Bar Position,Above Video,Over Video;",
+	"P1O[42:40],LED Bar CRT Offset,0,2,4,6,8,10,12,14 lines;",
 	"P1OB,Flip Screen,Off,On;",
 	"P1OFH,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P2,Pause Options;",
@@ -193,6 +196,8 @@ localparam CONF_STR = {
 	"P3O8,Hold Frame Seek,Off,On;",
 	"P3O57,Segment Tail,MRA Default,0,1,2,3,4,5;",
 	"P3OR,LD-V1000 Player,Firmware,HLE;",
+	"P3O[46],LD-V1000 Start Time,Authentic,Fast;",
+	"P3O[44:43],PR-7820 Search Time,PR-7820-2,PR-7820,Fast;",
 	// DIAG-REVERT-2026-10-15: new page, delete on revert. DPS step = 800 MHz VCO / 8 = 156 ps, 5 steps per entry.
 	"P4,SDRAM Options;",
 	"P4O[38:36],SDRAM Read Latch,Auto,Normal,Early,Late,Later;",
@@ -224,6 +229,10 @@ wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
 wire  [7:0] ioctl_din;
+wire [15:0] d2_nv_rdata;
+wire        d2_nv_changed;
+wire        d2_nv_req = d2_nv_changed;
+wire [15:0] nv_din = d2_nv_rdata;
 
 wire [15:0] joystick_0, joystick_1;
 wire [15:0] joy = joystick_0 | joystick_1;
@@ -241,14 +250,47 @@ wire  [5:0] dlv_sd_blk_cnt[1];
 wire        dlv_sd_rd;
 wire        dlv_sd_wr;
 wire        dlv_sd_ack;
-wire  [8:0] dlv_sd_buff_addr;
+wire [13:0] dlv_sd_buff_addr;
 wire  [7:0] dlv_sd_buff_dout;
-wire  [7:0] dlv_sd_buff_din[1];
+wire [15:0] dlv_sd_buff_din[1];
 wire        dlv_sd_buff_wr;
 assign dlv_sd_wr          = 1'b0;   // read-only image
-assign dlv_sd_buff_din[0] = 8'd0;   // never write back
+assign dlv_sd_buff_din[0] = 16'd0;   // never write back
 
-hps_io #(.CONF_STR(CONF_STR)) hps_io
+wire        h_ioctl_wr;
+wire [26:0] h_ioctl_addr;
+wire [15:0] h_ioctl_dout;
+wire        h_ioctl_wait;
+wire        h_sd_ack;
+wire [12:0] h_sd_buff_addr;
+wire [15:0] h_sd_buff_dout;
+wire        h_sd_buff_wr;
+wire [26:0] b_ioctl_addr;
+
+hps_wide_bridge hps_wide_bridge
+(
+	.clk(CLK_CORE),
+	.reset(1'b0),
+	.w_ioctl_wr(h_ioctl_wr),
+	.w_ioctl_addr(h_ioctl_addr),
+	.w_ioctl_dout(h_ioctl_dout),
+	.w_ioctl_wait(h_ioctl_wait),
+	.b_ioctl_wr(ioctl_wr),
+	.b_ioctl_addr(b_ioctl_addr),
+	.b_ioctl_dout(ioctl_dout),
+	.b_ioctl_wait(gpw_ioctl_wait | (brd[BRD_DL2] & d2_sd_ioctl_wait)),
+	.w_sd_ack(h_sd_ack),
+	.w_sd_buff_addr(h_sd_buff_addr),
+	.w_sd_buff_dout(h_sd_buff_dout),
+	.w_sd_buff_wr(h_sd_buff_wr),
+	.b_sd_ack(dlv_sd_ack),
+	.b_sd_buff_addr(dlv_sd_buff_addr),
+	.b_sd_buff_dout(dlv_sd_buff_dout),
+	.b_sd_buff_wr(dlv_sd_buff_wr)
+);
+assign ioctl_addr = b_ioctl_addr[24:0];
+
+hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
 (
 	.clk_sys(CLK_CORE),   // was CLK_10M (Kangaroo leftover); core is single-clock now
 	.HPS_BUS(HPS_BUS),
@@ -266,14 +308,13 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_download(ioctl_download),
 	.ioctl_upload(ioctl_upload),
 	.ioctl_upload_req(ioctl_upload_req),
-	.ioctl_wr(ioctl_wr),
-	.ioctl_addr(ioctl_addr),
-	.ioctl_dout(ioctl_dout),
-	.ioctl_din(ioctl_din),
+	.ioctl_wr(h_ioctl_wr),
+	.ioctl_addr(h_ioctl_addr),
+	.ioctl_dout(h_ioctl_dout),
+	.ioctl_din(nv_din),
+	.ioctl_upload_index(8'd4),
 	.ioctl_index(ioctl_index),
-	// DIAG-REVERT-2026-10-15: original below
-	// .ioctl_wait(gpw_ioctl_wait),
-	.ioctl_wait(gpw_ioctl_wait | (brd[BRD_DL2] & d2_sd_ioctl_wait)),   // DIAG: DL2 ROM bytes also land in SDRAM
+	.ioctl_wait(h_ioctl_wait),
 
 
 	.joystick_0(joystick_0),
@@ -288,11 +329,11 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.sd_blk_cnt(dlv_sd_blk_cnt),
 	.sd_rd(dlv_sd_rd),
 	.sd_wr(dlv_sd_wr),
-	.sd_ack(dlv_sd_ack),
-	.sd_buff_addr(dlv_sd_buff_addr),
-	.sd_buff_dout(dlv_sd_buff_dout),
+	.sd_ack(h_sd_ack),
+	.sd_buff_addr(h_sd_buff_addr),
+	.sd_buff_dout(h_sd_buff_dout),
 	.sd_buff_din(dlv_sd_buff_din),
-	.sd_buff_wr(dlv_sd_buff_wr)
+	.sd_buff_wr(h_sd_buff_wr)
 );
 
 ////////////////////   CLOCKS   ///////////////////
@@ -404,7 +445,7 @@ sdramclk_ddr
     .sset(1'b0)
 );
 
-assign CLK_VIDEO = CLK_CORE;   // scaler reference clock (paired with ce_pix from CE_DIV_LOG2)
+assign CLK_VIDEO = CLK_CORE;   // scaler reference clock (paired with the reader's ce_pix)
 
 // LD-V1000 model (status[27]: 0 = real firmware, 1 = HLE).  ldp_top samples it in reset, so a change on
 // the OSD resets the game (~0.8 ms) and the new model is the one running -- no manual reset needed.
@@ -585,6 +626,9 @@ wire [63:0] led_digits_flat;
 wire [63:0] led_digits_dl;
 wire        rr_ce_pix, rr_hs, rr_vs, rr_hblank, rr_vblank;
 wire [15:0] rr_hpos, rr_vpos;
+wire  [1:0] rr_wmode;
+wire [15:0] rr_hpos512;
+reg   [1:0] dec_wmode = 2'd0;
 wire [15:0] rr_band_act;      // band height in force this frame, from the reader
 wire  [7:0] rr_r, rr_g, rr_b;
 wire        led_lit;
@@ -639,6 +683,8 @@ reg   [1:0] fb_tail_adopt;     // vblanks in which PRE-seek frames may still be 
 reg         seek_was_play;     // real playback has ended since the last seek
 reg         seek_is_seg;       // captured at the seek: this hold follows a SEGMENT, not a hold frame
 reg         seek_black;        // blank-the-picture flag, updated ONLY at vblank (see below)
+wire        ldp_0_vsq;         // LD-V1000 firmware squelching its video (firmware mode only)
+wire        ldp_0_ldv_fw;      // the LD-V1000 is running its real firmware
 // Hold Frame Seek (status[8]): does a hold-frame seek get the seek pause at all?  Off = segment
 // ends only.  When it does pause, Seek Behaviour decides what that pause looks like.
 wire        seek_pause = seek_is_seg | status[8];
@@ -647,14 +693,20 @@ wire        seek_pause = seek_is_seg | status[8];
 localparam [15:0] BAND_H = 16'd20;             // reserved top strip height in rows (glyphs at rows 2..8)
 // The band's rows stay reserved in the reader's V_TOTAL either way, so switching it off gives them
 // to the video without changing the frame time.
-wire [15:0] band_h_w = band_off ? 16'd0 : (crt_mode ? (BAND_H >> 1) : BAND_H);
+wire [15:0] band_crt_off = crt_mode ? {11'd0, status[42:40], 1'b0} : 16'd0;
+wire [15:0] band_h_w = band_strip_off ? 16'd0 : (crt_mode ? ((BAND_H >> 1) + band_crt_off) : BAND_H);
+wire [15:0] band_vc  = (rr_vpos >= band_crt_off) ? (rr_vpos - band_crt_off) : 16'hFFFF;
 wire        band_lit = led_lit & ~band_off;
 // Seek Behaviour (status[4]): 0 = hold the last frame, 1 = go black like a real player with no
 // sync.  Only during a SEARCH hold, never a still/pause, and only once fb_tail_adopt has burned
 // down -- those frames are real content of the segment that just ended.
+// On the LD-V1000 firmware the search is the player's own: black for as long as it squelches its
+// video (the whole head move), not only for the core's hold after it, and still black through the
+// hold that lands the picture after it (seek_black already set: no pre-seek frame between the two).
 // fb_seek_hold changes at arbitrary points in the frame, so this is LATCHED at vblank in the
 // framebuffer block below: switching the mask mid-raster tears the picture across the screen.
-wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0);
+wire        seek_black_w = status[4] & ((fb_seek_hold & seek_pause & (fb_tail_adopt == 2'd0)) | ldp_0_vsq |
+                                          (ldp_0_ldv_fw & fb_seek_hold & seek_black));
 //------------------------------------------------------------------------------
 // SHARED OVERLAY COORDINATE SPACE.
 // Every Daphne game in this core declares a 320x240 overlay surface (DL2, Cliff/
@@ -667,14 +719,16 @@ wire        seek_black_w = status[4] & fb_seek_hold & seek_pause & (fb_tail_adop
 // the band height is subtracted here to make the space VIDEO-relative. Without
 // it, turning the band off slides every overlay down by BAND_H rows.
 wire [18:0] ovl_sx_mul = rr_hpos * 16'd5;
-wire [15:0] ovl_sx     = ovl_sx_mul[18:3];
+wire [29:0] ovl_sx_m9  = rr_hpos * 14'd7282;
+wire [15:0] ovl_sx     = (rr_wmode == 2'd2) ? ovl_sx_m9[29:14] : (rr_wmode == 2'd1) ? {1'b0, rr_hpos[15:1]} : ovl_sx_mul[18:3];
 // rr_band_act, not band_h_w: the reader adopts an OSD toggle only at a frame
 // boundary, so using the raw value would slide the overlay mid-raster.
-wire [15:0] ovl_vrel   = (rr_vpos >= rr_band_act) ? (rr_vpos - rr_band_act) : 16'd0;
+wire [15:0] ovl_crop   = crt_mode ? {1'b0, rr_band_act[15:1]} : 16'd0;
+wire [15:0] ovl_vrel   = ((rr_vpos >= rr_band_act) ? (rr_vpos - rr_band_act) : 16'd0) + ovl_crop;
 wire [15:0] ovl_sy     = crt_mode ? ovl_vrel : {1'b0, ovl_vrel[15:1]};
 // ovl_sy of the next raster line, for SuperDon's hblank prefetch (vpos runs backwards when flipped).
 wire [15:0] rr_vpos_nx  = flip ? (rr_vpos - 16'd1) : (rr_vpos + 16'd1);
-wire [15:0] ovl_vrel_nx = (rr_vpos_nx >= rr_band_act) ? (rr_vpos_nx - rr_band_act) : 16'd0;
+wire [15:0] ovl_vrel_nx = ((rr_vpos_nx >= rr_band_act) ? (rr_vpos_nx - rr_band_act) : 16'd0) + ovl_crop;
 wire [15:0] ovl_sy_nx   = crt_mode ? ovl_vrel_nx : {1'b0, ovl_vrel_nx[15:1]};
 
 // Priority: LED band (DL/SA only) > DL2 text overlay > Cliff's TMS overlay >
@@ -710,11 +764,13 @@ wire        rr_rd_req2, rr_rd_ack2;
 // fb_raster_reader tells fb_writer when its line fetch has landed, so the writer never contends
 // with an in-flight read2.  Declared here because fb_writer is instantiated ABOVE the reader.
 wire        rr_fill_idle;
+wire        rr_field;
+assign VGA_F1 = rr_field;
 
 
 // Driven by fb_raster_reader with the LED band composited over it.  The first parameter is
 // arcade_video's WIDTH and MUST be >= H_ACT or video_mixer's line buffers wrap mid-line.
-arcade_video #(512,24) arcade_video
+arcade_video_il #(720,24) arcade_video
 (
 	.*,
 
@@ -733,6 +789,7 @@ arcade_video #(512,24) arcade_video
 	.VSync(rr_vs),
 
 	.forced_scandoubler(forced_scandoubler & ~crt_mode),
+	.interlace(ilace_mode),
 	.fx(crt_mode ? 3'd0 : status[17:15])
 );
 
@@ -957,7 +1014,6 @@ wire  [5:0] ldp_0_col;
 chip_pool_pkg::z80_i_t z80_1_i;
 chip_pool_pkg::z80_o_t z80_1_o;
 wire                   z80_1_rst_n;
-wire                   ldp_0_ldv_fw;
 
 ldp_top #(.CLK_HZ(CORE_CLK_HZ), .LDV_ROM_INDEX(8'd5), .LDV_FILM_PHASE(4'd2), .LDV_VSYNC_GATE(1'b1),
           .LDV_LIVE_CMD(1'b1), .LDV_SEEK_FAST(10'd340)) ldp_0
@@ -974,7 +1030,7 @@ ldp_top #(.CLK_HZ(CORE_CLK_HZ), .LDV_ROM_INDEX(8'd5), .LDV_FILM_PHASE(4'd2), .LD
     .park_frame(ldp_0_i.park_frame), .status_rd(ldp_0_i.status_rd),
     .txt_we(ldp_0_twe), .txt_line(ldp_0_line), .txt_col(ldp_0_col), .txt_glyph(ldp_0_glyph), .txt_on(ldp_0_ton),
     .txt_x(ldp_0_tx), .txt_y(ldp_0_ty),
-    .ldv_fw_en(~status[27]), .cmd_oe(ldp_0_i.cmd_oe), .ldv_fw(ldp_0_ldv_fw),
+    .ldv_fw_en(~status[27]), .pr7820_srch(status[44:43]), .ldv_slow_start(~status[46]), .cmd_oe(ldp_0_i.cmd_oe), .ldv_fw(ldp_0_ldv_fw), .video_squelch(ldp_0_vsq),
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
     .ioctl_dout(ioctl_dout), .ioctl_wr(ioctl_wr),
     .z80_i(z80_1_i), .z80_o(z80_1_o), .z80_rst_n(z80_1_rst_n)
@@ -1151,7 +1207,7 @@ CliffHanger #(.CLK_HZ(CORE_CLK_HZ)) cliff_inst
 
 	// TMS9928A overlay -> composited into comp_r/g/b above
 	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
-	.ovl_hraw(rr_hpos), .ovl_vrel(ovl_vrel), .ovl_crt(crt_mode),   // DIAG-REVERT-2026-10-16: added
+	.ovl_hraw(rr_hpos512), .ovl_vrel(ovl_vrel), .ovl_crt(crt_mode),   // DIAG-REVERT-2026-10-16: added
 	.ovl_color(cliff_ovl_color), .ovl_opaque(cliff_ovl_opaque),
 
 	// shared chip pool
@@ -1199,7 +1255,7 @@ SuperDon #(.CLK_HZ(CORE_CLK_HZ)) sdq_inst
 	.ld_playing_o(ld_playing_sd),
 
 	.ovl_hpos(ovl_sx), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
-	.ovl_hraw(rr_hpos), .ovl_vnext(ovl_sy_nx), .ovl_flip(flip),
+	.ovl_hraw(rr_hpos512), .ovl_vnext(ovl_sy_nx), .ovl_flip(flip),
 	.ovl_rgb(sdq_ovl_rgb), .ovl_opaque(sdq_ovl_opaque),
 	.dbg_led(dbg_led_sd),
 
@@ -1250,7 +1306,7 @@ GPWorld #(.CLK_HZ(CORE_CLK_HZ)) gpw_inst
 	.ld_frame_o(ld_frame_gp),
 	.ld_playing_o(ld_playing_gp),
 
-	.ovl_hraw(rr_hpos), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+	.ovl_hraw(rr_hpos512), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
 	.ovl_rgb(gpw_ovl_rgb), .ovl_opaque(gpw_ovl_opaque),
 	.dbg_led(dbg_led_gp),
 
@@ -1299,7 +1355,7 @@ Astron #(.CLK_HZ(CORE_CLK_HZ)) astron_inst
 	.ld_frame_o(ld_frame_as),
 	.ld_playing_o(ld_playing_as),
 
-	.ovl_hraw(rr_hpos), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
+	.ovl_hraw(rr_hpos512), .ovl_vpos(ovl_sy), .ovl_ce_pix(rr_ce_pix),
 	.ovl_vnext(ovl_sy_nx),   // DIAG-REVERT-2026-10-16: added for the hblank cell-0 prefetch
 	.ovl_rgb(ast_ovl_rgb), .ovl_opaque(ast_ovl_opaque),
 	.dbg_led(dbg_led_as),
@@ -1351,6 +1407,8 @@ DragonsLair2 #(.CLK_HZ(CORE_CLK_HZ)) dl2_inst
 
 	.ioctl_addr(ioctl_addr), .ioctl_data(ioctl_dout),
 	.ioctl_wr(ioctl_wr), .ioctl_index(ioctl_index),
+
+	.nv_raddr(h_ioctl_addr[7:1]), .nv_rdata(d2_nv_rdata), .nv_changed(d2_nv_changed),
 
 	.ram_addr(d2_ram_addr), .ram_din(d2_ram_din),
 	.ram_rd(d2_ram_rd), .ram_wr(d2_ram_wr),
@@ -1631,7 +1689,7 @@ assign skill_level       = brd[BRD_DL] ? skill_dl      : 2'd0;
 // Dragon's Lair / Space Ace / Thayer's Quest do not persist high scores, so there is no hiscore
 // module.  It was the sole driver of ioctl_din and ioctl_upload_req -- tied off to keep hps_io happy.
 assign ioctl_din        = 8'd0;
-assign ioctl_upload_req = 1'b0;
+assign ioctl_upload_req = d2_nv_req;
 
 // The MISTER_FB path is NOT used (FB_EN=0): it bypasses the arcade_video path where the LED band
 // and the MiSTer screenshot live.
@@ -1665,6 +1723,7 @@ wire signed [15:0] pcm_l, pcm_r;        // .dlv PCM -> audio mux (see AUDIO_L/R 
 
 // Continuous video+audio streamer: free-runs film frames from START_FRAME and keeps a 44.1 kHz
 // PCM ring topped up (audio has SD priority).
+wire        dec_frame_done;
 dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .clk(CLK_CORE), .reset(reset),
     .img_mounted(dlv_img_mounted), .img_size(dlv_img_size),
@@ -1675,7 +1734,7 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
     .dec_reset(dec_reset_w),
     .pcm_l(pcm_l), .pcm_r(pcm_r),
     .ld_curr_frame(ld_curr_frame_top), .pause(pause_cpu),
-    .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse),   // SEEK-HOLD/
+    .aud_primed(fb_aud_primed), .hold_play(fb_seek_hold), .seek_flush(fb_seek_pulse), .dec_done(dec_frame_done),   // SEEK-HOLD/
     .ld_playing(ld_playing_top),
     .ch_en(ld_aud_en_top),
     .disc_2997(disc_2997_w), .disc_leader(ld_leader_w),
@@ -1686,7 +1745,7 @@ dlv_streamer #(.START_FRAME(17'd1000), .CLK_HZ(CORE_CLK_HZ)) dlv_strm (
 wire        dec_px_we, dec_px_ready;
 wire [15:0] dec_px_x, dec_px_y, dec_w, dec_h;
 wire  [7:0] dec_px_r, dec_px_g, dec_px_b;
-wire        dec_frame_done, dec_idle;
+wire        dec_idle;
 
 jpeg_frame_decoder dec (
     .clk(CLK_CORE), .rst(dec_reset_w),   // per-frame reset, NOT global; fb_writer stays on global reset
@@ -1703,9 +1762,10 @@ jpeg_frame_decoder dec (
 // ---- Framebuffer geometry, defined ONCE and passed everywhere ----
 // 512x480 matches the Daphne source m2v exactly, so encoding is a pure re-compress, and 512 is
 // fb_raster_reader's line-buffer ceiling.
-localparam [15:0] FB_COLS_HW   = 16'd512;
+localparam [15:0] FB_COLS_HW   = 16'd720;
 localparam [15:0] FB_ROWS_HW   = 16'd480;
-localparam [26:0] FB_BUF_HW    = 27'd245760;  // 512*480 halfwords per buffer (was 76800)
+localparam [15:0] FB_STRIDE_HW = 16'd1440;
+localparam [26:0] FB_BUF_HW    = {11'd0, FB_STRIDE_HW} * {11'd0, FB_ROWS_HW};
 localparam [26:0] FB_BUF0_HW   = 27'd0;
 localparam [26:0] FB_BUF1_HW   = FB_BUF_HW;
 localparam [26:0] FB_BUF2_HW   = FB_BUF_HW * 2;
@@ -1816,6 +1876,7 @@ always @(posedge CLK_CORE) begin
         end
         // Ordered AFTER the adopt block so fb_have_new wins on a simultaneous cycle.
         if (dec_frame_done) begin
+            dec_wmode    <= (dec_w > 16'd640) ? 2'd2 : (dec_w > 16'd512) ? 2'd1 : 2'd0;
             fb_ready_idx <= fb_wr_idx;
             fb_wr_idx    <= fb_free_idx;   // != fb_next_disp by construction
             // Publish the in-flight frame too: its fetch only started because vid_target reached it.
@@ -1860,11 +1921,11 @@ wire [26:0] fb_rd_base = !TRIPLE_BUF          ? FB_BUF0_HW :
 
 // Geometry passed explicitly -- CLEAR_ROWS especially, or only part of each buffer is cleared.
 fb_writer #(
-    .STRIDE_HW (FB_COLS_HW),
+    .STRIDE_HW (FB_STRIDE_HW),
     .FB_COLS   (FB_COLS_HW),
     .FB_ROWS   (FB_ROWS_HW),
     .CLEAR_ROWS(FB_ROWS_HW),
-    .COALESCE  (1'b0)   // write-coalesce accumulator is the suspect for the green-dot corruption; disabled pending fix
+    .COALESCE  (1'b1)
 ) fb_wr (
     .clk(CLK_CORE), .reset(reset),
     .px_we(dec_px_we), .px_x(dec_px_x), .px_y(dec_px_y),
@@ -1910,6 +1971,7 @@ gpw_spr_mem gpw_spr_ddr
 	.mem_req(gp_mem_req), .mem_ack(ddr_rom_ack), .mem_dout(ddr_rom_dout)
 );
 
+wire [27:3] rr_bst_addr; wire [7:0] rr_bst_len; wire rr_bst_req, rr_bst_ack, rr_bst_valid; wire [63:0] rr_bst_data;
 ddram ddram_fb (
     .DDRAM_CLK(CLK_CORE),
     .DDRAM_BUSY(DDRAM_BUSY),
@@ -1931,18 +1993,17 @@ ddram ddram_fb (
     .rom_we(ddr_rom_we), .rom_req(ddr_rom_req), .rom_ack(ddr_rom_ack),
     // second read port — raster reader (DDR framebuffer -> video)
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
-    .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2)
+    .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
+    .bst_addr(rr_bst_addr), .bst_len(rr_bst_len), .bst_req(rr_bst_req),
+    .bst_ack(rr_bst_ack), .bst_valid(rr_bst_valid), .bst_data(rr_bst_data)
 );
 
 // Read the framebuffer back in scan order, then composite the LED band over it.
 fb_raster_reader #(
     .H_ACT      (FB_COLS_HW),
     .V_ACT      (FB_ROWS_HW),
-    .STRIDE     (FB_COLS_HW),
+    .STRIDE     (FB_STRIDE_HW),
     .V_BAND     (BAND_H),
-    // CE_DIV_LOG2 is the bandwidth dial: too fast and the reader cannot fetch a whole line in one
-    // line-time (bottom of the picture cuts off); too slow drops below the content frame rate.
-    .CE_DIV_LOG2(3'd3),
 
     // ---- video timing ----
     // ONE display refresh per film frame: any other ratio alternates one and two refreshes and the
@@ -1954,13 +2015,19 @@ fb_raster_reader #(
     .frame_base_hw(fb_rd_base),             // was hardcoded 27'd0, see fb_buf_sel above
     .v_band(band_h_w),                      // 0 = LED bar off, video takes the band's rows
     .crt(crt_mode),
+    .ilace(ilace_mode),
+    .field(rr_field),
     .flip(flip),
+    .wmode(dec_wmode),
+    .wmode_act(rr_wmode),
     .rdaddr2(rr_rdaddr2), .dout2(rr_dout2), .dout2_64(rr_dout2_64),
     .rd_req2(rr_rd_req2), .rd_ack2(rr_rd_ack2),
+    .bst_addr(rr_bst_addr), .bst_len(rr_bst_len), .bst_req(rr_bst_req),
+    .bst_ack(rr_bst_ack), .bst_valid(rr_bst_valid), .bst_data(rr_bst_data),
     .fill_idle(rr_fill_idle),               // (delete on revert)
     .ce_pix(rr_ce_pix),
     .hsync(rr_hs), .vsync(rr_vs), .hblank(rr_hblank), .vblank(rr_vblank),
-    .hpos(rr_hpos), .vpos(rr_vpos), .v_band_act(rr_band_act),
+    .hpos(rr_hpos), .hpos_n(rr_hpos512), .vpos(rr_vpos), .v_band_act(rr_band_act),
     .vid_r(rr_r), .vid_g(rr_g), .vid_b(rr_b)
 );
 
@@ -1996,7 +2063,7 @@ text_overlay #(.FONT_HEX("rtl/video/ldp1450_font.hex")) dl2_text (
 );
 
 led_band #(.X_START(16'd58), .SCALE_LOG2(2'd1), .X_START_SKILL(16'd22)) led_band_i (
-    .hc(rr_hpos), .vc(rr_vpos), .crt_240p(crt_mode),
+    .clk(CLK_CORE), .hc(rr_hpos512), .vc(band_vc), .crt_240p(crt_mode),
     .led_digits(led_digits_flat),   // real score/lives, restored
     .skill_en(is_spaceace),         // MRA mod byte, SA only
     .skill(skill_level),

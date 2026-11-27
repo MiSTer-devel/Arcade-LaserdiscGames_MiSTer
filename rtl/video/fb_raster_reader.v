@@ -1,7 +1,7 @@
 //============================================================================
 // fb_raster_reader.v — DDR framebuffer -> raster video (for arcade_video)
 //----------------------------------------------------------------------------
-// Reads a 320x240 RGB565 framebuffer out of HPS DDR3 (written by fb_writer via
+// Reads a 24-bit RGB framebuffer out of HPS DDR3 (written by fb_writer via
 // ddram.sv) in RASTER scan order and produces a standard video raster
 // (ce_pix + hs/vs/hblank/vblank + RGB888) to feed the core's normal
 // arcade_video path.  This is the screenshot-friendly route: everything goes
@@ -35,17 +35,20 @@ module fb_raster_reader #(
                                            //   Rows 0..v_band-1 are forced black (the band composites there);
                                            //   rows v_band..v_band+V_ACT-1 show the FULL video (row R ->
                                            //   framebuffer row R-v_band).  Video is NEVER cropped/scaled.
-    parameter [15:0] H_FP = 16'd8, H_SYNC = 16'd32, H_BP = 16'd24,
+    parameter [15:0] H_FP = 16'd3, H_SYNC = 16'd32, H_BP = 16'd19,
     parameter [15:0] V_FP = 16'd8, V_SYNC = 16'd4,  V_BP = 16'd16,
-    // CRT (15 kHz) mode.  512+15+47+62 = 636 px @10 MHz -> fH 15.72 kHz with a standard
-    // 4.7 us sync / 1.5 us front porch; 262 lines -> fV 60.01 Hz.  Active rows are V_ACT/2,
+    // CRT (15 kHz) mode.  512+10+46+57 = 625 px @9.826 MHz -> fH 15.72 kHz with a standard
+    // 4.7 us sync / 1.0 us front porch; 262 lines -> fV 60.01 Hz.  Active rows are V_ACT/2,
     // taken as every other framebuffer row.
-    parameter [15:0] H_FP_C = 16'd15, H_SYNC_C = 16'd47, H_BP_C = 16'd62,
+    parameter [15:0] H_FP_C = 16'd10, H_SYNC_C = 16'd46, H_BP_C = 16'd57,
     parameter [15:0] V_FP_C = 16'd3,  V_SYNC_C = 16'd3,
     parameter [15:0] V_TOTAL_C = 16'd262,
-    // ce_pix = clk / 2^CE_DIV_LOG2.  Refresh must stay ABOVE the content frame rate, and the
-    // reader must still fetch a whole line inside one line-time or the picture cuts off.
-    parameter [2:0]  CE_DIV_LOG2 = 3'd3
+    parameter [15:0] H_ACT_N  = 16'd512,
+    parameter [15:0] H_FP_W   = 16'd7,  H_SYNC_W  = 16'd38, H_BP_W  = 16'd22,
+    parameter [15:0] H_FP_CW  = 16'd12, H_SYNC_CW = 16'd58, H_BP_CW = 16'd70,
+    parameter [15:0] H_ACT_W  = 16'd640,
+    parameter [15:0] H_FP_X   = 16'd8,  H_SYNC_X  = 16'd32, H_BP_X  = 16'd18,
+    parameter [15:0] H_FP_CX  = 16'd16, H_SYNC_CX = 16'd63, H_BP_CX = 16'd59
 )(
     input             clk,            // CLK_CORE (= DDRAM_CLK); 80 MHz as of
     input             reset,          // active-high
@@ -53,7 +56,11 @@ module fb_raster_reader #(
     input      [15:0] v_band,         // active band height: V_BAND (band on) or 0 (full screen).  V_TOTAL
                                       //   reserves V_BAND either way, so the frame time never changes.
     input             crt,            // 0 = film 480p/23.98 Hz (scaler); 1 = CRT 240p/60 Hz (15 kHz)
+    input             ilace,
+    output reg        field,
     input             flip,           // 180 deg rotation (inverted monitor): BOTH axes, not a mirror
+    input       [1:0] wmode,
+    output      [1:0] wmode_act,
 
     // ddram.sv read port 2
     output reg [26:0] rdaddr2,
@@ -61,6 +68,13 @@ module fb_raster_reader #(
     input      [63:0] dout2_64,     // whole cached word (4 halfwords)
     output reg        rd_req2,
     input             rd_ack2,
+
+    output reg [27:3] bst_addr,
+    output reg  [7:0] bst_len,
+    output reg        bst_req,
+    input             bst_ack,
+    input             bst_valid,
+    input      [63:0] bst_data,
 
     // High while the fill FSM is PARKED: this line's fetch has landed, so there is no read2
     // traffic in flight and fb_writer may use the DDR bus.
@@ -73,6 +87,7 @@ module fb_raster_reader #(
     output reg        hblank,
     output reg        vblank,
     output reg [15:0] hpos,           // aligned (x,y) of the pixel now on vid_*
+    output reg [15:0] hpos_n,
     output reg [15:0] vpos,           //   (for the LED-band compositor)
     // The band height ACTUALLY in force this frame. v_band is adopted only at a
     // frame boundary, so any overlay positioning relative to the video must use
@@ -93,55 +108,74 @@ module fb_raster_reader #(
     reg  [15:0] v_band_q = V_BAND;
     assign v_band_act = v_band_q;
     reg         crt_q    = 1'b0;
+    reg         ilace_q  = 1'b0;
+    reg         ffld     = 1'b0;
     reg         flip_q   = 1'b0;
+    reg   [1:0] wm_q     = 2'd0;
+    assign wmode_act = wm_q;
+    wire        m720  = (wm_q == 2'd2);
+    wire        m640  = (wm_q == 2'd1);
+    wire [15:0] h_act = m720 ? H_ACT : m640 ? H_ACT_W : H_ACT_N;
 
-    wire [15:0] h_total = crt_q ? (H_ACT + H_FP_C + H_SYNC_C + H_BP_C)
-                                : (H_ACT + H_FP   + H_SYNC   + H_BP);
-    wire [15:0] hs_beg  = crt_q ? (H_ACT + H_FP_C) : (H_ACT + H_FP);
-    wire [15:0] hs_end  = crt_q ? (H_ACT + H_FP_C + H_SYNC_C) : (H_ACT + H_FP + H_SYNC);
+    wire [15:0] h_fp    = m720 ? (crt_q ? H_FP_CX   : H_FP_X)   : m640 ? (crt_q ? H_FP_CW   : H_FP_W)   : (crt_q ? H_FP_C   : H_FP);
+    wire [15:0] h_sync  = m720 ? (crt_q ? H_SYNC_CX : H_SYNC_X) : m640 ? (crt_q ? H_SYNC_CW : H_SYNC_W) : (crt_q ? H_SYNC_C : H_SYNC);
+    wire [15:0] h_bp    = m720 ? (crt_q ? H_BP_CX   : H_BP_X)   : m640 ? (crt_q ? H_BP_CW   : H_BP_W)   : (crt_q ? H_BP_C   : H_BP);
+    wire [15:0] h_total = h_act + h_fp + h_sync + h_bp;
+    wire [15:0] hs_beg  = h_act + h_fp;
+    wire [15:0] hs_end  = h_act + h_fp + h_sync;
 
-    wire [15:0] v_act   = crt_q ? (V_ACT >> 1) : V_ACT;
+    wire [15:0] v_act   = crt_q ? ((V_ACT >> 1) - v_band_q) : V_ACT;
+    wire [15:0] crop_top = crt_q ? {1'b0, v_band_q[15:1]} : 16'd0;
     wire [15:0] v_disp  = v_act + v_band_q;
-    wire [15:0] v_total = crt_q ? V_TOTAL_C : V_TOTAL_F;
+    wire        il      = crt_q & ilace_q;
+    wire [15:0] v_total = crt_q ? (il ? (field ? 16'd263 : 16'd262) : V_TOTAL_C) : V_TOTAL_F;
     wire [15:0] vs_beg  = crt_q ? (v_disp + V_FP_C) : (v_disp + V_FP);
     wire [15:0] vs_end  = crt_q ? (v_disp + V_FP_C + V_SYNC_C) : (v_disp + V_FP + V_SYNC);
+    wire [15:0] vs_hoff = (il & field) ? (h_total >> 1) : 16'd0;
+    wire        vs_on   = ((vcnt > vs_beg) || (vcnt == vs_beg && hcnt >= vs_hoff)) &&
+                          ((vcnt < vs_end) || (vcnt == vs_end && hcnt <  vs_hoff));
 
-    // pixel clock enable = clk / 2^CE_DIV_LOG2  (RES-512x480-; was hardwired clk/8).
-    // The counter still free-runs over its full 3 bits; only the compare mask narrows, so
-    // (3'd1 << 3) would wrap to 0 in 3 bits.
-    localparam [3:0] CE_MASK4 = (4'd1 << CE_DIV_LOG2) - 4'd1;
-    localparam [2:0] CE_MASK  = CE_MASK4[2:0];
-    reg [2:0] cediv = 3'd0;
-    always @(posedge clk) cediv <= cediv + 3'd1;
-    assign ce_pix = ((cediv & CE_MASK) == 3'd0);
+    // pixel clock enable = clk * ce_inc / 4608, so a 4608-clock line holds exactly ce_inc pixels.
+    // Each width gets the clock that puts its active line at the 52.15 us of a 4:3 picture
+    // (704 px at 13.5 MHz): 512 -> 9.826 MHz, 640 -> 12.274 MHz, 720 -> 13.507 MHz (704 of its 720).
+    wire [12:0] ce_inc  = m720 ? 13'd778 : m640 ? 13'd707 : 13'd566;
+    reg  [12:0] ceacc   = 13'd0;
+    wire [12:0] ceacc_n = ceacc + ce_inc;
+    wire        ce_wrap = (ceacc_n >= 13'd4608);
+    always @(posedge clk) ceacc <= ce_wrap ? (ceacc_n - 13'd4608) : ceacc_n;
+    assign ce_pix = ce_wrap;
 
     // raster counters
     reg [15:0] hcnt = 16'd0, vcnt = 16'd0;
     wire h_last = (hcnt == h_total - 16'd1);
     wire v_last = (vcnt == v_total - 16'd1);
-    wire h_active = (hcnt < H_ACT);
+    wire h_active = (hcnt < h_act);
     wire v_active = (vcnt < v_disp);   // active rows 0..v_disp-1 = band strip + full video
 
     // ping-pong line buffer: 2 lines, 512-halfword stride (matches the
     // {buf, hcnt[8:0]} / {buf, fidx[8:0]} index — H_ACT<=512).
-    reg  [15:0] linebuf [0:1023];
+    localparam [3:0] WSH = 4'd1;
+    reg  [63:0] linebuf [0:1023];
+    reg  [63:0] pix64_q;
+    reg   [9:0] widx;
     reg         disp_buf = 1'b0;
     wire        fill_buf = ~disp_buf;
 
     // Display read and the DDR fill FSM share fill_done_q, so they must live in one always block.
-    reg [15:0] pix_q;
+    reg [31:0] pix_q;
     reg        active_q;
 
     // ---- DDR fill FSM: fetch fline into fill_buf, self-paced ----
     // NOT tied to a one-line deadline -- under DDR write contention a fetch can overrun a line,
     // and the old once-per-line gate assumed it never would.
-    localparam F_IDLE = 2'd0, F_REQ = 2'd1, F_WAIT = 2'd2, F_STORE = 2'd3;
+    localparam F_IDLE = 2'd0, F_REQ = 2'd1, F_WAIT = 2'd2;
+    localparam [15:0] BURST_W = 16'd16;
     reg [1:0]  fst  = F_IDLE;
-    reg [47:0] fw_hold;      // halfwords 1..3 awaiting store (hw0 is written directly on ack)
-    reg [1:0]  fw_cnt;       // which of the remaining 3 is being stored
-    reg [15:0] fw_idx;       // linebuf index for the current F_STORE write (named reg on purpose:
-                             // Quartus 17 elaborates .v as Verilog-2001, where (expr)[8:0] is illegal)
     reg [15:0] fidx;
+    wire [15:0] words_left = (h_act - fidx) >> WSH;
+    wire [15:0] blen_px    = {8'd0, bst_len} << WSH;
+    wire [15:0] blen_w     = (words_left > BURST_W) ? BURST_W : words_left;
+    wire [26:0] fetch_hw   = frame_base_hw_q + fb_row*STRIDE + {fidx, 1'b0};
     reg [15:0] fline;
     reg        fill_done_q;    // 1 once fline's data is fully loaded into fill_buf, awaiting the swap below
     wire [15:0] fline_next = (fline == v_total - 16'd1) ? 16'd0 : fline + 16'd1;
@@ -156,13 +190,17 @@ module fb_raster_reader #(
 
     // Display line `fline` -> framebuffer row.  CRT mode takes every other row (480 -> 240);
     // flip reverses the order.  STRIDE is a constant so the multiply is a shift.
-    wire [15:0] row_lin = fline - vid_top;
-    wire [15:0] row_dec = crt_q ? (row_lin << 1) : row_lin;
+    wire [15:0] row_vis = fline - vid_top;
+    wire [15:0] row_lin = row_vis + crop_top;
+    wire [15:0] row_dec = crt_q ? ((row_lin << 1) | {15'd0, il & ~ffld}) : row_lin;
     wire [15:0] fb_row  = flip_q ? (V_ACT - 16'd1 - row_dec) : row_dec;
 
     // Second axis of the rotation: read the line buffer backwards.  Named wire because Quartus 17
     // elaborates .v as Verilog-2001, where (expr)[8:0] is illegal.
-    wire [15:0] h_rd = flip_q ? (H_ACT - 16'd1 - hcnt) : hcnt;
+    wire [15:0] h_rd = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
+    wire  [9:0] rd_word = h_rd[10:0] >> WSH;
+    wire [15:0] h_xy = flip_q ? (h_act - 16'd1 - hcnt) : hcnt;
+    wire [29:0] h_n512 = h_xy * (m720 ? 14'd11651 : 14'd13108);
     wire        vid_row = (vcnt >= vid_top) && (vcnt < vid_top + v_act);
 
     // Latch the buffer base once per raster frame: the top level toggles frame_base_hw live as
@@ -173,26 +211,28 @@ module fb_raster_reader #(
         if (reset) begin
             hcnt <= 0; vcnt <= 0; disp_buf <= 1'b0;
             hsync <= 0; vsync <= 0; hblank <= 1; vblank <= 1; active_q <= 0;
-            hpos <= 16'd0; vpos <= 16'd0;
+            hpos <= 16'd0; hpos_n <= 16'd0; vpos <= 16'd0;
             fst <= F_IDLE; fidx <= 16'd0; rd_req2 <= 1'b0; rdaddr2 <= 27'd0;
+            bst_req <= bst_ack; bst_addr <= 25'd0; bst_len <= 8'd0; widx <= 10'd0;
             frame_base_hw_q <= 27'd0;
             fline <= 16'd0; fill_done_q <= 1'b0; resync_pending <= 1'b0;
-            fw_hold <= 48'd0; fw_cnt <= 2'd0; fw_idx <= 16'd0;
             v_band_q <= v_band; crt_q <= crt; flip_q <= flip;
+            ilace_q <= ilace; field <= 1'b0; ffld <= 1'b0; wm_q <= wmode;
         end else begin
             // ---- display timing (ce_pix-gated) ----
             if (ce_pix) begin
                 // read this pixel and register the aligned timing flags
-                pix_q    <= linebuf[{disp_buf, h_rd[8:0]}];
+                pix_q    <= pix64_q[{h_rd[0], 5'b00000} +: 32];
                 active_q <= h_active & v_active & vid_row;   // band rows -> black (led_band composites there)
                 // Band-compositor coordinates, not raster position: rotated with the picture so the
                 // band lands at the far end, upside down, without led_band knowing about flip.
-                hpos     <= flip_q ? (H_ACT   - 16'd1 - hcnt) : hcnt;
+                hpos     <= flip_q ? (h_act   - 16'd1 - hcnt) : hcnt;
+                hpos_n   <= (wm_q != 2'd0) ? h_n512[29:14] : h_xy;
                 vpos     <= flip_q ? (v_disp  - 16'd1 - vcnt) : vcnt;
                 hblank   <= ~h_active;
                 vblank   <= ~v_active;
                 hsync    <= (hcnt >= hs_beg) && (hcnt < hs_end);
-                vsync    <= (vcnt >= vs_beg) && (vcnt < vs_end);
+                vsync    <= vs_on;
                 // advance counters -- raster/hsync/vsync timing ALWAYS advances on schedule,
                 // independent of fetch progress (never stall the video timing itself, that's a
                 // framework/HDMI risk).
@@ -211,11 +251,16 @@ module fb_raster_reader #(
                         v_band_q       <= v_band; // adopt OSD toggles only at the frame boundary --
                         crt_q          <= crt;    //   the raster must never change under itself
                         flip_q         <= flip;
+                        wm_q           <= wmode;
+                        ilace_q        <= ilace;
+                        field          <= crt & ilace & ~field;
                     end
                 end else begin
                     hcnt <= hcnt + 16'd1;
                 end
             end
+
+            pix64_q <= linebuf[{disp_buf, rd_word[8:0]}];
 
             // ---- DDR fill FSM (runs every clk, not just ce_pix -- needs the full bandwidth) ----
             case (fst)
@@ -230,45 +275,36 @@ module fb_raster_reader #(
                         fline           <= 16'd1;
                         frame_base_hw_q <= frame_base_hw;
                         resync_pending  <= 1'b0;
+                        ffld            <= field;
                     end else begin
                         fline <= fline_next;
+                        if (fline_next == 16'd0) ffld <= il & ~field;
                     end
                 end
             F_REQ:
-                // Rows inside the active band (fline < v_band_q) and past the active window fetch
-                // nothing -- they're blanked to black anyway.
-                if (fline >= vid_top && row_lin < v_act) begin
-                    rdaddr2 <= frame_base_hw_q + fb_row*STRIDE + fidx;
-                    rd_req2 <= ~rd_req2;                    // issue read
-                    fst     <= F_WAIT;
+                if (fline >= vid_top && row_vis < v_act) begin
+                    bst_addr <= fetch_hw[26:2];
+                    bst_len  <= blen_w[7:0];
+                    bst_req  <= ~bst_req;
+                    widx     <= fidx[9:0] >> WSH;
+                    fst      <= F_WAIT;
                 end else begin
-                    fst         <= F_IDLE;                  // band line or off-screen: nothing to fetch
+                    fst         <= F_IDLE;
                     fill_done_q <= 1'b1;
                 end
-            F_WAIT:
-                if (rd_ack2 == rd_req2) begin               // dout2/dout2_64 valid
-                    // store halfword 0 now, hold 1..3 for F_STORE.
-                    linebuf[{fill_buf, fidx[8:0]}] <= dout2_64[15:0];
-                    fw_hold <= dout2_64[63:16];
-                    fw_cnt  <= 2'd0;
-                    fw_idx  <= fidx + 16'd1;     // named reg: NO expression bit-select in a .v file
-                    fst     <= F_STORE;
+            F_WAIT: begin
+                if (bst_valid) begin
+                    linebuf[{fill_buf, widx[8:0]}] <= bst_data;
+                    widx <= widx + 10'd1;
                 end
-            F_STORE: begin
-                // write halfwords 1,2,3 of the fetched word on successive cycles
-                linebuf[{fill_buf, fw_idx[8:0]}] <= fw_hold[15:0];
-                fw_hold <= {16'd0, fw_hold[47:16]};
-                fw_idx  <= fw_idx + 16'd1;
-                if (fw_cnt == 2'd2) begin
-                    if (fidx + 16'd4 >= H_ACT) begin        // whole line landed
+                if (bst_ack == bst_req) begin
+                    if (fidx + blen_px >= h_act) begin
                         fst         <= F_IDLE;
                         fill_done_q <= 1'b1;
                     end else begin
-                        fidx <= fidx + 16'd4;
+                        fidx <= fidx + blen_px;
                         fst  <= F_REQ;
                     end
-                end else begin
-                    fw_cnt <= fw_cnt + 2'd1;
                 end
             end
             default: fst <= F_IDLE;
@@ -281,7 +317,7 @@ module fb_raster_reader #(
     // read2 right now".  (Delete this assign + the port on revert.)
     assign fill_idle = fill_done_q;
 
-    assign vid_r = active_q ? {pix_q[15:11], pix_q[15:13]} : 8'd0;  // 5->8
-    assign vid_g = active_q ? {pix_q[10:5],  pix_q[10:9]}  : 8'd0;  // 6->8
-    assign vid_b = active_q ? {pix_q[4:0],   pix_q[4:2]}   : 8'd0;  // 5->8
+    assign vid_r = !active_q ? 8'd0 : pix_q[23:16];
+    assign vid_g = !active_q ? 8'd0 : pix_q[15:8];
+    assign vid_b = !active_q ? 8'd0 : pix_q[7:0];
 endmodule

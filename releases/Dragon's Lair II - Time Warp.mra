@@ -45,6 +45,9 @@
         <part crc="e9453a1b" name="dl2_319.bin"/>
     </rom>
 
+    <!-- Index 4: the 93C56 EEPROM that holds every operator setting, saved as NVRAM. -->
+    <nvram index="4" size="256"/>
+
     <remark>Dragon's Lair II - Time Warp (Leland)</remark>
     <mratimestamp>20261015000000</mratimestamp>
 </misterromdescription>

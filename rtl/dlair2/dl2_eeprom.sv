@@ -22,10 +22,11 @@
 //            shifts DI into the word MSB first and holds DO high (not busy)
 //   CS low resets the whole state machine.
 //
-// NOTE: contents are volatile. Daphne persists this to an nvram file; doing the
-// same on MiSTer needs save/restore plumbing and is NOT done here, so operator
-// settings will not survive a power cycle yet. The array powers up all zero,
-// which is the state a fresh Daphne install starts in and the game copes with.
+// Contents are saved as MiSTer NVRAM (MRA <nvram index="4" size="256"/>): Main
+// reads the array over the upload port (nv_raddr/nv_rdata) when the OSD opens
+// after a game WRITE (nv_changed), and loads it back word by word (nv_we) when
+// the MRA starts. With no saved file the array powers up all zero, which is the
+// state a fresh Daphne install starts in and the game copes with.
 //============================================================================
 module dl2_eeprom
 (
@@ -35,7 +36,14 @@ module dl2_eeprom
     input             wr_stb,        // 1-cycle: the CPU wrote port 0x202
     input      [7:0]  wr_data,       // the byte it wrote
 
-    output            do_bit         // -> port 0x202 read, bit 0
+    output            do_bit,        // -> port 0x202 read, bit 0
+
+    input             nv_we,         // NVRAM restore: write one word
+    input      [6:0]  nv_waddr,
+    input      [15:0] nv_wdata,
+    input      [6:0]  nv_raddr,      // NVRAM save: read one word
+    output     [15:0] nv_rdata,
+    output reg        nv_changed     // 1-cycle: the game finished writing a word
 );
     localparam OP_NONE = 2'd3;       // sentinel: no opcode captured yet
 
@@ -51,6 +59,7 @@ module dl2_eeprom
     reg        do_q;
 
     assign do_bit = do_q;
+    assign nv_rdata = mem[nv_raddr];
 
     wire cs      = wr_data[2];
     wire clk_hi  = wr_data[1];
@@ -66,6 +75,7 @@ module dl2_eeprom
     initial for (j = 0; j < 128; j = j + 1) mem[j] = 16'd0;
 
     always @(posedge clk) begin
+        nv_changed <= 1'b0;
         if (!reset_n) begin
             prev <= 8'd0; shreg <= 3'd0; opcode <= OP_NONE; have_op <= 1'b0;
             addr <= 8'd0; addr_cnt <= 4'd0; bit_cnt <= 5'd0; do_q <= 1'b1;
@@ -101,6 +111,7 @@ module dl2_eeprom
                         2'd1: begin                       // WRITE, MSB first
                             if (bit_cnt == 5'd0) mem[a7] <= {15'd0, di};
                             else                 mem[a7] <= {mem[a7][14:0], di};
+                            if (bit_cnt == 5'd15) nv_changed <= 1'b1;
                             do_q <= 1'b1;                 // not busy
                         end
                         default: do_q <= 1'b1;            // extended / erase: ignored
@@ -109,5 +120,6 @@ module dl2_eeprom
                 end
             end
         end
+        if (nv_we) mem[nv_waddr] <= nv_wdata;
     end
 endmodule

@@ -58,7 +58,7 @@
              repeat as M.A.C.H. 3 does.
          cobra.zip is a MERGED set holding all three Cobra Command variants; the
          bh* files below are the M.A.C.H. 3 kit. -->
-    <rom index="0" md5="none" zip="cobra.zip">
+    <rom index="0" md5="none" zip="cobram3.zip|cobra.zip">
         <part repeat="8192">00</part>
         <part crc="755cbbf5" name="bh03"/>
         <part crc="928ef670" name="cobram3/bh02"/>
