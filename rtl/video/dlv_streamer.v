@@ -17,6 +17,7 @@
 //   [16] u32 frame_count  [48] u64 index_off  [64] u64 video_off
 //   [80] u64 audio_off    [88] u64 audio_size
 // frame index @ index_off: frame_count * { u32 off_in_video_blob, u32 size }.
+// v4 (video blob over 4 GB): frame_count * { 40-bit off_in_video_blob, 24-bit size }, same 8 B.
 // reworked from the one-shot fetcher into continuous
 // video+audio (user directive — build the real streaming path, drop the hack).
 //============================================================================
@@ -36,7 +37,7 @@ module dlv_streamer #(
     output reg  [5:0] sd_blk_cnt,
     output reg        sd_rd,
     input             sd_ack,
-    input       [8:0] sd_buff_addr,
+    input      [13:0] sd_buff_addr,
     input       [7:0] sd_buff_dout,
     input             sd_buff_wr,
 
@@ -74,6 +75,7 @@ module dlv_streamer #(
     // 1-cycle pulse on the Z80's SEARCH: EMPTIES the audio ring so the old segment's buffered
     // tail is discarded and the ring refills with only the new segment.
     input             seek_flush,
+    input             dec_done,
 
     // .dlv encode rate -> ldp_transport film tick.  1 = 29.97 fps disc, 0 = 23.976.
     output            disc_2997,
@@ -94,21 +96,31 @@ module dlv_streamer #(
     // error anywhere. 128 KB costs ~77 M10K of the 348 free (block memory 26% -> ~39%) and covers
     // any 320x240 quality plus a later resolution bump. pack_dlv.py now hard-fails at pack time if a
     // frame does not fit, and names the FBUF_AW required.
-    localparam FBUF_AW = 17;                 // 128 KB
-    reg [7:0] fbuf [0:(1<<FBUF_AW)-1];
-    reg [7:0] fbuf_q;
-    assign out_byte = fbuf_q;
+    localparam FIFO_AW = 15;
+    reg [7:0] fifo [0:(1<<FIFO_AW)-1];
+    reg [7:0] fifo_q;
+    assign out_byte = fifo_q;
+    reg [FIFO_AW:0] fifo_wr, fifo_rd;
+    wire [FIFO_AW:0] fifo_level = fifo_wr - fifo_rd;
+    wire [FIFO_AW:0] fifo_free  = {1'b1, {FIFO_AW{1'b0}}} - fifo_level;
+    wire [FIFO_AW-9:0] fifo_free_sec = fifo_free[FIFO_AW:9];
+    reg        fifo_clr;
+    reg        fifo_rd_pend;
+    reg [31:0] bytes_out;
 
     //------------------------------------------------------------------------
     // Header fields
     //------------------------------------------------------------------------
-    reg [31:0] index_off, video_off, frame_count;
-    reg [31:0] aud_off, aud_size;
+    reg [31:0] index_off, frame_count;
+    reg [39:0] video_off;
+    reg [39:0] aud_off;
+    reg [31:0] aud_size;
     // Per-game values from pack_dlv.py at header@24/@28 -- do NOT hardcode the leader.
     reg [31:0] ld_leader_off;   // header@28: disc frame where the captured content begins (was: LD_LEADER const)
     // header@24 is RESERVED=0 and this reg is repurposed for the v2 field.
     reg [31:0] spf_q16_hdr;     // header@96: samples per DISC frame, 16.16 fixed point (.dlv v2)
     reg  [7:0] ver_hdr;         // header@4
+    wire       idx40 = (ver_hdr >= 8'd4);   // v4 index entries: 40-bit offset + 24-bit size
     reg [15:0] disc_num_hdr;    // header@20 (v3): disc rate numerator, 30000 or 24000 (/1001)
     reg  [7:0] game_id_hdr;     // header@104 (v3)
     reg        header_valid;
@@ -118,9 +130,13 @@ module dlv_streamer #(
     // Set by a mount, cleared by an unmount; never by reset, so a reset re-reads the header.
     reg        img_present = 1'b0;
     always @(posedge clk) if (img_mounted) img_present <= (img_size != 64'd0);
+    reg        remount_pend;
+    wire       remount_go;
 
     // current frame index entry
-    reg [31:0] frm_off, frm_size, frm_start;
+    reg [39:0] frm_off;
+    reg [31:0] frm_size;
+    reg [39:0] frm_start;
     reg [16:0] cur_frame;                     // free-running film frame
 
     // Last mjpeg frame actually fetched/decoded/written; vid_target legitimately repeats.
@@ -163,10 +179,16 @@ module dlv_streamer #(
 
     reg [3:0]  state, ret_state;
     reg [1:0]  cap_mode;                      // 0=header 1=index 2=frame 3=audio
-    reg [31:0] cur_sec, sec_base_byte;
+    reg [31:0] cur_sec;
+    reg [39:0] sec_base_byte;
+    reg  [5:0] frm_blk;
+    reg  [5:0] aud_blk;
+    reg        aud_cap_ok;
+    wire [39:0] frm_end_byte = frm_start + {8'd0, frm_size} - 40'd1;
+    wire [31:0] frm_last_sec = frm_end_byte[39:9];
+    wire [31:0] frm_rem_sec  = frm_last_sec - cur_sec + 32'd1;
     reg [31:0] bytes_got;
     reg [8:0]  idx_in_sec;
-    reg [FBUF_AW-1:0] stream_pos;
 
     reg  frame_fetch;                         // high while committing/fetching a frame
 
@@ -183,7 +205,7 @@ module dlv_streamer #(
     wire        wd_rst  = (wd_rst_cnt != 4'd0);
     // Armed ONLY in the two genuinely unbounded waits -- S_RD_ISSUE (no transfer in flight yet)
     // and S_STRM_VLD (touches no SD state).  Both are safe to abandon.
-    wire        wd_arm  = (state == S_RD_ISSUE) || (state == S_STRM_VLD);
+    wire        wd_arm  = (state == S_RD_ISSUE) || (state == S_STRM_VLD) || (state == S_FRM_NEXT);
     // any forward progress re-arms the timer: SD data landing, or a byte accepted
     wire        wd_prog = sd_buff_wr || (out_valid && out_ready);
     wire        wd_fire = (wd_cnt == WD_LIMIT);
@@ -191,6 +213,8 @@ module dlv_streamer #(
     assign dec_reset = reset | frame_fetch | wd_rst;
 
     wire [31:0] idx_byte = index_off + {cur_frame, 3'b000};   // cur_frame*8
+    wire [39:0] frm_start_w  = video_off + frm_off;
+    wire [39:0] aud_end_byte = aud_off + {8'd0, aud_size};
 
     //------------------------------------------------------------------------
     // 30 fps frame pacer + pending latch (single-driver on frame_pending)
@@ -210,9 +234,15 @@ module dlv_streamer #(
     reg        vid_chg;
     // frame_start clears frame_pending only when a fetch actually starts -- testing S_READY's
     // intent alone consumed the tick on cycles where an earlier branch fetched nothing.
-    wire       frame_start = (state == S_READY) && header_valid && frame_pending
-                             && (aud_level >= FILL_LOW)
-                             && !(img_mounted && (img_size != 64'd0));
+    localparam [21:0] DEC_TMO = CLK_HZ / 32'd50;
+    reg        dec_wait_on;
+    reg        dec_done_seen;
+    reg [21:0] dec_wait;
+    wire       dec_hold = dec_wait_on && !dec_done_seen && (dec_wait < DEC_TMO);
+    wire       seek_wait;
+    wire       frame_start = (state == S_READY) && header_valid && frame_pending && !seek_wait
+                             && (aud_level >= FILL_LOW) && !dec_hold
+                             && !remount_pend && !(img_mounted && (img_size != 64'd0));
 
     always @(posedge clk) begin
         frame_tick <= 1'b0;
@@ -252,10 +282,17 @@ module dlv_streamer #(
         end
     end
 
+    reg  seek_req;
+    wire tgt_fresh;
+    wire seek_consume = (state == S_READY) && header_valid && seek_req && tgt_fresh;
+    assign seek_wait  = seek_req && !tgt_fresh;
+    assign remount_go = (state == S_READY) && header_valid && remount_pend;
+    wire aud_flush    = seek_flush || seek_consume || remount_go;
+
     //------------------------------------------------------------------------
     // Audio ring WRITE port (SD fill): one word per 4 captured bytes
     //------------------------------------------------------------------------
-    wire        aud_word_we = (state == S_RD_XFER) && (cap_mode == 2'd3)
+    wire        aud_word_we = (state == S_RD_XFER) && (cap_mode == 2'd3) && aud_cap_ok
                               && sd_buff_wr && (sd_buff_addr[1:0] == 2'd3);
     wire [31:0] aud_word     = {sd_buff_dout, aud_word_asm};   // {b3,b2,b1,b0}
 
@@ -264,7 +301,7 @@ module dlv_streamer #(
             aud_wr <= {AUD_AW{1'b0}};
         // empty the ring's write side on a seek. Priority over the fill so
         // the pointer starts clean; the refill then begins from the re-pointed aud_lba.
-        end else if (seek_flush) begin
+        end else if (aud_flush) begin
             aud_wr <= {AUD_AW{1'b0}};
         end else if (aud_word_we) begin
             aud_ring[aud_wr] <= aud_word;
@@ -283,7 +320,27 @@ module dlv_streamer #(
 
     // Computed from ACTUAL DATA COUNTS, not from mpeg_fpks -- that header field is unreliable
     // (Space Ace's is an impossible 41218).
-    wire [31:0] spf_q = (frame_count != 32'd0) ? ((aud_size >> 2) / frame_count) : 32'd1842;
+    // v1 fallback rate, divided serially after each header load (32 clocks) instead of in one cycle.
+    reg  [31:0] spf_q;
+    reg  [31:0] dv_q, dv_r;
+    reg   [5:0] dv_n;
+    reg         hv_q;
+    wire [32:0] dv_t = {dv_r, dv_q[31]} - {1'b0, frame_count};
+    always @(posedge clk) begin
+        hv_q <= header_valid;
+        if (reset || !header_valid) begin
+            spf_q <= 32'd1842; dv_n <= 6'd0;
+        end else if (header_valid && !hv_q) begin
+            dv_q <= aud_size >> 2; dv_r <= 32'd0;
+            dv_n <= (frame_count != 32'd0) ? 6'd32 : 6'd0;
+        end else if (dv_n != 6'd0) begin
+            if (dv_t[32]) dv_r <= {dv_r[30:0], dv_q[31]};
+            else          dv_r <= dv_t[31:0];
+            dv_q <= {dv_q[30:0], ~dv_t[32]};
+            dv_n <= dv_n - 6'd1;
+            if (dv_n == 6'd1) spf_q <= {dv_q[30:0], ~dv_t[32]};
+        end
+    end
     wire [13:0] samp_per_frame = (header_valid && spf_q >= 32'd256 && spf_q <= 32'd8191)
                                  ? spf_q[13:0] : 14'd1842;   // fallback = DL's 1842
 
@@ -328,7 +385,7 @@ module dlv_streamer #(
             aud_credit     <= 14'd0;
         // Empty the ring's read side on a seek (matches the aud_wr flush) so the stale tail is
         // discarded and drain resumes at the new segment's first sample.
-        end else if (seek_flush) begin
+        end else if (aud_flush) begin
             aud_rd <= {AUD_AW{1'b0}};
             pcm_l  <= 16'sd0;
             pcm_r  <= 16'sd0;
@@ -378,8 +435,26 @@ module dlv_streamer #(
 
     // audio target sector = aud_lba_start + (disc_rel * samples_per_frame) / 128 samples-per-sector
     // >>16 undoes the Q16 scaling and >>7 converts samples to sectors, hence >>23.
-    wire [46:0] aud_prod_q16   = disc_rel * spf_q16;
-    wire [31:0] aud_target_lba = aud_lba_start + {8'd0, aud_prod_q16[46:23]};
+    // Audio seek target, registered over 4 clocks. tg_rel* carry the disc_rel each stage used, so
+    // tgt_fresh says the target matches the current frame; a seek waits for it (seek_wait).
+    reg  [16:0] tg_rel0, tg_rel1, tg_rel2, tg_rel3;
+    reg  [29:0] tg_spf0;
+    reg  [46:0] aud_prod_q16;
+    reg  [31:0] aud_tgt_raw;
+    reg  [31:0] aud_lba_tgt;
+    always @(posedge clk) begin
+        tg_rel0 <= disc_rel;  tg_spf0 <= spf_q16;
+        tg_rel1 <= tg_rel0;   aud_prod_q16 <= tg_rel0 * tg_spf0;
+        tg_rel2 <= tg_rel1;   aud_tgt_raw  <= aud_lba_start + {8'd0, aud_prod_q16[46:23]};
+        tg_rel3 <= tg_rel2;   aud_lba_tgt  <= (aud_tgt_raw >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_tgt_raw;
+    end
+    // aud_lba_start/end and the divider need the header loaded a few clocks before a target is valid.
+    reg   [5:0] hv_settle;
+    always @(posedge clk)
+        if (reset || !header_valid) hv_settle <= 6'd0;
+        else if (hv_settle != 6'd40) hv_settle <= hv_settle + 6'd1;
+    assign tgt_fresh = (hv_settle == 6'd40) && (tg_rel3 == disc_rel) && (tg_rel2 == disc_rel)
+                       && (tg_rel1 == disc_rel) && (tg_rel0 == disc_rel);
 
     localparam [31:0] DISC_FPKS = 32'd29970;
 
@@ -405,8 +480,7 @@ module dlv_streamer #(
     wire [16:0] fdiff  = (ld_curr_frame > prev_ld) ? (ld_curr_frame - prev_ld) : (prev_ld - ld_curr_frame);
     wire        jump_w = (fdiff > 17'd16);
 
-    reg  seek_req;
-    wire seek_consume = (state == S_READY) && header_valid && seek_req;
+    wire [12:0] aud_room_sec = (13'd4095 - {1'b0, aud_level}) >> 7;
         // Both ifs live in ONE always block, so if jump_w and seek_consume coincide the last
         // assignment wins and the jump is silently lost.  Keep them mutually exclusive.
     reg  seek_armed;
@@ -426,8 +500,10 @@ module dlv_streamer #(
 
         // The consume cycle re-points aud_lba with a NONBLOCKING assign, so the fill branch in the
         // same cycle would read the OLD sector -- use the re-pointed value explicitly.
-    wire [31:0] aud_lba_tgt = (aud_target_lba >= aud_lba_end) ? (aud_lba_end - 32'd1) : aud_target_lba;
     wire [31:0] aud_lba_eff = seek_consume ? aud_lba_tgt : aud_lba;
+    wire [31:0] aud_to_end  = aud_lba_end - aud_lba;
+    wire [12:0] aud_n0      = (aud_room_sec > 13'd32) ? 13'd32 : aud_room_sec;
+    wire [5:0]  aud_n       = (aud_to_end < {19'd0, aud_n0}) ? aud_to_end[5:0] : aud_n0[5:0];
 
     //------------------------------------------------------------------------
     // Main SD/stream FSM
@@ -436,7 +512,10 @@ module dlv_streamer #(
         if (reset) begin
             state <= S_IDLE;
             sd_rd <= 1'b0; sd_lba <= 32'd0; sd_blk_cnt <= 6'd0;
-            out_valid <= 1'b0; out_last <= 1'b0;
+            frm_blk <= 6'd0; aud_blk <= 6'd0; aud_cap_ok <= 1'b0;
+            fifo_wr <= {(FIFO_AW+1){1'b0}}; fifo_clr <= 1'b0;
+            dec_wait_on <= 1'b0; dec_done_seen <= 1'b0; dec_wait <= 22'd0;
+            remount_pend <= 1'b0;
             header_valid <= 1'b0; frame_fetch <= 1'b0;
             // 0 => "absent", so a v1 image deterministically takes the
             // samp_per_frame fallback instead of powering up on an undefined value.
@@ -453,6 +532,10 @@ module dlv_streamer #(
             if (!wd_arm || wd_prog)     wd_cnt <= 24'd0;
             else if (wd_cnt != WD_LIMIT) wd_cnt <= wd_cnt + 24'd1;
             if (wd_rst_cnt != 4'd0)      wd_rst_cnt <= wd_rst_cnt - 4'd1;
+            fifo_clr <= 1'b0;
+            if (img_mounted && img_size != 64'd0) remount_pend <= 1'b1;
+            if (dec_done) dec_done_seen <= 1'b1;
+            if (dec_wait_on && !dec_done_seen && dec_wait != DEC_TMO) dec_wait <= dec_wait + 22'd1;
 
             case (state)
             // ---- wait for image, then read header sector 0 ----
@@ -461,6 +544,7 @@ module dlv_streamer #(
                 if (img_present && !sd_ack) begin
                     cap_mode <= 2'd0; cur_sec <= 32'd0; ret_state <= S_READY;
                     header_valid <= 1'b0;
+                    remount_pend <= 1'b0;
                     state <= S_RD_ISSUE;
                 end
             end
@@ -470,27 +554,33 @@ module dlv_streamer #(
                 frame_fetch <= 1'b0;
             // The audio re-point neither changes `state` nor uses the SD port, so it must not sit
             // in the else-if chain where it would block the video fetch for that cycle.
-                if (header_valid && seek_req)
+                if (seek_consume)
                     aud_lba <= aud_lba_tgt;
 
                 if (!header_valid) begin
                     // one-time init once the header sector has been latched
                     header_valid  <= 1'b1;
-                    aud_lba       <= aud_off  >> 9;
-                    aud_lba_start <= aud_off  >> 9;
-                    aud_lba_end   <= (aud_off + aud_size) >> 9;
+                    aud_lba       <= aud_off[39:9];
+                    aud_lba_start <= aud_off[39:9];
+                    aud_lba_end   <= aud_end_byte[39:9];
             // Init from vid_target, not a constant: this re-fires on every re-mount.
                     cur_frame     <= vid_target;
             // SEARCH jump -> re-point audio to the mapped sector.  The ring keeps playing, so the
             // new scene's audio lands after about one ring depth.
-                end else if (img_mounted && img_size != 0) begin
-                    // re-mount: re-read header
+                end else if (remount_pend) begin
                     cap_mode <= 2'd0; cur_sec <= 32'd0; ret_state <= S_READY;
                     header_valid <= 1'b0;
+                    remount_pend <= 1'b0;
+                    last_fetched_frame <= {17{1'b1}};
+                    dec_wait_on <= 1'b0;
                     state <= S_RD_ISSUE;
-                end else if (frame_pending && (aud_level >= FILL_LOW)) begin
+                end else if (seek_wait) begin
+                end else if (frame_pending && (aud_level >= FILL_LOW) && !dec_hold) begin
             // Only fetch/decode/write if the mapped mjpeg frame has genuinely changed.
                     if (vid_target != last_fetched_frame) begin
+                        dec_wait_on        <= 1'b0;
+                        dec_done_seen      <= 1'b0;
+                        dec_wait           <= 22'd0;
                         // ---- start a video frame fetch (audio comfortable) ----
                         frame_fetch        <= 1'b1;      // decoder held in reset through the fetch
                         cur_frame          <= vid_target;   // HLE-DRIVE: fetch the mapped mjpeg frame
@@ -501,6 +591,8 @@ module dlv_streamer #(
                     // ---- top up the audio ring: read one audio sector ----
                     // PRE-re-point sector on the consume cycle and skipped the seek target.
                     cur_sec  <= aud_lba_eff;
+                    aud_blk  <= (seek_consume || aud_n == 6'd0) ? 6'd0 : aud_n - 6'd1;
+                    aud_cap_ok <= 1'b1;
                     cap_mode <= 2'd3; ret_state <= S_AUD_DONE;
                     state <= S_RD_ISSUE;
                 end
@@ -514,57 +606,53 @@ module dlv_streamer #(
                 state <= S_RD_ISSUE;
             end
             S_IDX_DONE: begin
-                frm_start <= video_off + frm_off;
+                frm_start <= frm_start_w;
                 bytes_got <= 32'd0;
-                cur_sec   <= (video_off + frm_off) >> 9;
-                cap_mode  <= 2'd2; ret_state <= S_FRM_NEXT;
-                state <= S_RD_ISSUE;
+                cur_sec   <= frm_start_w[39:9];
+                cap_mode  <= 2'd2;
+                fifo_wr   <= {(FIFO_AW+1){1'b0}};
+                fifo_clr  <= 1'b1;
+                frame_fetch <= 1'b0;
+                state <= S_FRM_NEXT;
             end
 
             // ---- read frame sectors into fbuf until fsize captured ----
             S_FRM_NEXT: begin
-                if (bytes_got >= frm_size) begin
-                    stream_pos <= 0; out_last <= 1'b0; out_valid <= 1'b0;
-                    frame_fetch <= 1'b0;          // release decoder reset -> streaming begins
-                    state <= S_STREAM;
-                end else begin
-                    cur_sec  <= cur_sec + 1'b1;
+                if (remount_pend) begin
+                    fifo_wr    <= {(FIFO_AW+1){1'b0}};
+                    fifo_clr   <= 1'b1;
+                    wd_rst_cnt <= 4'd15;
+                    state      <= S_READY;
+                end else if (bytes_got >= frm_size) begin
+                    state <= S_STRM_VLD;
+                end else if ((fifo_free_sec >= 16) || ({{(32-FIFO_AW+8){1'b0}}, fifo_free_sec} >= frm_rem_sec)) begin
+                    frm_blk  <= (frm_rem_sec <= {{(32-FIFO_AW+8){1'b0}}, fifo_free_sec}) ?
+                                    ((frm_rem_sec >= 32'd32) ? 6'd31 : (frm_rem_sec[5:0] - 6'd1)) :
+                                    ((fifo_free_sec >= 32) ? 6'd31 : (fifo_free_sec[5:0] - 6'd1));
                     cap_mode <= 2'd2; ret_state <= S_FRM_NEXT;
                     state <= S_RD_ISSUE;
                 end
             end
 
-            // ---- stream fbuf[0..fsize-1] -> decoder (registered read) ----
-            S_STREAM: begin
-                fbuf_q   <= fbuf[stream_pos];
-                out_last <= (stream_pos == frm_size[FBUF_AW-1:0] - 1'b1);
-                state    <= S_STRM_VLD;
-            end
+            S_STREAM: state <= S_STRM_VLD;
             S_STRM_VLD: begin
-                out_valid <= 1'b1;
-                if (out_valid && out_ready) begin
-                    out_valid <= 1'b0;
-                    if (out_last) begin
-                        out_last  <= 1'b0;
-                        state     <= S_READY;   // HLE-DRIVE: next frame = vid_target(ld_curr_frame), set at fetch
-                    end else begin
-                        stream_pos <= stream_pos + 1'b1;
-                        state      <= S_STREAM;
-                    end
+                if (bytes_out >= frm_size) begin
+                    state       <= S_READY;
+                    dec_wait_on <= 1'b1;
                 end
             end
 
             // ---- audio sector captured: advance the audio sector cursor (loop) ----
             S_AUD_DONE: begin
-                aud_lba <= (aud_lba + 1'b1 >= aud_lba_end) ? aud_lba_start : aud_lba + 1'b1;
+                aud_lba <= (aud_lba + {26'd0, aud_blk} + 32'd1 >= aud_lba_end) ? aud_lba_start : aud_lba + {26'd0, aud_blk} + 32'd1;
                 state   <= S_READY;
             end
 
             // ================= generic single-sector read =================
             S_RD_ISSUE: begin
                 sd_lba        <= cur_sec;
-                sd_blk_cnt    <= 6'd0;
-                sec_base_byte <= {cur_sec, 9'd0};
+                sd_blk_cnt    <= (cap_mode == 2'd2) ? frm_blk : (cap_mode == 2'd3) ? aud_blk : 6'd0;
+                sec_base_byte <= {cur_sec[30:0], 9'd0};
                 sd_rd         <= 1'b1;
                 if (sd_ack) begin
                     sd_rd <= 1'b0;
@@ -601,10 +689,12 @@ module dlv_streamer #(
                         9'd65: video_off[15:8]    <= sd_buff_dout;
                         9'd66: video_off[23:16]   <= sd_buff_dout;
                         9'd67: video_off[31:24]   <= sd_buff_dout;
+                        9'd68: video_off[39:32]   <= sd_buff_dout;
                         9'd80: aud_off[7:0]       <= sd_buff_dout;
                         9'd81: aud_off[15:8]      <= sd_buff_dout;
                         9'd82: aud_off[23:16]     <= sd_buff_dout;
                         9'd83: aud_off[31:24]     <= sd_buff_dout;
+                        9'd84: aud_off[39:32]     <= sd_buff_dout;
                         9'd88: aud_size[7:0]      <= sd_buff_dout;
                         9'd89: aud_size[15:8]     <= sd_buff_dout;
                         9'd90: aud_size[23:16]    <= sd_buff_dout;
@@ -617,14 +707,28 @@ module dlv_streamer #(
                         if (sd_buff_addr == idx_in_sec + 9'd1) frm_off[15:8]   <= sd_buff_dout;
                         if (sd_buff_addr == idx_in_sec + 9'd2) frm_off[23:16]  <= sd_buff_dout;
                         if (sd_buff_addr == idx_in_sec + 9'd3) frm_off[31:24]  <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd4) frm_size[7:0]   <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd5) frm_size[15:8]  <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd6) frm_size[23:16] <= sd_buff_dout;
-                        if (sd_buff_addr == idx_in_sec + 9'd7) frm_size[31:24] <= sd_buff_dout;
+                        // v4: byte 4 is offset[39:32] and the size is 24 bits; v3: a u32 size.
+                        if (sd_buff_addr == idx_in_sec + 9'd4) begin
+                            if (idx40) frm_off[39:32] <= sd_buff_dout;
+                            else begin frm_off[39:32] <= 8'd0; frm_size[7:0] <= sd_buff_dout; end
+                        end
+                        if (sd_buff_addr == idx_in_sec + 9'd5) begin
+                            if (idx40) frm_size[7:0]   <= sd_buff_dout;
+                            else       frm_size[15:8]  <= sd_buff_dout;
+                        end
+                        if (sd_buff_addr == idx_in_sec + 9'd6) begin
+                            if (idx40) frm_size[15:8]  <= sd_buff_dout;
+                            else       frm_size[23:16] <= sd_buff_dout;
+                        end
+                        if (sd_buff_addr == idx_in_sec + 9'd7) begin
+                            if (idx40) begin frm_size[23:16] <= sd_buff_dout; frm_size[31:24] <= 8'd0; end
+                            else       frm_size[31:24] <= sd_buff_dout;
+                        end
                     end
                     2'd2: begin // frame bytes -> fbuf
                         if ((sec_base_byte + sd_buff_addr) >= frm_start && bytes_got < frm_size) begin
-                            fbuf[bytes_got[FBUF_AW-1:0]] <= sd_buff_dout;
+                            fifo[fifo_wr[FIFO_AW-1:0]] <= sd_buff_dout;
+                            fifo_wr   <= fifo_wr + 1'b1;
                             bytes_got <= bytes_got + 1'b1;
                         end
                     end
@@ -639,10 +743,15 @@ module dlv_streamer #(
                     default: ;
                     endcase
                 end
-                if (!sd_ack) state <= ret_state;   // sector transfer complete
+                if (!sd_ack) begin
+                    state <= ret_state;   // sector transfer complete
+                    if (cap_mode == 2'd2) cur_sec <= cur_sec + {26'd0, frm_blk} + 32'd1;
+                end
             end
             default: state <= S_IDLE;
             endcase
+
+            if (seek_flush) aud_cap_ok <= 1'b0;
 
     // Watchdog abort, placed AFTER the case so its assignments win: drops the in-flight frame
     // and re-enters the arbiter cleanly.
@@ -653,11 +762,35 @@ module dlv_streamer #(
                 wd_cnt    <= 24'd0;
                 wd_rst_cnt<= 4'd15;
                 sd_rd     <= 1'b0;
-                out_valid <= 1'b0;
-                out_last  <= 1'b0;
+                fifo_wr   <= {(FIFO_AW+1){1'b0}};
+                fifo_clr  <= 1'b1;
                 last_fetched_frame <= {17{1'b1}};
                 state     <= S_READY;
             end
+        end
+    end
+
+    always @(posedge clk) begin
+        if (reset || fifo_clr) begin
+            fifo_rd      <= {(FIFO_AW+1){1'b0}};
+            fifo_rd_pend <= 1'b0;
+            out_valid    <= 1'b0;
+            out_last     <= 1'b0;
+            bytes_out    <= 32'd0;
+        end else if (out_valid) begin
+            if (out_ready) begin
+                out_valid <= 1'b0;
+                out_last  <= 1'b0;
+                fifo_rd   <= fifo_rd + 1'b1;
+                bytes_out <= bytes_out + 32'd1;
+            end
+        end else if (fifo_rd_pend) begin
+            out_valid    <= 1'b1;
+            out_last     <= (bytes_out == frm_size - 32'd1);
+            fifo_rd_pend <= 1'b0;
+        end else if ((fifo_wr != fifo_rd) && (bytes_out < frm_size)) begin
+            fifo_q       <= fifo[fifo_rd[FIFO_AW-1:0]];
+            fifo_rd_pend <= 1'b1;
         end
     end
 

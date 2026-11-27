@@ -40,12 +40,22 @@ Usage:
                  Worth pointing at a scratch disk: the MJPEG alone is ~700 MB.
   Audio is matched per segment as <m2v-stem>.{ogg,wav,flac,m4a,mp3} first (Daphne's
   own convention, lair.m2v -> lair.ogg), falling back to <name>.<ext>.
-  --size WxH     output geometry (default 512x480 -- the NATIVE Daphne m2v size, so no
-                 resampling happens at all. Must match FB_COLS_HW/FB_ROWS_HW in
-                 Arcade-LaserdiscGames.sv. 512 is fb_raster_reader's hard width ceiling.
-  -q Q           ffmpeg mjpeg quality, 2..31, LOWER IS BETTER (default 3)
-  --fbuf-aw N    dlv_streamer.v FBUF_AW; the pack FAILS if any frame does not fit
-                 (default 17 = 128 KB, matching the RTL)
+  --size WxH     output geometry: 512x480 (default, the NATIVE Daphne m2v size, so no
+                 resampling happens at all), 640x480 or 720x480. The core picks the
+                 width per disc from the frames and shows each at 4:3.
+  -q Q           ffmpeg mjpeg quality, 1..31, LOWER IS BETTER (default 3). q1 at the
+                 source size is the recommended recipe; the core plays 720x480 q1.
+  --fbuf-aw N    per-frame size limit 2^N bytes; the pack FAILS if any frame does not fit
+                 (default 17 = 128 KB). The RTL now streams frames through a FIFO, so the
+                 real ceiling is the HPS link (~5 MB/s: a frame must arrive within one disc
+                 frame, ~170 KB at 23.976). --max-frame BYTES sets the limit directly.
+  --index40      always write a v4 index (40-bit frame offsets). Written automatically
+                 when the video blob is over 4 GB; v3 otherwise, so stock cores still play it.
+  --fallback-q Q re-encode any frame over the frame limit at quality Q (coarser if needed)
+  --chroma 444   full-colour 4:4:4 JPEG instead of 4:2:0 (~1.5x bytes)
+  --prefilter F  ffmpeg filters applied before scaling, e.g. deblock
+  --encoder mozjpeg  encode with mozjpeg's cjpeg (~13% smaller at the same quality);
+                 --moz-q sets its -quality (default 94), --cjpeg the path to it
   --deint        deinterlace (yadif) -- only if the m2v is interlaced
   --reuse        reuse an existing intermediate .mjpeg instead of re-running ffmpeg
   --jobs N       parallel jpegtran workers (default: cpu_count)
@@ -53,7 +63,7 @@ Usage:
 =============================== HEADER v3 =====================================
 off  type  field                notes
   0  4s    MAGIC "DLV1"
-  4  u32   VER = 3              the core asks for a re-pack of anything older
+  4  u32   VER = 3 or 4         the core asks for a re-pack of anything older than 3
   8  u32   width
  12  u32   height
  16  u32   frame_count          <- read by dlv_streamer
@@ -74,6 +84,11 @@ off  type  field                notes
 104  u32   game_id              *** v3 *** MRA GAME-ID byte; 0xFF = no board / unknown
 108  16s   game_key             *** v3 *** dlv_games.py key, ASCII, zero padded
 124..511   reserved, zero
+
+*** v4: 40-BIT INDEX ***
+Same header as v3. Each 8-byte index entry is { 40-bit offset in the video blob, 24-bit
+size } (little-endian: bytes 0-4 offset, 5-7 size) instead of { u32 offset, u32 size },
+so the video blob can pass 4 GB. Only written when it has to be (or --index40).
 
 *** v3: THE DISC RATE (offsets 20/24) ***
 Daphne counts disc frames at the GAME's rate (game.cpp m_disc_fps) and maps every m2v as
@@ -203,6 +218,11 @@ def read_framefile(txt_path):
 STANDALONE = {0x01} | set(range(0xD0, 0xD8))     # TEM, RST0-7: no length field
 
 
+CHROMA = {"420": ("yuvj420p", [(2, 2), (1, 1), (1, 1)], "2x2"),
+          "444": ("yuvj444p", [(1, 1), (1, 1), (1, 1)], "1x1")}
+PIX_FMT, SAMPLING, CJPEG_SAMPLE = CHROMA["420"]
+
+
 def scan_jpeg(buf, start):
     """Parse one JPEG beginning at `start`. -> (end_offset_exclusive, info)."""
     if buf[start:start + 2] != b"\xff\xd8":
@@ -302,9 +322,9 @@ def check_frame_compat(jpg, want_w, want_h, where, strict_dht=True):
     if info["dri"]:
         errs.append(f"restart interval {info['dri']} -- core_jpeg does NOT support "
                     f"restart markers (re-encode with -threads 1)")
-    if info["sampling"] != [(2, 2), (1, 1), (1, 1)]:
-        errs.append(f"chroma sampling {info['sampling']} != 4:2:0 [(2,2),(1,1),(1,1)] "
-                    f"(need -pix_fmt yuvj420p)")
+    if info["sampling"] != SAMPLING:
+        errs.append(f"chroma sampling {info['sampling']} != {SAMPLING} "
+                    f"(need -pix_fmt {PIX_FMT})")
     if strict_dht and any(n != 1 for n in info["dht_tables"]):
         errs.append(f"DHT segments carry {info['dht_tables']} tables; core_jpeg is built "
                     f"with SUPPORT_WRITABLE_DHT=0 and needs exactly 1 table per DHT "
@@ -416,6 +436,17 @@ def ffmpeg_fps_flags():
     return _FPS_FLAGS
 
 
+def _shrink(jpg, q):
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "mjpeg", "-i", "pipe:",
+                          "-threads", "1", "-pix_fmt", PIX_FMT, "-qmin", "1", "-q:v", str(q),
+                          "-huffman", "default", "-f", "mjpeg", "pipe:"],
+                         input=jpg, stdout=subprocess.PIPE, check=True).stdout
+    i, d, st, err = _jpegtran((0, out))
+    if st != "ok":
+        sys.exit(f"[fatal] fallback re-encode at q{q} failed jpegtran: {err}")
+    return d
+
+
 def run(cmd, what):
     print(f"[{what}] {' '.join(str(c) for c in cmd[:6])} ...")
     subprocess.run(cmd, check=True)
@@ -425,6 +456,50 @@ def align(f):
     pad = (-f.tell()) % SECTOR
     if pad:
         f.write(b"\x00" * pad)
+
+
+def _moz_one(args):
+    cjpeg, q, ppm, sample = args
+    r = subprocess.run([cjpeg, "-quality", str(q), "-sample", sample], input=ppm,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode != 0 or not r.stdout:
+        raise RuntimeError("cjpeg failed: " + r.stderr.decode(errors="replace"))
+    t = subprocess.run(["jpegtran"], input=r.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if t.returncode != 0 or not t.stdout:
+        raise RuntimeError("jpegtran failed: " + t.stderr.decode(errors="replace"))
+    return t.stdout
+
+
+def moz_encode(src, vf, W, H, seg_mjpeg, a):
+    """m2v -> ffmpeg (same filters, rgb24 PPM frames, 1-in/1-out) -> mozjpeg cjpeg per frame
+    -> concatenated into seg_mjpeg, in order. The split/jpegtran stage that follows is the
+    same as for ffmpeg's MJPEG, so the output still has the standard Huffman layout."""
+    fsz = W * H * 3
+    hdr = f"P6\n{W} {H}\n255\n".encode()
+    p = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", src, "-an",
+                          *ffmpeg_fps_flags(), "-vf", vf, "-pix_fmt", "rgb24",
+                          "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    n = 0
+    with open(seg_mjpeg, "wb") as out, Pool(a.jobs) as pool:
+        while True:
+            batch = []
+            for _ in range(a.jobs * 8):
+                fr = p.stdout.read(fsz)
+                if len(fr) < fsz:
+                    break
+                batch.append((a.cjpeg, a.moz_q, hdr + fr, CJPEG_SAMPLE))
+            if not batch:
+                break
+            for j in pool.map(_moz_one, batch):
+                out.write(j)
+            n += len(batch)
+            if n % 2000 < len(batch):
+                print(f"[mozjpeg] {n} frames", flush=True)
+            if len(batch) < a.jobs * 8:
+                break
+    if p.wait() != 0:
+        raise SystemExit("ffmpeg decode failed")
+    print(f"[mozjpeg] {n} frames encoded at -quality {a.moz_q}")
 
 
 # ----------------------------------------------------------------------------
@@ -438,11 +513,21 @@ def main():
     ap.add_argument("--work", default=None,  help="scratch dir for the big .mjpeg/.pcm "
                                                  "intermediates (default: --dest)")
     ap.add_argument("--size", default="512x480",
-                    help="output geometry. DEFAULT IS NOW 512x480 = the native Daphne\n                          m2v size, i.e. NO resampling at all. 512 is also exactly\n                          fb_raster_reader's line-buffer ceiling.")
-    ap.add_argument("-q", "--quality", type=int, default=3, help="2..31, lower=better")
-    ap.add_argument("--fbuf-aw", type=int, default=17, help="dlv_streamer.v FBUF_AW")
+                    help="output geometry: 512x480 (default, the native Daphne m2v\n                          size, no resampling), 640x480 or 720x480")
+    ap.add_argument("-q", "--quality", type=int, default=3, help="1..31, lower=better")
+    ap.add_argument("--fbuf-aw", type=int, default=17, help="per-frame limit 2^N bytes")
+    ap.add_argument("--max-frame", type=int, default=0, help="per-frame limit in bytes (overrides --fbuf-aw)")
+    ap.add_argument("--index40", action="store_true", help="always write a v4 (40-bit offset) index")
     ap.add_argument("--deint", action="store_true")
+    ap.add_argument("--fallback-q", type=int, default=0, help="re-encode frames that do not fit FBUF at this quality (and coarser if needed)")
+    ap.add_argument("--chroma", default="420", choices=sorted(CHROMA),
+                    help="JPEG chroma sampling: 420 (default) or 444 (full colour resolution, ~1.5x bytes)")
+    ap.add_argument("--prefilter", default="", help="ffmpeg filters applied before scaling, e.g. deblock")
     ap.add_argument("--reuse", action="store_true")
+    ap.add_argument("--encoder", default="ffmpeg", choices=["ffmpeg", "mozjpeg"],
+                    help="JPEG encoder. mozjpeg: ffmpeg decodes+filters to PPM, mozjpeg cjpeg encodes")
+    ap.add_argument("--moz-q", type=int, default=94, help="mozjpeg -quality (0..100)")
+    ap.add_argument("--cjpeg", default="cjpeg", help="mozjpeg's cjpeg (for --encoder mozjpeg)")
     ap.add_argument("--jobs", type=int, default=cpu_count())
     ap.add_argument("--keep", action="store_true",
                     help="keep the .mjpeg/.pcm/.idx intermediates instead of deleting them")
@@ -451,9 +536,11 @@ def main():
     ap.add_argument("--disc-fps", default=None, choices=sorted(dlv_games.CORE_RATES),
                     help="override the game's disc rate")
     a = ap.parse_args()
+    global PIX_FMT, SAMPLING, CJPEG_SAMPLE
+    PIX_FMT, SAMPLING, CJPEG_SAMPLE = CHROMA[a.chroma]
 
     W, H = (int(v) for v in a.size.lower().split("x"))
-    fbuf_bytes = 1 << a.fbuf_aw
+    fbuf_bytes = a.max_frame or (1 << a.fbuf_aw)
     src  = a.src
     dest = a.dest
     work = a.work or dest
@@ -563,16 +650,19 @@ def main():
             if a.reuse and os.path.exists(seg_mjpeg):
                 print(f"[mjpeg] reusing {seg_mjpeg}")
             else:
-                vf = ("yadif," if a.deint else "") + f"scale={W}:{H}:flags=lanczos"
+                vf = ("yadif," if a.deint else "") + (a.prefilter + "," if a.prefilter else "") + f"scale={W}:{H}:flags=lanczos"
                 # FFMPEG-N9-FPSMODE-2026-08-14: the literal "-vsync","0" below became
                 # *ffmpeg_fps_flags() -- ffmpeg 9.0 removed -vsync. ORIGINAL:
                 #     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                 #          "-i", find_src(m2v_name), "-an", "-threads", "1", "-vsync", "0",
                 #          "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", str(a.quality),
                 #          "-huffman", "default", "-f", "mjpeg", seg_mjpeg], f"mjpeg {m2v_name}")
-                run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                if a.encoder == "mozjpeg":
+                    moz_encode(find_src(m2v_name), vf, W, H, seg_mjpeg, a)
+                else:
+                    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                      "-i", find_src(m2v_name), "-an", "-threads", "1", *ffmpeg_fps_flags(),
-                     "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", str(a.quality),
+                     "-vf", vf, "-pix_fmt", PIX_FMT, *(["-qmin", "1"] if a.quality < 2 else []), "-q:v", str(a.quality),
                      "-huffman", "default", "-f", "mjpeg", seg_mjpeg], f"mjpeg {m2v_name}")
 
             intermediates.append(seg_mjpeg)
@@ -587,7 +677,7 @@ def main():
             # batches give real backpressure. Batches are sequential and Pool.map preserves
             # order within a batch, so global frame order -- which IS the index -- is exact.
             BATCH = 512
-            ent, rep = [], []
+            ent, rep, shrunk = [], [], []
             # `rep` = frames concealed by hold-last (HOLD-LAST-NOT-REENCODE-2026-07-24)
             first_out = None
             with open(seg_mjpeg, "rb") as v:
@@ -624,6 +714,17 @@ def main():
                                     ent.append(ent[-1])          # duplicate = hold-last
                                     sizes_all.append(ent[-1][1])
                                     continue
+                                if a.fallback_q and len(d) >= fbuf_bytes:
+                                    q = a.fallback_q
+                                    big0 = len(d)
+                                    with open(os.path.join(work, f"oversize_{si}_{i}.jpg"), "wb") as fj:
+                                        fj.write(d)
+                                    while len(d) >= fbuf_bytes and q <= 31:
+                                        d = _shrink(d, q)
+                                        q += 1
+                                    shrunk.append((i, big0, len(d), q - 1))
+                                    with open(os.path.join(work, f"fallback_{si}_{i}.jpg"), "wb") as fj:
+                                        fj.write(d)
                                 if i == 0:
                                     first_out = d
                                 ent.append((vsize, len(d)))
@@ -637,6 +738,8 @@ def main():
                 finally:
                     mm.close()
 
+            for i, b0, b1, q in shrunk:
+                print(f"[fallback] frame {i}: {b0} B -> {b1} B at q{q}")
             if rep:
                 print(f"[hold-last] {len(rep)} frame(s) had entropy data jpegtran cannot "
                       f"transcode and were CONCEALED by repeating the previous frame: "
@@ -668,9 +771,9 @@ def main():
           f"fbuf {fbuf_bytes} B ({max_sz*100//fbuf_bytes}% full)")
     if big:
         os.remove(tmp_vid)
-        sys.exit(f"[fatal] {big} frame(s) >= FBUF ({fbuf_bytes} B); largest {max_sz} B.\n"
-                 f"        Set FBUF_AW = {need} in rtl/video/dlv_streamer.v and rebuild,\n"
-                 f"        or re-encode with a higher -q (lower quality).")
+        sys.exit(f"[fatal] {big} frame(s) >= the frame limit ({fbuf_bytes} B); largest {max_sz} B.\n"
+                 f"        Raise --max-frame (the HPS link carries ~170 KB per 23.976 frame),\n"
+                 f"        use --fallback-q, or re-encode with a higher -q (lower quality).")
     if max_sz > fbuf_bytes * 3 // 4:
         print(f"[warn] frames use >75% of FBUF -- little headroom for a quality bump")
 
@@ -712,7 +815,16 @@ def main():
     if gaps:
         print(f"[index] {frame_count} disc frames, {gaps} uncaptured -> hold-last")
 
-    index_blob = b"".join(struct.pack("<II", o, s) for o, s in covered)
+    # v4 only when needed: a v3 index stays readable by cores without the 40-bit reader.
+    idx40 = a.index40 or vsize > 0xFFFFFFFF
+    ver = 4 if idx40 else VER
+    if idx40:
+        if vsize >= 1 << 40 or max_sz >= 1 << 24:
+            os.remove(tmp_vid)
+            sys.exit(f"[fatal] v4 index limits: video {vsize} B (< 2^40), largest frame {max_sz} B (< 2^24)")
+        index_blob = b"".join(struct.pack("<Q", o | (s << 40)) for o, s in covered)
+    else:
+        index_blob = b"".join(struct.pack("<II", o, s) for o, s in covered)
 
     # =========================================================================
     # AUDIO, laid out over the SAME disc-frame span as the index.  That invariant is
@@ -777,7 +889,7 @@ def main():
     aud_off = vid_off + ((vsize   + SECTOR - 1) // SECTOR) * SECTOR
 
     hdr = bytearray(SECTOR)
-    struct.pack_into("<4sIIII", hdr,  0, MAGIC, VER, W, H, frame_count)
+    struct.pack_into("<4sIIII", hdr,  0, MAGIC, ver, W, H, frame_count)
     struct.pack_into("<II",     hdr, 20, disc_fps[0], disc_fps[1])   # v3: the game's disc rate
     struct.pack_into("<i",      hdr, 28, base)              # SIGNED -- TQ is -16
     struct.pack_into("<IIQ",    hdr, 32, SRATE, CHANS, total_samples)
@@ -787,7 +899,7 @@ def main():
     struct.pack_into("<II",     hdr, 96, spf_q16, max_sz)
     struct.pack_into("<I16s",   hdr, 104, game_id, game_key.encode("ascii"))   # v3
 
-    print(f"[dlv] {out}: v{VER} game={game_key} disc={dlv_games.rate_str(disc_fps)} "
+    print(f"[dlv] {out}: v{ver} game={game_key} disc={dlv_games.rate_str(disc_fps)} "
           f"{W}x{H} q{a.quality} discframes={frame_count} "
           f"ldoff={base}\n      samp/frame={spf_q16/65536:.5f} (q16={spf_q16})  "
           f"video={vsize} audio={asize} ({total_samples/SRATE:.1f}s)")

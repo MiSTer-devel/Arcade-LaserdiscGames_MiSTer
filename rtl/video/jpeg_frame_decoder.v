@@ -106,7 +106,8 @@ module jpeg_frame_decoder
     wire [15:0] out_x, out_y, out_w, out_h;
     wire [7:0]  out_r, out_g, out_b;
 
-    assign px_we        = out_valid_o & px_ready;
+    reg frame_done_seen_q;
+    assign px_we        = out_valid_o & px_ready & ~frame_done_seen_q;
     assign px_x         = out_x;
     assign px_y         = out_y;
     assign px_r         = out_r;
@@ -118,7 +119,6 @@ module jpeg_frame_decoder
     // frame_done must be a PULSE, not a level: core_jpeg holds outport_valid_o asserted at the
     // final pixel, so a combinational compare would stay high and re-trigger downstream.
     reg frame_done_r;
-    reg frame_done_seen_q;
     always @(posedge clk) begin
         if (rst) begin
             frame_done_r      <= 1'b0;
@@ -143,7 +143,7 @@ module jpeg_frame_decoder
         .rst_i           (rst),
 
         .inport_valid_i  (wfull),
-        .inport_data_i   (wbuf),
+        .inport_data_i   (wfull ? wbuf : 32'd0),
     // Full strobe, and NEVER assert inport_last_i: jpeg_input.v force-jumps to STATE_IDLE on it
     // ("End of data stream" override), which aborts the decode and yields zero pixels.
         .inport_strb_i   (4'hF),

@@ -26,6 +26,7 @@ module led_band #(
     // revertible -- it is a visual change that cannot be verified in simulation.
     parameter        SEVEN_SEG = 1'b1
 )(
+    input             clk,
     input      [15:0] hc,
     input      [15:0] vc,
     // 240p halves the row count while the width is unchanged, so the glyph must NOT be magnified
@@ -78,17 +79,23 @@ module led_band #(
     wire [15:0] x_org   = skill_en ? X_START_SKILL : X_START;
     wire [15:0] n_slots = skill_en ? N_SLOT_SKILL  : N_SLOT;
 
-    wire [15:0] hoff = hc - x_org;
+    // hc and seg_lit are registered (2 clocks); a pixel lasts 5-8 clocks, so the band stays aligned.
+    reg  [15:0] hc_q;
+    always @(posedge clk) hc_q <= hc;
+    wire [15:0] hoff = hc_q - x_org;
     wire [15:0] voff = vc - BAND_Y0;
     wire [15:0] bx   = hoff >> SCALE_LOG2;
-    wire [5:0]  slot = bx / PITCH;                // 0..32 (0..38 with skill field)
-    wire [2:0]  fx   = bx - slot*PITCH;           // 0..5 (5 = inter-char gap)
+    // bx / 6 as bx * 171 >> 10: exact for bx < 512, and the band ends at bx = 234.
+    wire [17:0] bx_m = bx[8:0] * 9'd171;
+    wire [5:0]  slot = bx_m[15:10];               // 0..32 (0..38 with skill field)
+    wire [8:0]  bx_r = bx[8:0] - {slot, 2'b00} - {slot, 1'b0};
+    wire [2:0]  fx   = bx_r[2:0];                 // 0..5 (5 = inter-char gap)
     // Vertical scale only: 1x in 240p, 2^SCALE_LOG2 otherwise.  Named wires because Quartus 17
     // elaborates .v as Verilog-2001, where (expr)[2:0] is illegal.
     wire [15:0] gh     = crt_240p ? FH : (FH << SCALE_LOG2);   // glyph height in display rows
     wire [15:0] voff_s = crt_240p ? voff : (voff >> SCALE_LOG2);
     wire [2:0]  fy     = voff_s[2:0];             // 0..6 within the glyph
-    wire in_band = (hc >= x_org) && (hc < x_org + ((n_slots*PITCH) << SCALE_LOG2)) &&
+    wire in_band = (hc_q >= x_org) && (hc_q < x_org + ((n_slots*PITCH) << SCALE_LOG2)) &&
                    (vc >= BAND_Y0) && (vc < BAND_Y0 + gh);
 
     // Blank until a skill is latched, so the field does not show a lone "D" on the select screen.
@@ -211,5 +218,7 @@ module led_band #(
                 (v_lft && r_up            && sm[1]) |   // f
                 (h_mid && (fy == 3'd3) && sm[0]);      // g
 
-    assign seg_lit = in_band & (SEVEN_SEG ? pix7 : pix);
+    reg seg_lit_q;
+    always @(posedge clk) seg_lit_q <= in_band & (SEVEN_SEG ? pix7 : pix);
+    assign seg_lit = seg_lit_q;
 endmodule

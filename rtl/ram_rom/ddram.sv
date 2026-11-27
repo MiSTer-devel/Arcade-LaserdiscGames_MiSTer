@@ -57,7 +57,14 @@ module ddram
 	output [15:0] dout2,
 	output [63:0] dout2_64,   // READ-COALESCE-2026-07-20: additive, whole cached word (see below)
 	input         rd_req2,
-	output reg    rd_ack2
+	output reg    rd_ack2,
+
+	input  [27:3] bst_addr,
+	input   [7:0] bst_len,
+	input         bst_req,
+	output reg    bst_ack = 0,
+	output reg    bst_valid = 0,
+	output reg [63:0] bst_data
 );
 
 assign DDRAM_BURSTCNT = ram_burst;
@@ -84,7 +91,8 @@ reg        ram_read = 0;
 reg        ram_write = 0;
 reg  [7:0] ram_be = 0;
 
-reg [1:0]  state  = 0;
+reg [2:0]  state  = 0;
+reg  [7:0] bst_cnt;
 reg        ch = 0;
 
 // NOTE: the read-data return path must NOT be gated by DDRAM_BUSY.  BUSY (command FIFO full) and
@@ -97,8 +105,18 @@ reg        ch = 0;
 always @(posedge DDRAM_CLK) begin
 
 	// ---- read-data return path: MUST NOT be gated by DDRAM_BUSY ----
+	bst_valid <= 0;
 	if(DDRAM_DOUT_READY) begin
-		if(state == 2) begin
+		if(state == 4) begin
+			bst_valid <= 1;
+			bst_data  <= DDRAM_DOUT;
+			bst_cnt   <= bst_cnt + 1'd1;
+			if(bst_cnt == ram_burst - 1'd1) begin
+				bst_ack <= bst_req;
+				state   <= 0;
+			end
+		end
+		else if(state == 2) begin
 			if (~ch) begin ram_q  <= DDRAM_DOUT; rom_ack <= rom_req; end
 			else     begin ram_q2 <= DDRAM_DOUT; rd_ack2 <= rd_req2; end
 			state <= 3;
@@ -160,6 +178,13 @@ always @(posedge DDRAM_CLK) begin
 						state       <= 2;
 					end 
 				end
+				else if(bst_req != bst_ack) begin
+					ram_address <= bst_addr;
+					ram_read    <= 1;
+					ram_burst   <= bst_len;
+					bst_cnt     <= 0;
+					state       <= 4;
+				end
 				else if(rd_req2 != rd_ack2) begin
 					if(cache_addr2 == rdaddr2[27:3]) rd_ack2 <= rd_req2;
 					else if((cache_addr2+1'd1) == rdaddr2[27:3]) begin
@@ -199,6 +224,7 @@ always @(posedge DDRAM_CLK) begin
 			//   3: if(DDRAM_DOUT_READY) begin ...next_q/next_q2...;     state <= 0; end
 			2: ;
 			3: ;
+			4: ;
 		endcase
 	end
 end

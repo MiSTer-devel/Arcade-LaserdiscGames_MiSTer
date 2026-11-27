@@ -90,11 +90,16 @@ class Dlv:
             raise ValueError("no usable frame rate in header (v1 with zero mpeg_fpks?)")
 
         # index: frame_count * {u32 off_in_video_blob, u32 size}
+        # v4: frame_count * {40-bit off_in_video_blob, 24-bit size}, same 8 bytes
         self.f.seek(self.idx_off)
         raw = self.f.read(self.frame_count * 8)
         if len(raw) < self.frame_count * 8:
             raise ValueError("index table truncated")
-        self.index = [struct.unpack_from("<II", raw, i * 8) for i in range(self.frame_count)]
+        if self.ver >= 4:
+            ents = [struct.unpack_from("<Q", raw, i * 8)[0] for i in range(self.frame_count)]
+            self.index = [(e & ((1 << 40) - 1), e >> 40) for e in ents]
+        else:
+            self.index = [struct.unpack_from("<II", raw, i * 8) for i in range(self.frame_count)]
 
     # ---- the RTL's forward map, integer-identical to dlv_streamer.v ----
     def disc_rel_to_vid(self, disc_rel):
